@@ -3,6 +3,10 @@ import type { PiDesktopApi, SessionEvent } from "../shared/contracts"
 import { IpcChannels } from "../shared/contracts"
 
 const api: PiDesktopApi = {
+  attachments: {
+    save: (bytes, name, mimeType) => ipcRenderer.invoke(IpcChannels.saveAttachment, { bytes, name, mimeType }),
+    preview: (path) => ipcRenderer.invoke(IpcChannels.previewAttachment, path)
+  },
   projects: {
     list: () => ipcRenderer.invoke(IpcChannels.listProjects),
     add: () => ipcRenderer.invoke(IpcChannels.addProject),
@@ -14,7 +18,7 @@ const api: PiDesktopApi = {
     create: (projectPath) => ipcRenderer.invoke(IpcChannels.createSession, projectPath),
     open: (projectPath, sessionPath) => ipcRenderer.invoke(IpcChannels.openSession, projectPath, sessionPath),
     inspect: (projectPath, parentSessionPath, sessionPath) => ipcRenderer.invoke(IpcChannels.inspectSession, projectPath, parentSessionPath, sessionPath),
-    prompt: (sessionPath, text) => ipcRenderer.invoke(IpcChannels.promptSession, sessionPath, text),
+    prompt: (sessionPath, text, attachmentPaths) => ipcRenderer.invoke(IpcChannels.promptSession, sessionPath, text, attachmentPaths),
     abort: (sessionPath) => ipcRenderer.invoke(IpcChannels.abortSession, sessionPath),
     models: (sessionPath) => ipcRenderer.invoke(IpcChannels.listModels, sessionPath),
     setModel: (sessionPath, provider, modelId) => ipcRenderer.invoke(IpcChannels.setModel, sessionPath, provider, modelId),

@@ -12,6 +12,7 @@ A focused Electron workspace for browsing projects and working with existing or 
 - Preserve the complete active-branch transcript across Pi compactions, with structural compacting/compacted separators and no internal summary metadata
 - Navigate long transcripts with a compact hover-preview rail
 - Render both user and assistant messages as safe HTTPS-only Markdown
+- Preview Pi CLI image paths inline, paste validated images, and send them to Pi as native image attachments
 - Open securely linked Pi subagent sessions in an on-demand, read-only right split view
 - Inspect Pi-managed background terminals in a parallel read-only process pane
 - Send and abort prompts
@@ -47,7 +48,8 @@ npm run e2e:serve
 
 ## Architecture
 
-- `src/main/services/PiSessions.ts` — Pi SDK lifecycle and live event projection
+- `src/main/services/PiSessions.ts` — Pi SDK lifecycle, image prompt preparation, and live event projection
+- `src/main/services/AttachmentStore.ts` — Effect service for validated app-owned image persistence and previews
 - `src/main/services/ProjectStore.ts` — Effect service for persistent workspace metadata
 - `src/main/index.ts` — Electron lifecycle and Effect-powered IPC handlers
 - `src/preload/index.ts` — context-isolated renderer API

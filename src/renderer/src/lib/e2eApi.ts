@@ -79,6 +79,10 @@ const loadFixture = () => fixture ??= fetch("/pi-e2e.json")
   .then(Schema.decodeUnknownPromise(FixtureSchema))
 
 export const createE2eApi = (): PiDesktopApi => ({
+  attachments: {
+    save: async () => Promise.reject(new Error("Image attachments are tested in Electron, not the browser review harness")),
+    preview: async () => Promise.reject(new Error("Local image previews are unavailable in the browser review harness"))
+  },
   projects: {
     list: async () => (await loadFixture()).projects,
     add: async () => (await loadFixture()).projects[0] ?? null,

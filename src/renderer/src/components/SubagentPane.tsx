@@ -1,5 +1,5 @@
 import { RefreshCw, X } from "lucide-react"
-import type { SessionDetail, SessionSummary } from "../../../shared/contracts"
+import type { AttachmentPreview, SessionDetail, SessionSummary } from "../../../shared/contracts"
 import { buildConversationItems } from "../lib/conversation"
 import { ActivityGroup } from "./ActivityGroup"
 import { MessageView } from "./MessageView"
@@ -13,11 +13,12 @@ interface SubagentPaneProps {
   readonly onSelect: (session: SessionSummary) => void
   readonly onRefresh: () => void
   readonly onClose: () => void
+  readonly onOpenImage?: (preview: AttachmentPreview) => void
 }
 
 const displayName = (name: string) => name.replace(/^subagent:\s*/i, "")
 
-export function SubagentPane({ sessions, selectedPath, detail, loading, onSelect, onRefresh, onClose }: SubagentPaneProps) {
+export function SubagentPane({ sessions, selectedPath, detail, loading, onSelect, onRefresh, onClose, onOpenImage }: SubagentPaneProps) {
   const items = buildConversationItems(detail?.messages ?? [])
 
   return (
@@ -57,8 +58,8 @@ export function SubagentPane({ sessions, selectedPath, detail, loading, onSelect
         ) : detail ? (
           <div className="subagent-message-list">
             {items.map((item) => item.type === "message"
-              ? <MessageView message={item.message} key={item.id} />
-              : <ActivityGroup messages={item.messages} isLive={false} key={item.id} />)}
+              ? <MessageView message={item.message} onOpenImage={onOpenImage} key={item.id} />
+              : <ActivityGroup messages={item.messages} isLive={false} onOpenImage={onOpenImage} key={item.id} />)}
           </div>
         ) : (
           <div className="subagent-loading">Select a subagent to inspect its work.</div>

@@ -9,7 +9,9 @@ import {
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent"
 import { Context, Effect, Layer, Semaphore } from "effect"
 import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import { normalizeImageReferences, parseImagePathReferences } from "../../shared/attachments"
 import { AppError, toAppError } from "./AppError"
+import { AttachmentStore } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import { WindowBus } from "./WindowBus"
 
@@ -387,7 +389,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly create: (cwd: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
-  readonly prompt: (sessionPath: string, text: string) => Effect.Effect<void, AppError>
+  readonly prompt: (sessionPath: string, text: string, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
   readonly abort: (sessionPath: string) => Effect.Effect<void, AppError>
   readonly models: (sessionPath: string) => Effect.Effect<ReadonlyArray<ModelOption>, AppError>
   readonly setModel: (sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
@@ -406,6 +408,7 @@ const createPiRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir
 
 export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const bus = yield* WindowBus
+  const attachments = yield* AttachmentStore
   const git = yield* GitContext
   const sessionLifecycleLock = yield* Semaphore.make(1)
   const activeSessions = new Map<string, ActiveSession>()
@@ -598,11 +601,22 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
       return detailFromManager(manager, summaryFromInfo(info))
     }),
-    prompt: Effect.fn("PiSessions.prompt")(function*(sessionPath: string, text: string) {
+    prompt: Effect.fn("PiSessions.prompt")(function*(sessionPath: string, text: string, attachmentPaths: ReadonlyArray<string>) {
       const active = activeSessions.get(canonicalPath(sessionPath))
       if (!active) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Open the session before sending a message" }))
       if (active.session.isStreaming) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Pi is already working in this session" }))
-      yield* Effect.tryPromise({ try: () => active.session.prompt(text), catch: toAppError("prompt Pi") })
+
+      const inferredPaths = parseImagePathReferences(text).map((reference) => reference.path)
+      const paths = [...new Set([...inferredPaths, ...attachmentPaths])]
+      const prompt = normalizeImageReferences(text, paths)
+      if (prompt.trim().length === 0) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Add a message or image before sending" }))
+      const images = yield* Effect.all(paths.map((path) => attachments.readForPi(path))).pipe(
+        Effect.mapError((error) => AppError.make({ operation: "read image attachment", message: error.message }))
+      )
+      yield* Effect.tryPromise({
+        try: () => active.session.prompt(prompt, images.length > 0 ? { images } : undefined),
+        catch: toAppError("prompt Pi")
+      })
     }),
     abort: Effect.fn("PiSessions.abort")(function*(sessionPath: string) {
       const active = activeSessions.get(canonicalPath(sessionPath))

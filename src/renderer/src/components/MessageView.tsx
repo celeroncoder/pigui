@@ -2,7 +2,9 @@ import { Brain, Check, ChevronDown, CircleAlert, Copy } from "lucide-react"
 import { lazy, Suspense, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import type { ChatMessage, MessageBlock, ToolCallBlock, ToolResultBlock } from "../../../shared/contracts"
+import type { AttachmentPreview, ChatMessage, MessageBlock, ToolCallBlock, ToolResultBlock } from "../../../shared/contracts"
+import { splitTextByImageReferences } from "../../../shared/attachments"
+import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
 import { ToolGlyph } from "./ToolGlyph"
 
@@ -16,6 +18,10 @@ const MarkdownContent = ({ text, className = "markdown" }: { readonly text: stri
         a: ({ href, children }) => {
           const safeHref = href?.startsWith("https://") ? href : undefined
           return <a href={safeHref} target="_blank" rel="noreferrer">{children}</a>
+        },
+        img: ({ src, alt }) => {
+          const safeSrc = src?.startsWith("https://") ? src : undefined
+          return safeSrc ? <img src={safeSrc} alt={alt ?? ""} loading="lazy" /> : null
         }
       }}
     >
@@ -85,7 +91,17 @@ function AssistantContent({ message }: { readonly message: ChatMessage }) {
   )
 }
 
-export function MessageView({ message, anchorId }: { readonly message: ChatMessage; readonly anchorId?: string }) {
+function UserMessageContent({ text, onOpenImage }: { readonly text: string; readonly onOpenImage?: (preview: AttachmentPreview) => void }) {
+  return (
+    <div className="user-markdown">
+      {splitTextByImageReferences(text).map((segment, index) => segment.type === "image"
+        ? <ImageAttachmentCard path={segment.value} onOpen={onOpenImage ?? (() => undefined)} key={`image-${index}-${segment.value}`} />
+        : <MarkdownContent text={segment.value} className="markdown user-markdown-text" key={`text-${index}`} />)}
+    </div>
+  )
+}
+
+export function MessageView({ message, anchorId, onOpenImage }: { readonly message: ChatMessage; readonly anchorId?: string; readonly onOpenImage?: (preview: AttachmentPreview) => void }) {
   const [copied, setCopied] = useState(false)
   const hasText = message.blocks.some((block) => block.type === "text" && block.text.trim().length > 0)
   const compaction = message.blocks.find((block) => block.type === "compaction")
@@ -102,7 +118,7 @@ export function MessageView({ message, anchorId }: { readonly message: ChatMessa
     const text = message.blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n\n")
     return (
       <article className="message user-message" id={anchorId}>
-        <div className="user-bubble"><MarkdownContent text={text} className="markdown user-markdown" /></div>
+        <div className="user-bubble"><UserMessageContent text={text} onOpenImage={onOpenImage} /></div>
       </article>
     )
   }

@@ -66,6 +66,20 @@ export interface ChatMessage {
   readonly provider?: string
 }
 
+export interface ImageAttachment {
+  readonly id: string
+  readonly path: string
+  readonly name: string
+  readonly mimeType: string
+  readonly dataUrl: string
+}
+
+export interface AttachmentPreview {
+  readonly name: string
+  readonly mimeType: string
+  readonly dataUrl: string
+}
+
 export interface ModelOption {
   readonly provider: string
   readonly id: string
@@ -131,12 +145,16 @@ export interface PiDesktopApi {
     readonly remove: (projectId: string) => Promise<void>
     readonly refreshGit: (projectPath: string) => Promise<GitStatus | undefined>
   }
+  readonly attachments: {
+    readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
+    readonly preview: (path: string) => Promise<AttachmentPreview>
+  }
   readonly sessions: {
     readonly list: (projectPath: string) => Promise<ReadonlyArray<SessionSummary>>
     readonly create: (projectPath: string) => Promise<SessionDetail>
     readonly open: (projectPath: string, sessionPath: string) => Promise<SessionDetail>
     readonly inspect: (projectPath: string, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
-    readonly prompt: (sessionPath: string, text: string) => Promise<void>
+    readonly prompt: (sessionPath: string, text: string, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
     readonly abort: (sessionPath: string) => Promise<void>
     readonly models: (sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
     readonly setModel: (sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
@@ -159,5 +177,7 @@ export const IpcChannels = {
   listModels: "sessions:models",
   setModel: "sessions:set-model",
   setThinkingLevel: "sessions:set-thinking-level",
+  saveAttachment: "attachments:save",
+  previewAttachment: "attachments:preview",
   sessionEvent: "sessions:event"
 } as const

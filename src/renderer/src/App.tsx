@@ -1,6 +1,7 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal } from "lucide-react"
+import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { ChatMessage, GitStatus, ModelOption, Project, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import type { AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import { normalizeImageReferences } from "../../shared/attachments"
 import { ActivityGroup } from "./components/ActivityGroup"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
@@ -53,6 +54,8 @@ export default function App() {
   const [subagentLoading, setSubagentLoading] = useState(false)
   const [modelOptions, setModelOptions] = useState<ReadonlyArray<ModelOption>>([])
   const [draft, setDraft] = useState("")
+  const [pendingAttachments, setPendingAttachments] = useState<ReadonlyArray<ImageAttachment>>([])
+  const [lightboxImage, setLightboxImage] = useState<AttachmentPreview | null>(null)
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -90,6 +93,8 @@ export default function App() {
     const requestId = ++sessionRequestRef.current
     activeSessionPathRef.current = summary.path
     setSession(null)
+    setPendingAttachments([])
+    setLightboxImage(null)
     setLiveThinking(null)
     setModelOptions([])
     setError(null)
@@ -148,6 +153,8 @@ export default function App() {
     activeSessionPathRef.current = null
     setActiveProject(project)
     setSession(null)
+    setPendingAttachments([])
+    setLightboxImage(null)
     setLiveThinking(null)
     setSessions([])
     setModelOptions([])
@@ -320,6 +327,15 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: session?.isStreaming ? "instant" : "smooth", block: "end" })
   }, [session?.messages, session?.isStreaming])
 
+  useEffect(() => {
+    if (!lightboxImage) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLightboxImage(null)
+    }
+    document.addEventListener("keydown", closeOnEscape)
+    return () => document.removeEventListener("keydown", closeOnEscape)
+  }, [lightboxImage])
+
   const addProject = async () => {
     if (addingProjectRef.current) return
     addingProjectRef.current = true
@@ -345,6 +361,8 @@ export default function App() {
       if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
+      setPendingAttachments([])
+      setLightboxImage(null)
       setLiveThinking(null)
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
       void loadModels(detail.summary.path)
@@ -368,9 +386,14 @@ export default function App() {
   }, [newSession])
 
   const sendPrompt = () => {
-    const text = draft.trim()
-    if (!text || !session || session.isStreaming) return
+    const rawText = draft.trim()
+    const attachmentPaths = pendingAttachments.map((attachment) => attachment.path)
+    const text = normalizeImageReferences(rawText, attachmentPaths)
+    if (!text.trim() || !session || session.isStreaming) return
+    const previousDraft = draft
+    const previousAttachments = pendingAttachments
     setDraft("")
+    setPendingAttachments([])
     setLiveThinking(null)
     setError(null)
     const userMessage: ChatMessage = {
@@ -381,8 +404,10 @@ export default function App() {
     }
     setSession((current) => current ? { ...current, isStreaming: true, messages: [...current.messages, userMessage] } : current)
     const sessionPath = session.summary.path
-    void desktopApi.sessions.prompt(sessionPath, text).catch((cause: unknown) => {
+    void desktopApi.sessions.prompt(sessionPath, rawText, attachmentPaths).catch((cause: unknown) => {
       if (activeSessionPathRef.current !== sessionPath) return
+      setDraft(previousDraft)
+      setPendingAttachments(previousAttachments)
       setError(cause instanceof Error ? cause.message : "Pi could not process the message")
       setSession((current) => current ? {
         ...current,
@@ -390,6 +415,17 @@ export default function App() {
         messages: current.messages.filter((message) => message.id !== userMessage.id)
       } : current)
     })
+  }
+
+  const addPastedImage = async (bytes: Uint8Array, name: string, mimeType: string) => {
+    if (!session) return
+    try {
+      const attachment = await desktopApi.attachments.save(bytes, name, mimeType)
+      setPendingAttachments((current) => [...current, attachment])
+      setError(null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not save the pasted image")
+    }
   }
 
   const abort = () => {
@@ -543,8 +579,8 @@ export default function App() {
                 {conversationItems.map((item, index) => {
                   const landmark = allPreviewLandmarks[index]
                   return item.type === "message"
-                    ? <MessageView message={item.message} anchorId={landmark?.targetId} key={item.id} />
-                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} key={item.id} />
+                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={setLightboxImage} key={item.id} />
+                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} onOpenImage={setLightboxImage} key={item.id} />
                 })}
                 {session?.isStreaming && (
                   <div className="live-status" role="status" aria-live="polite">
@@ -582,6 +618,7 @@ export default function App() {
           <Composer
             value={draft}
             disabled={!session}
+            attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? "Choose model"}
             modelProvider={session?.model.includes("/") ? session.model.split("/")[0] : undefined}
@@ -613,6 +650,9 @@ export default function App() {
                 })
             }}
             onChange={setDraft}
+            onOpenImage={setLightboxImage}
+            onPasteImage={(bytes, name, mimeType) => void addPastedImage(bytes, name, mimeType)}
+            onRemoveAttachment={(id) => setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id))}
             onSubmit={sendPrompt}
             onAbort={abort}
           />
@@ -627,12 +667,32 @@ export default function App() {
             onSelect={(summary) => void inspectSubagent(activeProject, summary)}
             onRefresh={() => selectedSubagent && void inspectSubagent(activeProject, selectedSubagent, false)}
             onClose={() => setSubagentPaneOpen(false)}
+            onOpenImage={setLightboxImage}
           />
         )}
         {backgroundPaneOpen && backgroundProcesses.length > 0 && (
           <BackgroundProcessesPane processes={backgroundProcesses} onClose={() => setBackgroundPaneOpen(false)} />
         )}
       </div>
+      {lightboxImage && (
+        <div
+          className="image-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Image preview: ${lightboxImage.name}`}
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setLightboxImage(null)
+          }}
+        >
+          <div className="image-lightbox-dialog">
+            <div className="image-lightbox-header">
+              <span title={lightboxImage.name}>{lightboxImage.name}</span>
+              <button type="button" autoFocus aria-label="Close image preview" onClick={() => setLightboxImage(null)}><X size={17} /></button>
+            </div>
+            <div className="image-lightbox-canvas"><img src={lightboxImage.dataUrl} alt={lightboxImage.name} /></div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

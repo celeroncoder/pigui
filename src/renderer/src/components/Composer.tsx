@@ -1,6 +1,7 @@
-import { ArrowUp, ChevronDown, ShieldCheck, Square } from "lucide-react"
+import { ArrowUp, ChevronDown, ShieldCheck, Square, X } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
-import type { ModelOption, ThinkingLevel } from "../../../shared/contracts"
+import type { AttachmentPreview, ImageAttachment, ModelOption, ThinkingLevel } from "../../../shared/contracts"
+import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
 
 const effortLabel: Record<ThinkingLevel, string> = {
@@ -16,6 +17,7 @@ const effortLabel: Record<ThinkingLevel, string> = {
 interface ComposerProps {
   readonly value: string
   readonly disabled: boolean
+  readonly attachments: ReadonlyArray<ImageAttachment>
   readonly isStreaming: boolean
   readonly model: string
   readonly modelProvider?: string
@@ -25,11 +27,14 @@ interface ComposerProps {
   readonly onModelChange: (option: ModelOption) => void
   readonly onThinkingLevelChange: (level: ThinkingLevel) => void
   readonly onChange: (value: string) => void
+  readonly onOpenImage: (preview: AttachmentPreview) => void
+  readonly onPasteImage: (bytes: Uint8Array, name: string, mimeType: string) => void
+  readonly onRemoveAttachment: (id: string) => void
   readonly onSubmit: () => void
   readonly onAbort: () => void
 }
 
-export function Composer({ value, disabled, isStreaming, model, modelProvider, modelOptions, thinkingLevel, availableThinkingLevels, onModelChange, onThinkingLevelChange, onChange, onSubmit, onAbort }: ComposerProps) {
+export function Composer({ value, disabled, attachments, isStreaming, model, modelProvider, modelOptions, thinkingLevel, availableThinkingLevels, onModelChange, onThinkingLevelChange, onChange, onOpenImage, onPasteImage, onRemoveAttachment, onSubmit, onAbort }: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
   const [openPicker, setOpenPicker] = useState<"model" | "effort" | null>(null)
@@ -85,10 +90,27 @@ export function Composer({ value, disabled, isStreaming, model, modelProvider, m
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault()
-              if (!isStreaming && value.trim()) onSubmit()
+              if (!isStreaming && (value.trim() || attachments.length > 0)) onSubmit()
             }
           }}
+          onPaste={(event) => {
+            if (disabled) return
+            const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/"))
+            if (!image) return
+            event.preventDefault()
+            void image.arrayBuffer().then((buffer) => onPasteImage(new Uint8Array(buffer), image.name, image.type))
+          }}
         />
+        {attachments.length > 0 && (
+          <div className="composer-attachments" aria-label="Pending image attachments">
+            {attachments.map((attachment) => (
+              <div className="composer-attachment" key={attachment.id}>
+                <ImageAttachmentCard attachment={attachment} compact onOpen={onOpenImage} />
+                <button type="button" className="composer-attachment-remove" aria-label={`Remove ${attachment.name}`} onClick={() => onRemoveAttachment(attachment.id)}><X size={13} /></button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="composer-toolbar">
           <div className="composer-tools" ref={pickerRef}>
             <button
@@ -169,7 +191,7 @@ export function Composer({ value, disabled, isStreaming, model, modelProvider, m
           {isStreaming ? (
             <button type="button" className="send-button stop" aria-label="Stop Pi" onClick={onAbort}><Square size={12} fill="currentColor" /></button>
           ) : (
-            <button type="button" className="send-button" aria-label="Send message" disabled={disabled || !value.trim()} onClick={onSubmit}><ArrowUp size={17} /></button>
+            <button type="button" className="send-button" aria-label="Send message" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={onSubmit}><ArrowUp size={17} /></button>
           )}
         </div>
       </div>

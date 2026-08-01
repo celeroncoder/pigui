@@ -2,6 +2,7 @@ import { join } from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron"
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect"
 import { IpcChannels, type Project } from "../shared/contracts"
+import { AttachmentStore, AttachmentStoreLive } from "./services/AttachmentStore"
 import { GitContext, GitContextLive } from "./services/GitContext"
 import { PiSessions, PiSessionsLive } from "./services/PiSessions"
 import { ProjectStore, ProjectStoreLive } from "./services/ProjectStore"
@@ -9,16 +10,25 @@ import { WindowBusLive } from "./services/WindowBus"
 
 const NonEmptyString = Schema.NonEmptyString
 const ThinkingLevelSchema = Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+const AttachmentSaveSchema = Schema.Struct({
+  bytes: Schema.Uint8Array,
+  name: Schema.optional(Schema.String),
+  mimeType: Schema.optional(Schema.String)
+})
+const AttachmentPathsSchema = Schema.Array(NonEmptyString)
 const decodeString = Schema.decodeUnknownEffect(NonEmptyString)
+const decodePromptText = Schema.decodeUnknownEffect(Schema.String)
 const decodeThinkingLevel = Schema.decodeUnknownEffect(ThinkingLevelSchema)
+const decodeAttachmentSave = Schema.decodeUnknownEffect(AttachmentSaveSchema)
+const decodeAttachmentPaths = Schema.decodeUnknownEffect(Schema.Union([AttachmentPathsSchema, Schema.Undefined]))
 
-const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive)
+const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive, AttachmentStoreLive)
 const AppServices = Layer.mergeAll(ProjectStoreLive, PiSessionsLive)
 const AppLayer = Layer.provideMerge(AppServices, AppDependencies)
 const runtime = ManagedRuntime.make(AppLayer)
 let isShuttingDown = false
 
-const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext>): Promise<A> => {
+const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | AttachmentStore>): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect)
   if (Exit.isSuccess(exit)) return exit.value
   if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) return new Promise<A>(() => undefined)
@@ -147,11 +157,24 @@ const registerIpc = () => {
     return yield* sessions.inspect(cwd, parentPath, path)
   })))
 
-  ipcMain.handle(IpcChannels.promptSession, (_event, sessionPath: unknown, text: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.promptSession, (_event, sessionPath: unknown, text: unknown, attachmentPaths: unknown) => run(Effect.gen(function*() {
     const path = yield* decodeString(sessionPath)
-    const prompt = yield* decodeString(text)
+    const prompt = yield* decodePromptText(text)
+    const paths = yield* decodeAttachmentPaths(attachmentPaths)
     const sessions = yield* PiSessions
-    yield* sessions.prompt(path, prompt)
+    yield* sessions.prompt(path, prompt, paths ?? [])
+  })))
+
+  ipcMain.handle(IpcChannels.saveAttachment, (_event, input: unknown) => run(Effect.gen(function*() {
+    const payload = yield* decodeAttachmentSave(input)
+    const attachments = yield* AttachmentStore
+    return yield* attachments.save(payload.bytes, payload.name, payload.mimeType)
+  })))
+
+  ipcMain.handle(IpcChannels.previewAttachment, (_event, path: unknown) => run(Effect.gen(function*() {
+    const requestedPath = yield* decodeString(path)
+    const attachments = yield* AttachmentStore
+    return yield* attachments.preview(requestedPath)
   })))
 
   ipcMain.handle(IpcChannels.abortSession, (_event, sessionPath: unknown) => run(Effect.gen(function*() {
