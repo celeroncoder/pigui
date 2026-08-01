@@ -1,0 +1,608 @@
+import { CircleDashed, FolderPlus, PanelRightOpen, Sparkles, SquareTerminal } from "lucide-react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import type { ChatMessage, ModelOption, Project, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import { ActivityGroup } from "./components/ActivityGroup"
+import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
+import { BrandMark } from "./components/BrandMark"
+import { Composer } from "./components/Composer"
+// import { Inspector } from "./components/Inspector"
+import { MessagePreviewRail, type MessagePreviewLandmark } from "./components/MessagePreviewRail"
+import { MessageView } from "./components/MessageView"
+import { ProjectSidebar } from "./components/ProjectSidebar"
+import { SubagentAvatarGroup } from "./components/SubagentAvatars"
+import { SubagentPane } from "./components/SubagentPane"
+import { desktopApi } from "./lib/api"
+import { buildConversationItems, latestTransientStatus } from "./lib/conversation"
+
+const compactLabel = (value: string, maxLength: number) => {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized
+}
+
+const appendTextDelta = (detail: SessionDetail, messageId: string, delta: string): SessionDetail => {
+  const found = detail.messages.some((message) => message.id === messageId)
+  const messages = found ? detail.messages : [
+    ...detail.messages,
+    { id: messageId, role: "assistant", blocks: [], timestamp: Date.now() } satisfies ChatMessage
+  ]
+
+  return {
+    ...detail,
+    messages: messages.map((message) => {
+      if (message.id !== messageId) return message
+      const last = message.blocks.at(-1)
+      if (last?.type === "text") {
+        return { ...message, blocks: [...message.blocks.slice(0, -1), { type: "text", text: `${last.text}${delta}` }] }
+      }
+      return { ...message, blocks: [...message.blocks, { type: "text", text: delta }] }
+    })
+  }
+}
+
+export default function App() {
+  const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
+  const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
+  const [activeProject, setActiveProject] = useState<Project | null>(null)
+  const [session, setSession] = useState<SessionDetail | null>(null)
+  const [liveThinking, setLiveThinking] = useState<{ readonly messageId: string; readonly text: string } | null>(null)
+  const [activities, setActivities] = useState<ReadonlyArray<ToolActivity>>([])
+  const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
+  const [backgroundPaneOpen, setBackgroundPaneOpen] = useState(false)
+  const [selectedSubagent, setSelectedSubagent] = useState<SessionSummary | null>(null)
+  const [subagentDetail, setSubagentDetail] = useState<SessionDetail | null>(null)
+  const [subagentLoading, setSubagentLoading] = useState(false)
+  const [modelOptions, setModelOptions] = useState<ReadonlyArray<ModelOption>>([])
+  const [draft, setDraft] = useState("")
+  const [loadingSessions, setLoadingSessions] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messageScrollRef = useRef<HTMLDivElement>(null)
+  const activeSessionPathRef = useRef<string | null>(null)
+  const activeProjectRef = useRef<Project | null>(null)
+  const activeProjectIdRef = useRef<string | null>(null)
+  const projectRequestRef = useRef(0)
+  const sessionRequestRef = useRef(0)
+  const modelRequestRef = useRef(0)
+  const subagentRequestRef = useRef(0)
+  const addingProjectRef = useRef(false)
+
+  useEffect(() => {
+    activeSessionPathRef.current = session?.summary.path ?? null
+  }, [session?.summary.path])
+
+  useEffect(() => {
+    activeProjectRef.current = activeProject
+  }, [activeProject])
+
+  const loadModels = useCallback(async (sessionPath: string) => {
+    const requestId = ++modelRequestRef.current
+    setModelOptions([])
+    try {
+      const options = await desktopApi.sessions.models(sessionPath)
+      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath) setModelOptions(options)
+    } catch {
+      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath) setModelOptions([])
+    }
+  }, [])
+
+  const openSession = useCallback(async (project: Project, summary: SessionSummary) => {
+    if (activeProjectIdRef.current !== project.id) return
+    const requestId = ++sessionRequestRef.current
+    activeSessionPathRef.current = summary.path
+    setSession(null)
+    setLiveThinking(null)
+    setModelOptions([])
+    setError(null)
+    setActivities([])
+    try {
+      const detail = await desktopApi.sessions.open(project.path, summary.path)
+      if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
+      activeSessionPathRef.current = detail.summary.path
+      setSession(detail)
+      void loadModels(detail.summary.path)
+    } catch (cause) {
+      if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
+        setError(cause instanceof Error ? cause.message : "Could not open this session")
+      }
+    }
+  }, [loadModels])
+
+  const inspectSubagent = useCallback(async (project: Project, summary: SessionSummary, showLoading = true) => {
+    const parentSessionPath = activeSessionPathRef.current
+    if (!parentSessionPath) return
+    const requestId = ++subagentRequestRef.current
+    setSelectedSubagent(summary)
+    if (showLoading) {
+      setSubagentLoading(true)
+      setSubagentDetail(null)
+    }
+    try {
+      const detail = await desktopApi.sessions.inspect(project.path, parentSessionPath, summary.path)
+      if (requestId === subagentRequestRef.current && activeSessionPathRef.current === parentSessionPath) setSubagentDetail(detail)
+    } catch (cause) {
+      if (requestId === subagentRequestRef.current) setError(cause instanceof Error ? cause.message : "Could not inspect subagent")
+    } finally {
+      if (requestId === subagentRequestRef.current) setSubagentLoading(false)
+    }
+  }, [])
+
+  const selectProject = useCallback(async (project: Project) => {
+    const requestId = ++projectRequestRef.current
+    ++sessionRequestRef.current
+    ++modelRequestRef.current
+    activeProjectIdRef.current = project.id
+    activeSessionPathRef.current = null
+    setActiveProject(project)
+    setSession(null)
+    setLiveThinking(null)
+    setSessions([])
+    setModelOptions([])
+    setActivities([])
+    setLoadingSessions(true)
+    setError(null)
+    try {
+      const nextSessions = await desktopApi.sessions.list(project.path)
+      if (requestId !== projectRequestRef.current || activeProjectIdRef.current !== project.id) return
+      setSessions(nextSessions)
+      const first = nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:")) ?? nextSessions[0]
+      if (first) await openSession(project, first)
+    } catch (cause) {
+      if (requestId === projectRequestRef.current && activeProjectIdRef.current === project.id) {
+        setError(cause instanceof Error ? cause.message : "Could not load project sessions")
+      }
+    } finally {
+      if (requestId === projectRequestRef.current) setLoadingSessions(false)
+    }
+  }, [openSession])
+
+  useEffect(() => {
+    void desktopApi.projects.list().then((items) => {
+      setProjects(items)
+      const first = items[0]
+      if (first) void selectProject(first)
+    }).catch((cause: unknown) => {
+      setError(cause instanceof Error ? cause.message : "Could not load projects")
+    })
+  }, [selectProject])
+
+  useEffect(() => {
+    ++subagentRequestRef.current
+    setSubagentPaneOpen(false)
+    setBackgroundPaneOpen(false)
+    setSelectedSubagent(null)
+    setSubagentDetail(null)
+    setSubagentLoading(false)
+  }, [session?.summary.path])
+
+  useEffect(() => {
+    if (!subagentPaneOpen || !selectedSubagent || !activeProject) return
+    const interval = window.setInterval(() => {
+      void inspectSubagent(activeProject, selectedSubagent, false)
+    }, 2500)
+    return () => window.clearInterval(interval)
+  }, [activeProject, inspectSubagent, selectedSubagent, subagentPaneOpen])
+
+  useEffect(() => desktopApi.onSessionEvent((event: SessionEvent) => {
+    if (event.type === "error") {
+      setError(event.message)
+      return
+    }
+    if (event.sessionPath !== activeSessionPathRef.current) return
+
+    if (event.type === "session-state") {
+      setLiveThinking(null)
+      setSession(event.detail)
+      setSessions((current) => [
+        event.detail.summary,
+        ...current.filter((item) => item.path !== event.detail.summary.path)
+      ])
+      return
+    }
+    if (event.type === "assistant-start") {
+      setLiveThinking(null)
+      setSession((current) => current ? {
+        ...current,
+        messages: current.messages.some((message) => message.id === event.messageId)
+          ? current.messages
+          : [...current.messages, { id: event.messageId, role: "assistant", blocks: [], timestamp: event.timestamp }]
+      } : current)
+      return
+    }
+    if (event.type === "text-delta") {
+      setLiveThinking(null)
+      setSession((current) => current ? appendTextDelta(current, event.messageId, event.delta) : current)
+      return
+    }
+    if (event.type === "thinking-delta") {
+      setLiveThinking((current) => ({
+        messageId: event.messageId,
+        text: `${current?.messageId === event.messageId ? current.text : ""}${event.delta}`
+      }))
+      return
+    }
+    if (event.type === "tool-start") {
+      setActivities((current) => [event.tool, ...current.filter((item) => item.id !== event.tool.id)])
+      if (event.tool.name === "subagent_spawn") {
+        window.setTimeout(() => {
+          const project = activeProjectRef.current
+          if (!project) return
+          void desktopApi.sessions.list(project.path).then((nextSessions) => {
+            if (activeProjectRef.current?.id === project.id) setSessions(nextSessions)
+          })
+        }, 1200)
+      }
+      setSession((current) => {
+        if (!current) return current
+        const assistantIndex = current.messages.findLastIndex((message) => message.role === "assistant")
+        const assistant = current.messages[assistantIndex]
+        if (!assistant || assistant.blocks.some((block) => block.type === "tool-call" && block.id === event.tool.id)) return current
+        return {
+          ...current,
+          messages: current.messages.map((message, index) => index === assistantIndex ? {
+            ...message,
+            blocks: [...message.blocks, { type: "tool-call", id: event.tool.id, name: event.tool.name, input: event.tool.input ?? "" }]
+          } : message)
+        }
+      })
+      return
+    }
+    if (event.type === "tool-update") {
+      setActivities((current) => current.map((item) => item.id === event.toolId ? { ...item, output: event.output } : item))
+      return
+    }
+    if (event.type === "tool-end") {
+      setActivities((current) => current.map((item) => item.id === event.toolId
+        ? { ...item, output: event.output, status: event.isError ? "error" : "success" }
+        : item))
+      setSession((current) => {
+        if (!current) return current
+        const assistantIndex = current.messages.findLastIndex((message) => message.blocks.some((block) => block.type === "tool-call" && block.id === event.toolId))
+        const assistant = current.messages[assistantIndex]
+        if (!assistant || assistant.blocks.some((block) => block.type === "tool-result" && block.id === event.toolId)) return current
+        const toolCall = assistant.blocks.find((block) => block.type === "tool-call" && block.id === event.toolId)
+        return {
+          ...current,
+          messages: current.messages.map((message, index) => index === assistantIndex ? {
+            ...message,
+            blocks: [...message.blocks, {
+              type: "tool-result",
+              id: event.toolId,
+              name: toolCall?.type === "tool-call" ? toolCall.name : "tool",
+              output: event.output,
+              isError: event.isError,
+              ...(event.diff ? { diff: event.diff } : {})
+            }]
+          } : message)
+        }
+      })
+      return
+    }
+    if (event.type === "compaction-status") {
+      setSession((current) => current ? { ...current, isCompacting: event.isCompacting } : current)
+      return
+    }
+    if (event.type === "background-processes") {
+      setSession((current) => current ? { ...current, backgroundProcesses: event.processes } : current)
+      return
+    }
+    if (event.type === "agent-status") {
+      if (!event.isStreaming) setLiveThinking(null)
+      setSession((current) => current ? { ...current, isStreaming: event.isStreaming } : current)
+    }
+  }), [])
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: session?.isStreaming ? "instant" : "smooth", block: "end" })
+  }, [session?.messages, session?.isStreaming])
+
+  const addProject = async () => {
+    if (addingProjectRef.current) return
+    addingProjectRef.current = true
+    try {
+      const project = await desktopApi.projects.add()
+      if (!project) return
+      setProjects((current) => current.some((item) => item.id === project.id) ? current : [...current, project])
+      await selectProject(project)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not add project")
+    } finally {
+      addingProjectRef.current = false
+    }
+  }
+
+  const newSession = useCallback(async () => {
+    if (!activeProject) return
+    const project = activeProject
+    const requestId = ++sessionRequestRef.current
+    setError(null)
+    try {
+      const detail = await desktopApi.sessions.create(project.path)
+      if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
+      activeSessionPathRef.current = detail.summary.path
+      setSession(detail)
+      setLiveThinking(null)
+      setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
+      void loadModels(detail.summary.path)
+      setActivities([])
+    } catch (cause) {
+      if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
+        setError(cause instanceof Error ? cause.message : "Could not create session")
+      }
+    }
+  }, [activeProject, loadModels])
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+        event.preventDefault()
+        void newSession()
+      }
+    }
+    window.addEventListener("keydown", listener)
+    return () => window.removeEventListener("keydown", listener)
+  }, [newSession])
+
+  const sendPrompt = () => {
+    const text = draft.trim()
+    if (!text || !session || session.isStreaming) return
+    setDraft("")
+    setLiveThinking(null)
+    setError(null)
+    const userMessage: ChatMessage = {
+      id: `local-${Date.now()}`,
+      role: "user",
+      blocks: [{ type: "text", text }],
+      timestamp: Date.now()
+    }
+    setSession((current) => current ? { ...current, isStreaming: true, messages: [...current.messages, userMessage] } : current)
+    const sessionPath = session.summary.path
+    void desktopApi.sessions.prompt(sessionPath, text).catch((cause: unknown) => {
+      if (activeSessionPathRef.current !== sessionPath) return
+      setError(cause instanceof Error ? cause.message : "Pi could not process the message")
+      setSession((current) => current ? {
+        ...current,
+        isStreaming: false,
+        messages: current.messages.filter((message) => message.id !== userMessage.id)
+      } : current)
+    })
+  }
+
+  const abort = () => {
+    if (!session) return
+    const sessionPath = session.summary.path
+    void desktopApi.sessions.abort(sessionPath).catch((cause: unknown) => {
+      if (activeSessionPathRef.current !== sessionPath) return
+      setError(cause instanceof Error ? cause.message : "Could not stop Pi")
+    })
+  }
+
+  const displayMessages: ReadonlyArray<ChatMessage> = session?.isCompacting
+    ? [...session.messages, { id: "compaction-active", role: "system", blocks: [{ type: "compaction", status: "compacting" }], timestamp: Date.now() }]
+    : session?.messages ?? []
+  const conversationItems = buildConversationItems(displayMessages)
+  const allPreviewLandmarks: ReadonlyArray<MessagePreviewLandmark> = conversationItems.map((item) => {
+    const targetId = `conversation-landmark-${item.id}`
+    if (item.type === "activity") {
+      const toolNames = [...new Set(item.messages.flatMap((message) => message.blocks.flatMap((block) => block.type === "tool-call" ? [block.name] : [])))]
+      const toolCount = item.messages.reduce((total, message) => total + message.blocks.filter((block) => block.type === "tool-call").length, 0)
+      const thinkingCount = item.messages.reduce((total, message) => total + message.blocks.filter((block) => block.type === "thinking").length, 0)
+      const activityLabel = toolCount > 0
+        ? `${toolCount} tool ${toolCount === 1 ? "call" : "calls"}`
+        : `${thinkingCount} thinking ${thinkingCount === 1 ? "step" : "steps"}`
+      return {
+        id: `preview-${item.id}`,
+        targetId,
+        kind: "activity",
+        label: activityLabel,
+        detail: toolNames.slice(0, 2).join(" · ") || "Agent trace"
+      }
+    }
+
+    const compaction = item.message.blocks.find((block) => block.type === "compaction")
+    if (compaction?.type === "compaction") {
+      return {
+        id: `preview-${item.id}`,
+        targetId,
+        kind: "compaction",
+        label: compaction.status === "compacting" ? "Compacting context…" : "Context compacted",
+        detail: "Full history remains visible"
+      }
+    }
+
+    const text = item.message.blocks
+      .flatMap((block) => block.type === "text" ? [block.text] : [])
+      .join(" ")
+      .replace(/[#*_`~>\[\]]/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+    return {
+      id: `preview-${item.id}`,
+      targetId,
+      kind: item.message.role === "user" ? "user" : "assistant",
+      label: compactLabel(text || (item.message.role === "user" ? "New prompt" : "Pi response"), 43),
+      detail: item.message.role === "user" ? "Your message" : "Assistant response"
+    }
+  })
+  const previewStride = Math.max(1, Math.ceil(allPreviewLandmarks.length / 28))
+  const previewLandmarks = allPreviewLandmarks.filter((_landmark, index) => index === 0 || index === allPreviewLandmarks.length - 1 || index % previewStride === 0)
+  const lastActivityIndex = conversationItems.findLastIndex((item) => item.type === "activity")
+  const linkedSubagents = sessions.filter((candidate) => candidate.parentSessionPath === session?.summary.path)
+  const sidebarSessions = sessions.filter((candidate) => !candidate.parentSessionPath)
+  const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
+  const runningProcesses = backgroundProcesses.length
+  const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
+
+  return (
+    <div className="app-shell">
+      <header className="titlebar">
+        <div className="titlebar-leading" aria-hidden="true" />
+        <div className="titlebar-dither" aria-hidden="true" />
+        <div className="titlebar-brand"><BrandMark size={20} /><span>Pi</span></div>
+        <div className="titlebar-center">{activeProject?.name ?? "Desktop"}</div>
+        <div className="titlebar-actions" />
+      </header>
+
+      <div className={`workspace-layout ${(subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0) ? "with-subagents" : ""}`}>
+        <ProjectSidebar
+          projects={projects}
+          sessions={sidebarSessions}
+          activeProject={activeProject}
+          activeSessionPath={session?.summary.path ?? null}
+          isLoading={loadingSessions}
+          onSelectProject={(project) => void selectProject(project)}
+          onSelectSession={(summary) => activeProject && void openSession(activeProject, summary)}
+          onAddProject={() => void addProject()}
+          onNewSession={() => void newSession()}
+        />
+
+        <main className="conversation" id="main-content">
+          <div className="conversation-header">
+            <div className="conversation-title">
+              <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
+              <h1 title={session?.summary.name}>{compactLabel(session?.summary.name ?? "New Pi session", 72)}</h1>
+            </div>
+            <div className="conversation-header-actions">
+              {backgroundProcesses.length > 0 && (
+                <button
+                  type="button"
+                  className={`background-toggle ${backgroundPaneOpen ? "active" : ""}`}
+                  aria-expanded={backgroundPaneOpen}
+                  aria-label={`${backgroundProcesses.length} background processes, ${runningProcesses} running`}
+                  title={runningProcesses > 0 ? `${runningProcesses} running background ${runningProcesses === 1 ? "process" : "processes"}` : `${backgroundProcesses.length} background processes in this session`}
+                  onClick={() => {
+                    setSubagentPaneOpen(false)
+                    setBackgroundPaneOpen((open) => !open)
+                  }}
+                >
+                  <span className="background-toggle-icon"><SquareTerminal size={14} /><small className={runningProcesses > 0 ? "active" : ""}>{runningProcesses || backgroundProcesses.length}</small></span>
+                  <span>Processes</span>
+                  <PanelRightOpen size={14} />
+                </button>
+              )}
+              {linkedSubagents.length > 0 && activeProject && (
+                <button
+                  type="button"
+                  className={`subagent-toggle ${subagentPaneOpen ? "active" : ""}`}
+                  aria-expanded={subagentPaneOpen}
+                  onClick={() => {
+                    if (subagentPaneOpen) {
+                      setSubagentPaneOpen(false)
+                      return
+                    }
+                    const first = linkedSubagents[0]
+                    setBackgroundPaneOpen(false)
+                    setSubagentPaneOpen(true)
+                    if (first) void inspectSubagent(activeProject, first)
+                  }}
+                >
+                  <SubagentAvatarGroup sessions={linkedSubagents} />
+                  <span>{linkedSubagents.length} {linkedSubagents.length === 1 ? "subagent" : "subagents"}</span>
+                  <PanelRightOpen size={14} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="message-scroll-shell">
+            {conversationItems.length > 0 && (
+              <MessagePreviewRail landmarks={previewLandmarks} totalCount={allPreviewLandmarks.length} scrollRootRef={messageScrollRef} />
+            )}
+            <div className="message-scroll" ref={messageScrollRef}>
+            {displayMessages.length ? (
+              <div className="message-list">
+                {conversationItems.map((item, index) => {
+                  const landmark = allPreviewLandmarks[index]
+                  return item.type === "message"
+                    ? <MessageView message={item.message} anchorId={landmark?.targetId} key={item.id} />
+                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} key={item.id} />
+                })}
+                {session?.isStreaming && (
+                  <div className="live-status" role="status" aria-live="polite">
+                    <CircleDashed size={14} />
+                    <span>{liveStatus ?? "Thinking"}</span>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+            ) : activeProject ? (
+              <div className="conversation-empty">
+                <div className="empty-mark"><BrandMark size={42} /></div>
+                <span className="empty-kicker"><Sparkles size={13} /> Project context is ready</span>
+                <h2>What should we make?</h2>
+                <p>Pi can inspect this workspace, edit files, run commands, and keep every turn in the same session you use from the terminal.</p>
+                <div className="prompt-suggestions">
+                  <button type="button" onClick={() => setDraft("Give me a concise overview of this codebase")}>Map this codebase</button>
+                  <button type="button" onClick={() => setDraft("Find the highest-impact issue and fix it")}>Find and fix an issue</button>
+                  <button type="button" onClick={() => setDraft("Run the tests and explain any failures")}>Run the test suite</button>
+                </div>
+              </div>
+            ) : (
+              <div className="conversation-empty onboarding-empty">
+                <div className="empty-mark"><BrandMark size={42} /></div>
+                <span className="empty-kicker"><Sparkles size={13} /> Pi Desktop is ready</span>
+                <h2>Open a workspace</h2>
+                <p>Add a project folder to discover its existing Pi sessions and start new ones with the same config, skills, and credentials.</p>
+                <button className="onboarding-action" type="button" onClick={() => void addProject()}><FolderPlus size={15} /> Add a project folder</button>
+              </div>
+            )}
+            </div>
+          </div>
+
+          {error && <div className="error-toast" role="alert">{error}<button type="button" onClick={() => setError(null)}>Dismiss</button></div>}
+          <Composer
+            value={draft}
+            disabled={!session}
+            isStreaming={session?.isStreaming ?? false}
+            model={session?.model.split("/").at(-1) ?? "Choose model"}
+            modelProvider={session?.model.includes("/") ? session.model.split("/")[0] : undefined}
+            modelOptions={modelOptions}
+            thinkingLevel={session?.thinkingLevel ?? "off"}
+            availableThinkingLevels={session?.availableThinkingLevels ?? []}
+            onModelChange={(option) => {
+              if (!session) return
+              const sessionPath = session.summary.path
+              void desktopApi.sessions.setModel(sessionPath, option.provider, option.id)
+                .then((detail) => {
+                  if (activeSessionPathRef.current === sessionPath) setSession(detail)
+                })
+                .catch((cause: unknown) => {
+                  if (activeSessionPathRef.current === sessionPath) {
+                    setError(cause instanceof Error ? cause.message : "Could not change model")
+                  }
+                })
+            }}
+            onThinkingLevelChange={(level: ThinkingLevel) => {
+              if (!session) return
+              const sessionPath = session.summary.path
+              void desktopApi.sessions.setThinkingLevel(sessionPath, level)
+                .then((detail) => {
+                  if (activeSessionPathRef.current === sessionPath) setSession(detail)
+                })
+                .catch((cause: unknown) => {
+                  if (activeSessionPathRef.current === sessionPath) setError(cause instanceof Error ? cause.message : "Could not change effort")
+                })
+            }}
+            onChange={setDraft}
+            onSubmit={sendPrompt}
+            onAbort={abort}
+          />
+        </main>
+
+        {subagentPaneOpen && !backgroundPaneOpen && linkedSubagents.length > 0 && activeProject && (
+          <SubagentPane
+            sessions={linkedSubagents}
+            selectedPath={selectedSubagent?.path ?? null}
+            detail={subagentDetail}
+            loading={subagentLoading}
+            onSelect={(summary) => void inspectSubagent(activeProject, summary)}
+            onRefresh={() => selectedSubagent && void inspectSubagent(activeProject, selectedSubagent, false)}
+            onClose={() => setSubagentPaneOpen(false)}
+          />
+        )}
+        {backgroundPaneOpen && backgroundProcesses.length > 0 && (
+          <BackgroundProcessesPane processes={backgroundProcesses} onClose={() => setBackgroundPaneOpen(false)} />
+        )}
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+.e2e-public/
+.DS_Store
+*.log
+.playwright-mcp/
+.mcp.json
+.repos/effect
