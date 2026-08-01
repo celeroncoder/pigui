@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { basename, isAbsolute, join } from "node:path"
 import { app } from "electron"
+import { convertToPng, resizeImage } from "@earendil-works/pi-coding-agent"
 import { Context, Effect, Layer, Schema } from "effect"
 import type { AttachmentPreview, ImageAttachment } from "../../shared/contracts"
 import { hasSafeImageExtension, isSafeImagePath, safeImageExtensions } from "../../shared/attachments"
@@ -103,10 +104,26 @@ export const makeAttachmentStore = (root: string) => ({
   }),
   readForPi: Effect.fn("AttachmentStore.readForPi")(function*(path: string) {
     const result = yield* validateExistingPath(path)
+    const processed = yield* Effect.tryPromise({
+      try: async () => {
+        let data = Buffer.from(result.bytes).toString("base64")
+        let mimeType = result.image.mimeType
+        if (mimeType === "image/bmp") {
+          const converted = await convertToPng(data, mimeType)
+          if (!converted) throw new Error("The image could not be converted to a provider-compatible format")
+          data = converted.data
+          mimeType = converted.mimeType
+        }
+        const resized = await resizeImage(Buffer.from(data, "base64"), mimeType)
+        if (!resized) throw new Error("The image could not be resized below Pi's inline image limit")
+        return resized
+      },
+      catch: (cause) => failure("prepare image for Pi", cause instanceof Error ? cause.message : String(cause))
+    })
     return {
       type: "image",
-      data: Buffer.from(result.bytes).toString("base64"),
-      mimeType: result.image.mimeType
+      data: processed.data,
+      mimeType: processed.mimeType
     } satisfies PiImageAttachment
   })
 })

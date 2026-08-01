@@ -1,5 +1,6 @@
 import { ArrowUp, Check, ChevronDown, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { parseImagePathReferences } from "../../../shared/attachments"
 import type { AttachmentPreview, ImageAttachment, ModelOption, QueueDelivery, QueuedMessage, ThinkingLevel } from "../../../shared/contracts"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
@@ -67,6 +68,7 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
         {messages.map((message) => {
           const editing = editingId === message.id
           const pending = pendingId === message.id
+          const hasImages = parseImagePathReferences(message.text).length > 0
           const controlsDisabled = disabled || pendingId !== null
           return (
             <li className={`prompt-queue-item ${message.delivery === "steer" ? "steering" : "follow-up"}`} key={message.id}>
@@ -110,9 +112,9 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
                     <button
                       type="button"
                       className="queue-action"
-                      aria-label="Edit queued message"
-                      title="Edit"
-                      disabled={controlsDisabled}
+                      aria-label={hasImages ? "Image attachments cannot be edited in the queue" : "Edit queued message"}
+                      title={hasImages ? "Remove and resend to change an attached image" : "Edit"}
+                      disabled={controlsDisabled || hasImages}
                       onClick={() => {
                         setEditingId(message.id)
                         setEditingText(message.text)
@@ -160,7 +162,7 @@ interface ComposerProps {
   readonly onThinkingLevelChange: (level: ThinkingLevel) => void
   readonly onChange: (value: string) => void
   readonly onOpenImage: (preview: AttachmentPreview) => void
-  readonly onPasteImage: (bytes: Uint8Array, name: string, mimeType: string) => void
+  readonly onPasteImage: (image: File) => void
   readonly onRemoveAttachment: (id: string) => void
   readonly onSubmit: (delivery?: QueueDelivery) => void
   readonly onEditQueuedMessage: (message: QueuedMessage, text: string) => Promise<void>
@@ -263,7 +265,7 @@ export function Composer({
             const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/"))
             if (!image) return
             event.preventDefault()
-            void image.arrayBuffer().then((buffer) => onPasteImage(new Uint8Array(buffer), image.name, image.type))
+            onPasteImage(image)
           }}
         />
         {attachments.length > 0 && (

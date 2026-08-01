@@ -67,10 +67,12 @@ describe("AskUserInteractionBridge", () => {
     })
 
     bridge.register(request("call-1"))
+    expect(bridge.pendingRequest()?.requestId).toBe("call-1")
     const waiting = bridge.uiContext.custom<SelectionResult>(selectionFactory)
     bridge.answer("call-1", { kind: "option", optionIndex: 0 })
 
     await expect(waiting).resolves.toEqual({ kind: "option", answer: "The renderer" })
+    expect(bridge.pendingRequest()).toBeUndefined()
     expect(requests).toHaveLength(1)
     expect(cleared).toEqual(["call-1"])
   })

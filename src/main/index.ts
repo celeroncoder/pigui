@@ -139,9 +139,7 @@ const registerIpc = () => {
   ipcMain.handle(IpcChannels.refreshProjectGit, (_event, projectPath: unknown) => run(Effect.gen(function*() {
     const cwd = yield* resolveKnownProject(projectPath)
     const git = yield* GitContext
-    return yield* git.inspect(cwd).pipe(
-      Effect.catchTag("GitContextError", () => Effect.succeed(undefined))
-    )
+    return yield* git.inspect(cwd)
   })))
 
   ipcMain.handle(IpcChannels.listSessions, (_event, projectPath: unknown) => run(Effect.gen(function*() {

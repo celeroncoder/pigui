@@ -252,6 +252,10 @@ export class AskUserInteractionBridge {
     this.pairOffers()
   }
 
+  pendingRequest(): AskUserInteractionRequest | undefined {
+    return this.offers.find((offer) => offer.visible && !offer.settled)?.request
+  }
+
   answer(requestId: string, answer: AskUserInteractionAnswer): void {
     if (answer.kind === "custom" && !answer.answer.trim()) {
       throw AskUserUiError.make({ reason: "invalid", message: "A custom ask_user answer cannot be empty" })

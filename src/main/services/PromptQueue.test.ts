@@ -29,6 +29,22 @@ describe("Pi prompt queue reconciliation", () => {
     expect(reconciled).toEqual(initial)
   })
 
+  it("keeps the remaining duplicate's ID when Pi drains the first queued copy", () => {
+    const current = queued(
+      { id: "image-1", delivery: "follow-up", text: "Review this image" },
+      { id: "image-2", delivery: "follow-up", text: "Review this image" }
+    )
+
+    const reconciled = reconcileQueuedMessages(current, {
+      steering: [],
+      followUp: ["Review this image"]
+    }, ids("unexpected"))
+
+    expect(reconciled).toEqual([
+      { id: "image-2", delivery: "follow-up", text: "Review this image" }
+    ])
+  })
+
   it("drops delivered native messages instead of retaining an optimistic duplicate", () => {
     const current = queued(
       { id: "steer-1", delivery: "steer", text: "Inspect the failing test" },

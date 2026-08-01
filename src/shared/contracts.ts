@@ -125,6 +125,7 @@ export interface SessionDetail {
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly backgroundProcesses: ReadonlyArray<BackgroundProcess>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
+  readonly interactionRequest?: AskUserInteractionRequest
   readonly isStreaming: boolean
   readonly isCompacting: boolean
 }

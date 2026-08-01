@@ -61,6 +61,9 @@ export default function App() {
   const [interactionRequest, setInteractionRequest] = useState<AskUserInteractionRequest | null>(null)
   const [interactionSubmitting, setInteractionSubmitting] = useState(false)
   const interactionSubmittingRef = useRef(false)
+  const draftRevisionRef = useRef(0)
+  const attachmentRevisionRef = useRef(0)
+  const composerEpochRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messageScrollRef = useRef<HTMLDivElement>(null)
@@ -68,6 +71,7 @@ export default function App() {
   const activeProjectRef = useRef<Project | null>(null)
   const activeProjectIdRef = useRef<string | null>(null)
   const projectRequestRef = useRef(0)
+  const gitRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const modelRequestRef = useRef(0)
   const subagentRequestRef = useRef(0)
@@ -96,6 +100,9 @@ export default function App() {
     if (activeProjectIdRef.current !== project.id) return
     const requestId = ++sessionRequestRef.current
     activeSessionPathRef.current = summary.path
+    composerEpochRef.current += 1
+    draftRevisionRef.current += 1
+    attachmentRevisionRef.current += 1
     setSession(null)
     setPendingAttachments([])
     setLightboxImage(null)
@@ -112,6 +119,7 @@ export default function App() {
       if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
+      setInteractionRequest(detail.interactionRequest ?? null)
       void loadModels(detail.summary.path)
     } catch (cause) {
       if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
@@ -140,9 +148,10 @@ export default function App() {
   }, [])
 
   const refreshProjectGit = useCallback(async (project: Project) => {
+    const requestId = ++gitRequestRef.current
     try {
       const git = await desktopApi.projects.refreshGit(project.path)
-      if (activeProjectIdRef.current !== project.id) return
+      if (requestId !== gitRequestRef.current || activeProjectIdRef.current !== project.id) return
       const updateProject = (current: Project) => current.id === project.id
         ? git ? { ...current, git } : { id: current.id, path: current.path, name: current.name, addedAt: current.addedAt }
         : current
@@ -159,6 +168,9 @@ export default function App() {
     ++modelRequestRef.current
     activeProjectIdRef.current = project.id
     activeSessionPathRef.current = null
+    composerEpochRef.current += 1
+    draftRevisionRef.current += 1
+    attachmentRevisionRef.current += 1
     setActiveProject(project)
     setSession(null)
     setPendingAttachments([])
@@ -222,6 +234,7 @@ export default function App() {
       return
     }
     if (event.type === "project-git") {
+      gitRequestRef.current += 1
       const project = activeProjectRef.current
       if (!project || project.path !== event.projectPath) return
       const updateProject = (current: Project) => current.path === event.projectPath
@@ -249,6 +262,7 @@ export default function App() {
     if (event.type === "session-state") {
       setLiveThinking(null)
       setSession(event.detail)
+      setInteractionRequest(event.detail.interactionRequest ?? null)
       setSessions((current) => [
         event.detail.summary,
         ...current.filter((item) => item.path !== event.detail.summary.path)
@@ -397,11 +411,14 @@ export default function App() {
       if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
+      setInteractionRequest(detail.interactionRequest ?? null)
+      composerEpochRef.current += 1
+      draftRevisionRef.current += 1
+      attachmentRevisionRef.current += 1
       setPendingAttachments([])
       setLightboxImage(null)
       setLiveThinking(null)
       setDraft("")
-      setInteractionRequest(null)
       setInteractionSubmitting(false)
       interactionSubmittingRef.current = false
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
@@ -451,6 +468,9 @@ export default function App() {
     const wasStreaming = session.isStreaming
     const previousDraft = draft
     const previousAttachments = pendingAttachments
+    const draftRevision = ++draftRevisionRef.current
+    const attachmentRevision = ++attachmentRevisionRef.current
+    composerEpochRef.current += 1
     setDraft("")
     setPendingAttachments([])
     if (!wasStreaming) {
@@ -460,21 +480,34 @@ export default function App() {
     setError(null)
     void desktopApi.sessions.prompt(sessionPath, rawText, delivery, attachmentPaths).catch((cause: unknown) => {
       if (activeSessionPathRef.current !== sessionPath) return
-      setDraft(previousDraft)
-      setPendingAttachments(previousAttachments)
+      if (draftRevisionRef.current === draftRevision) {
+        draftRevisionRef.current += 1
+        setDraft(previousDraft)
+      }
+      if (attachmentRevisionRef.current === attachmentRevision) {
+        attachmentRevisionRef.current += 1
+        setPendingAttachments(previousAttachments)
+      }
       if (!wasStreaming) setSession((current) => current ? { ...current, isStreaming: false } : current)
       setError(cause instanceof Error ? cause.message : "Pi could not process the message")
     })
   }
 
-  const addPastedImage = async (bytes: Uint8Array, name: string, mimeType: string) => {
+  const addPastedImage = async (image: File) => {
     if (!session) return
+    const sessionPath = session.summary.path
+    const epoch = composerEpochRef.current
     try {
-      const attachment = await desktopApi.attachments.save(bytes, name, mimeType)
+      const bytes = new Uint8Array(await image.arrayBuffer())
+      const attachment = await desktopApi.attachments.save(bytes, image.name, image.type)
+      if (activeSessionPathRef.current !== sessionPath || composerEpochRef.current !== epoch) return
+      attachmentRevisionRef.current += 1
       setPendingAttachments((current) => [...current, attachment])
       setError(null)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the pasted image")
+      if (activeSessionPathRef.current === sessionPath && composerEpochRef.current === epoch) {
+        setError(cause instanceof Error ? cause.message : "Could not save the pasted image")
+      }
     }
   }
 
@@ -694,9 +727,9 @@ export default function App() {
                 <h2>What should we make?</h2>
                 <p>Pi can inspect this workspace, edit files, run commands, and keep every turn in the same session you use from the terminal.</p>
                 <div className="prompt-suggestions">
-                  <button type="button" onClick={() => setDraft("Give me a concise overview of this codebase")}>Map this codebase</button>
-                  <button type="button" onClick={() => setDraft("Find the highest-impact issue and fix it")}>Find and fix an issue</button>
-                  <button type="button" onClick={() => setDraft("Run the tests and explain any failures")}>Run the test suite</button>
+                  <button type="button" onClick={() => { draftRevisionRef.current += 1; setDraft("Give me a concise overview of this codebase") }}>Map this codebase</button>
+                  <button type="button" onClick={() => { draftRevisionRef.current += 1; setDraft("Find the highest-impact issue and fix it") }}>Find and fix an issue</button>
+                  <button type="button" onClick={() => { draftRevisionRef.current += 1; setDraft("Run the tests and explain any failures") }}>Run the test suite</button>
                 </div>
               </div>
             ) : (
@@ -730,7 +763,14 @@ export default function App() {
               const sessionPath = session.summary.path
               void desktopApi.sessions.setModel(sessionPath, option.provider, option.id)
                 .then((detail) => {
-                  if (activeSessionPathRef.current === sessionPath) setSession(detail)
+                  if (activeSessionPathRef.current === sessionPath) {
+                    setSession((current) => current ? {
+                      ...current,
+                      model: detail.model,
+                      thinkingLevel: detail.thinkingLevel,
+                      availableThinkingLevels: detail.availableThinkingLevels
+                    } : current)
+                  }
                 })
                 .catch((cause: unknown) => {
                   if (activeSessionPathRef.current === sessionPath) {
@@ -743,16 +783,25 @@ export default function App() {
               const sessionPath = session.summary.path
               void desktopApi.sessions.setThinkingLevel(sessionPath, level)
                 .then((detail) => {
-                  if (activeSessionPathRef.current === sessionPath) setSession(detail)
+                  if (activeSessionPathRef.current === sessionPath) {
+                    setSession((current) => current ? {
+                      ...current,
+                      thinkingLevel: detail.thinkingLevel,
+                      availableThinkingLevels: detail.availableThinkingLevels
+                    } : current)
+                  }
                 })
                 .catch((cause: unknown) => {
                   if (activeSessionPathRef.current === sessionPath) setError(cause instanceof Error ? cause.message : "Could not change effort")
                 })
             }}
-            onChange={setDraft}
+            onChange={(value) => { draftRevisionRef.current += 1; setDraft(value) }}
             onOpenImage={setLightboxImage}
-            onPasteImage={(bytes, name, mimeType) => void addPastedImage(bytes, name, mimeType)}
-            onRemoveAttachment={(id) => setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id))}
+            onPasteImage={(image) => void addPastedImage(image)}
+            onRemoveAttachment={(id) => {
+              attachmentRevisionRef.current += 1
+              setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id))
+            }}
             onSubmit={sendPrompt}
             onEditQueuedMessage={editQueuedMessage}
             onRemoveQueuedMessage={removeQueuedMessage}

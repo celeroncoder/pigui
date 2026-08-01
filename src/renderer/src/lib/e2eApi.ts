@@ -58,6 +58,7 @@ const SessionDetailSchema = Schema.Struct({
   availableThinkingLevels: Schema.Array(ThinkingLevelSchema),
   backgroundProcesses: Schema.Array(BackgroundProcessSchema),
   queuedMessages: Schema.Array(QueuedMessageSchema),
+  interactionRequest: Schema.optionalKey(AskUserInteractionRequestSchema),
   isStreaming: Schema.Boolean,
   isCompacting: Schema.Boolean
 })
