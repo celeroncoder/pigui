@@ -1,3 +1,7 @@
+import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "./interaction"
+
+export type { AskUserInput, AskUserInteractionAnswer, AskUserInteractionRequest, AskUserOption } from "./interaction"
+
 export interface GitStatus {
   readonly branch: string
   readonly additions: number
@@ -148,6 +152,8 @@ export type SessionEvent =
   | { readonly type: "compaction-status"; readonly sessionPath: string; readonly isCompacting: boolean }
   | { readonly type: "background-processes"; readonly sessionPath: string; readonly processes: ReadonlyArray<BackgroundProcess> }
   | { readonly type: "project-git"; readonly projectPath: string; readonly git?: GitStatus }
+  | { readonly type: "interaction-request"; readonly sessionPath: string; readonly request: AskUserInteractionRequest }
+  | { readonly type: "interaction-cleared"; readonly sessionPath: string; readonly requestId: string }
   | { readonly type: "error"; readonly sessionPath?: string; readonly message: string }
 
 export interface PiDesktopApi {
@@ -174,6 +180,7 @@ export interface PiDesktopApi {
     readonly models: (sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
     readonly setModel: (sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
     readonly setThinkingLevel: (sessionPath: string, level: ThinkingLevel) => Promise<SessionDetail>
+    readonly answerInteraction: (sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Promise<void>
   }
   readonly onSessionEvent: (listener: (event: SessionEvent) => void) => () => void
 }
@@ -195,6 +202,7 @@ export const IpcChannels = {
   listModels: "sessions:models",
   setModel: "sessions:set-model",
   setThinkingLevel: "sessions:set-thinking-level",
+  answerInteraction: "sessions:answer-interaction",
   saveAttachment: "attachments:save",
   previewAttachment: "attachments:preview",
   sessionEvent: "sessions:event"

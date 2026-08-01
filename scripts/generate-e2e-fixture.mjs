@@ -105,6 +105,47 @@ const summaries = orderedInfos.map((info) => ({
   ...(parentCandidates.get(info.path)?.parentPath ? { parentSessionPath: parentCandidates.get(info.path).parentPath } : {})
 }))
 
+const findAskUserFixture = () => {
+  for (const info of orderedInfos) {
+    const manager = SessionManager.open(info.path)
+    for (const entry of manager.getBranch()) {
+      if (entry.type !== "message" || entry.message.role !== "assistant") continue
+      for (const block of entry.message.content) {
+        const args = block.arguments
+        if (block.type !== "toolCall" || block.name !== "ask_user" || typeof args?.question !== "string" || !Array.isArray(args.options) || args.options.length < 2 || args.options.length > 5) continue
+        if (!args.options.every((option) => typeof option?.label === "string" && (option.description === undefined || typeof option.description === "string"))) continue
+        return {
+          sessionPath: info.path,
+          request: {
+            requestId: `fixture-${block.id}`,
+            toolCallId: block.id,
+            question: args.question,
+            options: args.options.map((option) => option.description === undefined
+              ? { label: option.label }
+              : { label: option.label, description: option.description })
+          }
+        }
+      }
+    }
+  }
+  return undefined
+}
+
+const interaction = findAskUserFixture() ?? (process.env.PI_E2E_ASK_USER === "1" && preferred
+  ? {
+      sessionPath: preferred.path,
+      request: {
+        requestId: "fixture-ask-user",
+        toolCallId: "fixture-ask-user",
+        question: "Which surface should Pi change next?",
+        options: [
+          { label: "The renderer", description: "Update the React workspace" },
+          { label: "The main process", description: "Update Electron lifecycle code" }
+        ]
+      }
+    }
+  : undefined)
+
 const appendProjectedMessage = (output, message, id) => {
   if (message.role === "user") {
     output.push({ id, role: "user", blocks: [{ type: "text", text: textFromContent(message.content) }], timestamp: message.timestamp })
@@ -224,11 +265,12 @@ const fixture = {
   projects: [project],
   sessions: summaries,
   details,
-  models: availableModels.map((model) => ({ provider: model.provider, id: model.id, name: model.name }))
+  models: availableModels.map((model) => ({ provider: model.provider, id: model.id, name: model.name })),
+  ...(interaction ? { interaction } : {})
 }
 
 const outputPath = join(root, ".e2e-public/pi-e2e.json")
 await mkdir(dirname(outputPath), { recursive: true })
 await writeFile(outputPath, `${JSON.stringify(fixture)}\n`, "utf8")
 await copyFile(join(root, "src/renderer/public/favicon.svg"), join(root, ".e2e-public/favicon.svg"))
-console.log(`Generated Pi-backed E2E fixture: ${summaries.length} sessions, ${fixture.models.length} models`)
+console.log(`Generated Pi-backed E2E fixture: ${summaries.length} sessions, ${fixture.models.length} models${interaction ? ", ask_user preview included" : ""}`)

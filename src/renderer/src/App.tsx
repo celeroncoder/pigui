@@ -1,8 +1,9 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { ActivityGroup } from "./components/ActivityGroup"
+import { AskUserPanel } from "./components/AskUserPanel"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
 import { Composer } from "./components/Composer"
@@ -57,6 +58,9 @@ export default function App() {
   const [pendingAttachments, setPendingAttachments] = useState<ReadonlyArray<ImageAttachment>>([])
   const [lightboxImage, setLightboxImage] = useState<AttachmentPreview | null>(null)
   const [loadingSessions, setLoadingSessions] = useState(false)
+  const [interactionRequest, setInteractionRequest] = useState<AskUserInteractionRequest | null>(null)
+  const [interactionSubmitting, setInteractionSubmitting] = useState(false)
+  const interactionSubmittingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messageScrollRef = useRef<HTMLDivElement>(null)
@@ -100,6 +104,9 @@ export default function App() {
     setModelOptions([])
     setError(null)
     setActivities([])
+    setInteractionRequest(null)
+    setInteractionSubmitting(false)
+    interactionSubmittingRef.current = false
     try {
       const detail = await desktopApi.sessions.open(project.path, summary.path)
       if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
@@ -161,6 +168,9 @@ export default function App() {
     setSessions([])
     setModelOptions([])
     setActivities([])
+    setInteractionRequest(null)
+    setInteractionSubmitting(false)
+    interactionSubmittingRef.current = false
     setLoadingSessions(true)
     setError(null)
     void refreshProjectGit(project)
@@ -222,6 +232,19 @@ export default function App() {
       return
     }
     if (event.sessionPath !== activeSessionPathRef.current) return
+
+    if (event.type === "interaction-request") {
+      setInteractionRequest(event.request)
+      setInteractionSubmitting(false)
+      interactionSubmittingRef.current = false
+      return
+    }
+    if (event.type === "interaction-cleared") {
+      setInteractionRequest((current) => current?.requestId === event.requestId ? null : current)
+      setInteractionSubmitting(false)
+      interactionSubmittingRef.current = false
+      return
+    }
 
     if (event.type === "session-state") {
       setLiveThinking(null)
@@ -378,6 +401,9 @@ export default function App() {
       setLightboxImage(null)
       setLiveThinking(null)
       setDraft("")
+      setInteractionRequest(null)
+      setInteractionSubmitting(false)
+      interactionSubmittingRef.current = false
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
       void loadModels(detail.summary.path)
       setActivities([])
@@ -398,6 +424,23 @@ export default function App() {
     window.addEventListener("keydown", listener)
     return () => window.removeEventListener("keydown", listener)
   }, [newSession])
+
+  const answerInteraction = (answer: AskUserInteractionAnswer) => {
+    const request = interactionRequest
+    const sessionPath = activeSessionPathRef.current
+    if (!request || !sessionPath || interactionSubmittingRef.current) return
+    interactionSubmittingRef.current = true
+    setInteractionSubmitting(true)
+    void desktopApi.sessions.answerInteraction(sessionPath, request.requestId, answer).then(() => {
+      setInteractionRequest((current) => current?.requestId === request.requestId ? null : current)
+    }).catch((cause: unknown) => {
+      if (activeSessionPathRef.current !== sessionPath) return
+      setError(cause instanceof Error ? cause.message : "Could not deliver the answer to Pi")
+    }).finally(() => {
+      interactionSubmittingRef.current = false
+      if (activeSessionPathRef.current === sessionPath) setInteractionSubmitting(false)
+    })
+  }
 
   const sendPrompt = (delivery: QueueDelivery = "follow-up") => {
     const rawText = draft.trim()
@@ -568,7 +611,7 @@ export default function App() {
           onNewSession={() => void newSession()}
         />
 
-        <main className="conversation" id="main-content">
+        <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
@@ -620,6 +663,14 @@ export default function App() {
             </div>
           </div>
 
+          {interactionRequest && (
+            <AskUserPanel
+              request={interactionRequest}
+              submitting={interactionSubmitting}
+              onAnswer={answerInteraction}
+            />
+          )}
+
           <div className="message-scroll-shell">
             {conversationItems.length > 0 && (
               <MessagePreviewRail landmarks={previewLandmarks} totalCount={allPreviewLandmarks.length} scrollRootRef={messageScrollRef} />
@@ -669,7 +720,7 @@ export default function App() {
           <Composer
             key={session?.summary.path ?? "no-session"}
             value={draft}
-            disabled={!session}
+            disabled={!session || interactionRequest !== null}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? "Choose model"}

@@ -2,6 +2,7 @@ import { join } from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron"
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect"
 import { IpcChannels, type Project } from "../shared/contracts"
+import { AskUserInteractionAnswerSchema } from "../shared/interaction"
 import { AppError, toAppError } from "./services/AppError"
 import { AttachmentStore, AttachmentStoreLive } from "./services/AttachmentStore"
 import { GitContext, GitContextLive } from "./services/GitContext"
@@ -42,7 +43,9 @@ let isShuttingDown = false
 const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | AttachmentStore>): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect)
   if (Exit.isSuccess(exit)) return exit.value
-  if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) return new Promise<A>(() => undefined)
+  if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) {
+    throw AppError.make({ operation: "application", message: "Pi Desktop is shutting down" })
+  }
   throw Cause.squash(exit.cause)
 }
 
@@ -236,6 +239,16 @@ const registerIpc = () => {
     const selectedLevel = yield* decodeThinkingLevel(level)
     const sessions = yield* PiSessions
     return yield* sessions.setThinkingLevel(path, selectedLevel)
+  })))
+
+  ipcMain.handle(IpcChannels.answerInteraction, (_event, sessionPath: unknown, requestId: unknown, answer: unknown) => run(Effect.gen(function*() {
+    const path = yield* decodeString(sessionPath)
+    const id = yield* decodeString(requestId)
+    const selectedAnswer = yield* Schema.decodeUnknownEffect(AskUserInteractionAnswerSchema)(answer).pipe(
+      Effect.mapError(toAppError("validate Pi interaction answer"))
+    )
+    const sessions = yield* PiSessions
+    yield* sessions.answerInteraction(path, id, selectedAnswer)
   })))
 }
 

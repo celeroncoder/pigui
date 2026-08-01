@@ -18,6 +18,7 @@ A focused Electron workspace for browsing projects and working with existing or 
 - Send, queue, steer, and abort prompts
 - Pick from the models currently authenticated and available in Pi, with provider marks loaded from Logo.dev
 - Choose the active model’s Pi-supported reasoning effort for the next prompt
+- Render installed `ask_user` extension questions inline with 2–5 options and a free-form answer path
 - Reuse Pi’s existing credentials, settings, context files, skills, extensions, and tools
 - Secure, narrow Electron preload bridge with validated IPC inputs
 
@@ -46,9 +47,16 @@ Browser UI review with a fresh Pi-backed snapshot:
 npm run e2e:serve
 ```
 
+To include the ask_user interaction preview in the browser fixture (without starting a live Pi call):
+
+```bash
+PI_E2E_ASK_USER=1 npm run e2e:serve
+```
+
 ## Architecture
 
-- `src/main/services/PiSessions.ts` — Pi SDK lifecycle, image prompt preparation, and live event projection
+- `src/main/services/PiSessions.ts` — Pi SDK lifecycle, extension binding, image prompt preparation, queueing, and live event projection
+- `src/main/services/AskUserInteraction.ts` — TUI custom-component bridge for the installed `ask_user` extension
 - `src/main/services/AttachmentStore.ts` — Effect service for validated app-owned image persistence and previews
 - `src/main/services/ProjectStore.ts` — Effect service for persistent workspace metadata
 - `src/main/index.ts` — Electron lifecycle and Effect-powered IPC handlers

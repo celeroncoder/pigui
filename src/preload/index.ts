@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron"
-import type { PiDesktopApi, SessionEvent } from "../shared/contracts"
+import type { AskUserInteractionAnswer, PiDesktopApi, SessionEvent } from "../shared/contracts"
 import { IpcChannels } from "../shared/contracts"
 
 const api: PiDesktopApi = {
@@ -25,7 +25,8 @@ const api: PiDesktopApi = {
     abort: (sessionPath) => ipcRenderer.invoke(IpcChannels.abortSession, sessionPath),
     models: (sessionPath) => ipcRenderer.invoke(IpcChannels.listModels, sessionPath),
     setModel: (sessionPath, provider, modelId) => ipcRenderer.invoke(IpcChannels.setModel, sessionPath, provider, modelId),
-    setThinkingLevel: (sessionPath, level) => ipcRenderer.invoke(IpcChannels.setThinkingLevel, sessionPath, level)
+    setThinkingLevel: (sessionPath, level) => ipcRenderer.invoke(IpcChannels.setThinkingLevel, sessionPath, level),
+    answerInteraction: (sessionPath, requestId, answer: AskUserInteractionAnswer) => ipcRenderer.invoke(IpcChannels.answerInteraction, sessionPath, requestId, answer)
   },
   onSessionEvent: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, payload: SessionEvent) => listener(payload)

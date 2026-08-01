@@ -7,10 +7,13 @@ import {
   SessionManager
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent"
-import { Context, Effect, Layer, Semaphore } from "effect"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import { Context, Effect, Exit, Layer, Schema, Semaphore } from "effect"
 import { normalizeImageReferences, parseImagePathReferences } from "../../shared/attachments"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
+import { AskUserInputSchema } from "../../shared/interaction"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { AppError, toAppError } from "./AppError"
+import { AskUserInteractionBridge } from "./AskUserInteraction"
 import { AttachmentStore } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import {
@@ -30,6 +33,7 @@ interface ActiveSession {
   readonly runtime: AgentSessionRuntime
   readonly session: AgentSession
   unsubscribe: () => void
+  readonly interaction: AskUserInteractionBridge
   readonly backgroundProcesses: Map<string, BackgroundProcess>
   readonly pendingTools: Map<string, { readonly name: string; readonly args: unknown }>
   queuedMessages: ReadonlyArray<QueuedMessage>
@@ -409,6 +413,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly models: (sessionPath: string) => Effect.Effect<ReadonlyArray<ModelOption>, AppError>
   readonly setModel: (sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
   readonly setThinkingLevel: (sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
+  readonly answerInteraction: (sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
   readonly dispose: () => Effect.Effect<void>
 }>()("PiSessions") {}
 
@@ -534,32 +539,76 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     })
   })
 
+  const decodeAskUserInput = (value: unknown) => {
+    const decoded = Schema.decodeUnknownExit(AskUserInputSchema)(value)
+    return Exit.isSuccess(decoded) ? decoded.value : undefined
+  }
+
   const attach = Effect.fn("PiSessions.attach")(function*(cwd: string, manager: SessionManager) {
-    const runtime = yield* Effect.tryPromise({
+    const attachedRuntime = yield* Effect.tryPromise({
       try: async () => {
         for (const active of activeSessions.values()) {
           cancelGitRefresh(active)
+          active.interaction.dispose()
           active.unsubscribe()
           await active.runtime.dispose()
         }
         activeSessions.clear()
+
         const next = await createAgentSessionRuntime(createPiRuntime, {
           cwd,
           agentDir: getAgentDir(),
           sessionManager: manager
         })
-        await next.session.bindExtensions({ mode: "print" })
-        return next
+        const sessionPath = next.session.sessionFile
+        if (!sessionPath) {
+          await next.dispose()
+          throw new Error("Pi did not create a persistent session file")
+        }
+
+        const interaction = new AskUserInteractionBridge({
+          sessionPath,
+          onRequest: (request) => {
+            void Effect.runPromise(bus.emit({ type: "interaction-request", sessionPath, request })).catch(() => undefined)
+          },
+          onClear: (requestId) => {
+            void Effect.runPromise(bus.emit({ type: "interaction-cleared", sessionPath, requestId })).catch(() => undefined)
+          }
+        })
+
+        try {
+          await next.session.bindExtensions({
+            uiContext: interaction.uiContext,
+            mode: "tui",
+            abortHandler: () => {
+              interaction.cancelPending()
+              void next.session.abort().catch(() => undefined)
+            },
+            shutdownHandler: () => interaction.cancelPending()
+          })
+        } catch (cause) {
+          interaction.dispose()
+          await next.dispose()
+          throw cause
+        }
+
+        return { runtime: next, interaction }
       },
       catch: toAppError("open Pi session")
     })
+    const runtime = attachedRuntime.runtime
+    const interaction = attachedRuntime.interaction
     const sessionPath = runtime.session.sessionFile
-    if (!sessionPath) return yield* Effect.fail(AppError.make({ operation: "open Pi session", message: "Pi did not create a persistent session file" }))
+    if (!sessionPath) {
+      interaction.dispose()
+      return yield* Effect.fail(AppError.make({ operation: "open Pi session", message: "Pi did not create a persistent session file" }))
+    }
 
     const active: ActiveSession = {
       cwd,
       runtime,
       session: runtime.session,
+      interaction,
       backgroundProcesses: historicalBackgroundProcesses(manager),
       pendingTools: new Map(),
       queuedMessages: reconcileQueuedMessages([], nativePromptQueue(runtime.session)),
@@ -603,6 +652,18 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         }
       } else if (event.type === "tool_execution_start") {
         active.pendingTools.set(event.toolCallId, { name: event.toolName, args: event.args })
+        if (event.toolName === "ask_user") {
+          const input = decodeAskUserInput(event.args)
+          if (input) {
+            const request: AskUserInteractionRequest = {
+              requestId: event.toolCallId,
+              toolCallId: event.toolCallId,
+              question: input.question,
+              options: input.options
+            }
+            active.interaction.register(request)
+          }
+        }
         void Effect.runPromise(bus.emit({
           type: "tool-start",
           sessionPath,
@@ -614,6 +675,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         const diff = diffFromResult(event.result)
         const call = active.pendingTools.get(event.toolCallId)
         active.pendingTools.delete(event.toolCallId)
+        if (event.toolName === "ask_user") active.interaction.finishTool(event.toolCallId)
         if (event.toolName.startsWith("bg_")) {
           applyBackgroundToolResult(active.backgroundProcesses, event.toolName, call?.args, event.result, Date.now())
           void Effect.runPromise(emitBackgroundProcesses(active))
@@ -786,6 +848,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     abort: Effect.fn("PiSessions.abort")(function*(sessionPath: string) {
       const active = activeSessions.get(canonicalPath(sessionPath))
       if (!active) return
+      active.interaction.cancelPending()
       yield* Effect.tryPromise({ try: () => active.session.abort(), catch: toAppError("abort Pi") })
     }),
     models: Effect.fn("PiSessions.models")(function*(sessionPath: string) {
@@ -817,6 +880,14 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       yield* emitSnapshot(active)
       return detail
     }),
+    answerInteraction: Effect.fn("PiSessions.answerInteraction")(function*(sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) {
+      const active = activeSessions.get(canonicalPath(sessionPath))
+      if (!active) return yield* Effect.fail(AppError.make({ operation: "answer Pi interaction", message: "Open the session before answering" }))
+      yield* Effect.try({
+        try: () => active.interaction.answer(requestId, answer),
+        catch: toAppError("answer Pi interaction")
+      })
+    }),
     dispose: Effect.fn("PiSessions.dispose")(function*() {
       yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
         const active = [...activeSessions.values()]
@@ -824,6 +895,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* Effect.promise(async () => {
           for (const session of active) {
             cancelGitRefresh(session)
+            session.interaction.dispose()
             session.unsubscribe()
             await session.runtime.dispose()
           }
