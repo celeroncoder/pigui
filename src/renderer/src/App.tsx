@@ -1,6 +1,6 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import type { AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { ActivityGroup } from "./components/ActivityGroup"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
@@ -96,6 +96,7 @@ export default function App() {
     setPendingAttachments([])
     setLightboxImage(null)
     setLiveThinking(null)
+    setDraft("")
     setModelOptions([])
     setError(null)
     setActivities([])
@@ -156,6 +157,7 @@ export default function App() {
     setPendingAttachments([])
     setLightboxImage(null)
     setLiveThinking(null)
+    setDraft("")
     setSessions([])
     setModelOptions([])
     setActivities([])
@@ -228,6 +230,17 @@ export default function App() {
         event.detail.summary,
         ...current.filter((item) => item.path !== event.detail.summary.path)
       ])
+      return
+    }
+    if (event.type === "queue-update") {
+      setSession((current) => current ? { ...current, queuedMessages: event.messages } : current)
+      return
+    }
+    if (event.type === "user-message") {
+      setSession((current) => current ? {
+        ...current,
+        messages: current.messages.some((message) => message.id === event.message.id) ? current.messages : [...current.messages, event.message]
+      } : current)
       return
     }
     if (event.type === "assistant-start") {
@@ -364,6 +377,7 @@ export default function App() {
       setPendingAttachments([])
       setLightboxImage(null)
       setLiveThinking(null)
+      setDraft("")
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
       void loadModels(detail.summary.path)
       setActivities([])
@@ -385,35 +399,33 @@ export default function App() {
     return () => window.removeEventListener("keydown", listener)
   }, [newSession])
 
-  const sendPrompt = () => {
+  const sendPrompt = (delivery: QueueDelivery = "follow-up") => {
     const rawText = draft.trim()
     const attachmentPaths = pendingAttachments.map((attachment) => attachment.path)
     const text = normalizeImageReferences(rawText, attachmentPaths)
-    if (!text.trim() || !session || session.isStreaming) return
+    if (!text.trim() || !session) return
+    const sessionPath = session.summary.path
+    const wasStreaming = session.isStreaming
     const previousDraft = draft
     const previousAttachments = pendingAttachments
     setDraft("")
     setPendingAttachments([])
-    setLiveThinking(null)
-    setError(null)
-    const userMessage: ChatMessage = {
-      id: `local-${Date.now()}`,
-      role: "user",
-      blocks: [{ type: "text", text }],
-      timestamp: Date.now()
+    if (!wasStreaming) {
+      setLiveThinking(null)
+      const userMessage: ChatMessage = {
+        id: `local-${Date.now()}`,
+        role: "user",
+        blocks: [{ type: "text", text }],
+        timestamp: Date.now()
+      }
+      setSession((current) => current ? { ...current, isStreaming: true, messages: [...current.messages, userMessage] } : current)
     }
-    setSession((current) => current ? { ...current, isStreaming: true, messages: [...current.messages, userMessage] } : current)
-    const sessionPath = session.summary.path
-    void desktopApi.sessions.prompt(sessionPath, rawText, attachmentPaths).catch((cause: unknown) => {
+    setError(null)
+    void desktopApi.sessions.prompt(sessionPath, rawText, delivery, attachmentPaths).catch((cause: unknown) => {
       if (activeSessionPathRef.current !== sessionPath) return
       setDraft(previousDraft)
       setPendingAttachments(previousAttachments)
       setError(cause instanceof Error ? cause.message : "Pi could not process the message")
-      setSession((current) => current ? {
-        ...current,
-        isStreaming: false,
-        messages: current.messages.filter((message) => message.id !== userMessage.id)
-      } : current)
     })
   }
 
@@ -435,6 +447,45 @@ export default function App() {
       if (activeSessionPathRef.current !== sessionPath) return
       setError(cause instanceof Error ? cause.message : "Could not stop Pi")
     })
+  }
+
+  const editQueuedMessage = async (message: QueuedMessage, text: string) => {
+    if (!session) return
+    const sessionPath = session.summary.path
+    try {
+      await desktopApi.sessions.editQueuedMessage(sessionPath, message.id, text)
+    } catch (cause) {
+      if (activeSessionPathRef.current === sessionPath) {
+        setError(cause instanceof Error ? cause.message : "Could not edit the queued message")
+      }
+      throw cause
+    }
+  }
+
+  const removeQueuedMessage = async (message: QueuedMessage) => {
+    if (!session) return
+    const sessionPath = session.summary.path
+    try {
+      await desktopApi.sessions.removeQueuedMessage(sessionPath, message.id)
+    } catch (cause) {
+      if (activeSessionPathRef.current === sessionPath) {
+        setError(cause instanceof Error ? cause.message : "Could not remove the queued message")
+      }
+      throw cause
+    }
+  }
+
+  const steerQueuedMessage = async (message: QueuedMessage) => {
+    if (!session) return
+    const sessionPath = session.summary.path
+    try {
+      await desktopApi.sessions.steerQueuedMessage(sessionPath, message.id)
+    } catch (cause) {
+      if (activeSessionPathRef.current === sessionPath) {
+        setError(cause instanceof Error ? cause.message : "Could not steer the queued message")
+      }
+      throw cause
+    }
   }
 
   const displayMessages: ReadonlyArray<ChatMessage> = session?.isCompacting
@@ -616,6 +667,7 @@ export default function App() {
 
           {error && <div className="error-toast" role="alert">{error}<button type="button" onClick={() => setError(null)}>Dismiss</button></div>}
           <Composer
+            key={session?.summary.path ?? "no-session"}
             value={draft}
             disabled={!session}
             attachments={pendingAttachments}
@@ -625,6 +677,7 @@ export default function App() {
             modelOptions={modelOptions}
             thinkingLevel={session?.thinkingLevel ?? "off"}
             availableThinkingLevels={session?.availableThinkingLevels ?? []}
+            queuedMessages={session?.queuedMessages ?? []}
             onModelChange={(option) => {
               if (!session) return
               const sessionPath = session.summary.path
@@ -654,6 +707,9 @@ export default function App() {
             onPasteImage={(bytes, name, mimeType) => void addPastedImage(bytes, name, mimeType)}
             onRemoveAttachment={(id) => setPendingAttachments((current) => current.filter((attachment) => attachment.id !== id))}
             onSubmit={sendPrompt}
+            onEditQueuedMessage={editQueuedMessage}
+            onRemoveQueuedMessage={removeQueuedMessage}
+            onSteerQueuedMessage={steerQueuedMessage}
             onAbort={abort}
           />
         </main>

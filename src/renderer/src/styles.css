@@ -295,6 +295,31 @@
   .onboarding-action:hover { filter: brightness(1.1); color: #ffd2a6; }
 
   .composer-shell { z-index: 3; width: min(780px, calc(100% - 34px)); margin: 0 auto; padding: 0 0 11px; background: linear-gradient(180deg, transparent, var(--bg) 22%); }
+  .prompt-queue { position: sticky; bottom: 0; z-index: 4; max-height: 184px; margin: 0 4px 7px; overflow: hidden; border: 1px solid #383a3c; border-radius: 10px; background: linear-gradient(180deg, #18191a, #111213); box-shadow: 0 10px 26px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.035); }
+  .prompt-queue-header { height: 25px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px 0 10px; border-bottom: 1px solid #2b2d2f; color: #a9a49f; }
+  .prompt-queue-header > span { display: inline-flex; align-items: center; gap: 5px; color: #d0b18f; font: 7.5px var(--display); letter-spacing: .06em; text-transform: uppercase; }
+  .prompt-queue-header svg { color: #c99262; }
+  .prompt-queue-header small { min-width: 15px; height: 15px; display: grid; place-items: center; padding: 0 3px; border-radius: 8px; background: #30251d; color: #e7c19a; font: 7px var(--mono); }
+  .prompt-queue-header em { color: #77736f; font: 7.5px var(--mono); font-style: normal; }
+  .prompt-queue-list { max-height: 157px; margin: 0; padding: 4px; overflow-y: auto; list-style: none; }
+  .prompt-queue-item { min-width: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 5px 5px 5px 6px; border-radius: 6px; }
+  .prompt-queue-item + .prompt-queue-item { border-top: 1px solid rgba(255,255,255,.035); }
+  .prompt-queue-item:hover { background: rgba(255,255,255,.024); }
+  .prompt-queue-delivery { min-width: 52px; height: 17px; display: grid; place-items: center; padding: 0 5px; border: 1px solid #3a3c3e; border-radius: 4px; background: #202122; color: #aaa6a1; font: 6.5px var(--mono); text-transform: uppercase; letter-spacing: .025em; }
+  .prompt-queue-item.steering .prompt-queue-delivery { border-color: #67462f; background: #271b14; color: #e5ad76; }
+  .prompt-queue-text { min-width: 0; margin: 0; overflow: hidden; color: #c9c5c0; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: 10px; line-height: 1.35; }
+  .prompt-queue-actions, .prompt-queue-edit-actions { display: flex; align-items: center; gap: 2px; }
+  .queue-action { height: 23px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; padding: 0 6px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #8e8a85; font: 7.5px var(--mono); }
+  .queue-action:hover:not(:disabled) { border-color: #3b3d3f; background: #242526; color: #d7d3ce; }
+  .queue-action.remove:hover:not(:disabled) { border-color: #5a3531; background: #261817; color: #e7a19a; }
+  .queue-action.steer { border-color: #59402e; background: #251b15; color: #d9a978; }
+  .queue-action.steer:hover:not(:disabled), .queue-action.save:hover:not(:disabled) { border-color: #a56e42; background: #372417; color: #f3c496; }
+  .queue-action.save { border-color: #4a3d32; background: #24201c; color: #d5b28d; }
+  .prompt-queue-edit { grid-column: 2 / -1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: end; }
+  .prompt-queue-edit textarea { min-width: 0; min-height: 40px; max-height: 70px; resize: vertical; padding: 6px 7px; border: 1px solid #4c4d4e; border-radius: 5px; outline: 0; background: #0f1011; color: #dedad6; font: 9.5px/1.4 var(--sans); }
+  .prompt-queue-edit textarea:focus { border-color: #8d6548; box-shadow: 0 0 0 1px rgba(233,168,104,.08); }
+  .prompt-queue-edit-actions { flex-direction: column; align-items: stretch; }
+  .prompt-queue-edit-actions .queue-action { min-width: 57px; }
   .composer { position: relative; overflow: visible; border: 1px solid #414345; border-radius: 11px; background: #151617; box-shadow: 0 16px 50px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.03); transition: border-color .18s ease, box-shadow .18s ease; }
   .composer:focus-within { border-color: #554437; box-shadow: 0 16px 50px rgba(0,0,0,.32), 0 0 0 1px rgba(233,168,104,.07); }
   .composer.streaming { border-color: #4e3c2e; }
@@ -333,8 +358,11 @@
   .effort-menu button.selected { background: linear-gradient(180deg, #2b2927, #242321); color: #fff; }
   .effort-option-label { display: inline-flex; align-items: center; min-height: 18px; }
   .effort-option-label.emphasis { min-height: 19px; padding: 0 7px; border: 1px solid rgba(255,211,169,.34); border-radius: 999px; background: linear-gradient(180deg, #c98b52, #985e36); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.34), inset 0 1px rgba(255,255,255,.18); font: italic 800 7px/1 var(--display); letter-spacing: .045em; text-shadow: 0 1px 1px rgba(0,0,0,.34); }
+  .composer-run-actions { margin-left: auto; display: flex; align-items: center; gap: 5px; }
   .send-button { width: 30px; height: 30px; display: grid; place-items: center; margin-left: auto; border: 0; border-radius: 10px; background: linear-gradient(180deg, #efb577, #c8884e); color: #1c140e; box-shadow: 0 1px 2px rgba(0,0,0,.38), inset 0 0 0 1px rgba(255,241,225,.24), inset 0 1px rgba(255,255,255,.3); transition: filter .15s ease, transform .15s ease, box-shadow .15s ease; }
   .send-button:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); }
+  .composer-run-actions .send-button { margin-left: 0; }
+  .send-button.queue { background: linear-gradient(180deg, #34302b, #24211e); color: #e6b98b; box-shadow: 0 1px 2px rgba(0,0,0,.38), inset 0 0 0 1px rgba(233,168,104,.18), inset 0 1px rgba(255,255,255,.08); }
   .send-button.stop { background: #e3ded8; color: #181818; }
   .composer-caption { display: flex; justify-content: space-between; padding: 6px 3px 0; color: var(--text-3); font-size: 8.5px; }
   .error-toast { position: absolute; z-index: 10; right: 18px; bottom: 126px; display: flex; align-items: center; gap: 13px; max-width: 460px; padding: 10px 12px; border: 1px solid #59322f; border-radius: 7px; background: #241716; color: #e9aba5; font-size: 11px; box-shadow: 0 12px 36px #0008; }

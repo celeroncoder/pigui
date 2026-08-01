@@ -88,6 +88,15 @@ export interface ModelOption {
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
+/** Pi's native runtime delivery queues. */
+export type QueueDelivery = "steer" | "follow-up"
+
+export interface QueuedMessage {
+  readonly id: string
+  readonly delivery: QueueDelivery
+  readonly text: string
+}
+
 export type BackgroundProcessStatus = "running" | "done" | "failed" | "killed" | "stopped"
 
 export interface BackgroundProcess {
@@ -111,6 +120,7 @@ export interface SessionDetail {
   readonly thinkingLevel: ThinkingLevel
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly backgroundProcesses: ReadonlyArray<BackgroundProcess>
+  readonly queuedMessages: ReadonlyArray<QueuedMessage>
   readonly isStreaming: boolean
   readonly isCompacting: boolean
 }
@@ -127,6 +137,8 @@ export interface ToolActivity {
 export type SessionEvent =
   | { readonly type: "session-state"; readonly sessionPath: string; readonly detail: SessionDetail }
   | { readonly type: "assistant-start"; readonly sessionPath: string; readonly messageId: string; readonly timestamp: number }
+  | { readonly type: "user-message"; readonly sessionPath: string; readonly message: ChatMessage }
+  | { readonly type: "queue-update"; readonly sessionPath: string; readonly messages: ReadonlyArray<QueuedMessage> }
   | { readonly type: "text-delta"; readonly sessionPath: string; readonly messageId: string; readonly delta: string }
   | { readonly type: "thinking-delta"; readonly sessionPath: string; readonly messageId: string; readonly delta: string }
   | { readonly type: "tool-start"; readonly sessionPath: string; readonly tool: ToolActivity }
@@ -154,7 +166,10 @@ export interface PiDesktopApi {
     readonly create: (projectPath: string) => Promise<SessionDetail>
     readonly open: (projectPath: string, sessionPath: string) => Promise<SessionDetail>
     readonly inspect: (projectPath: string, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
-    readonly prompt: (sessionPath: string, text: string, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
+    readonly prompt: (sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
+    readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Promise<void>
+    readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
+    readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
     readonly abort: (sessionPath: string) => Promise<void>
     readonly models: (sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
     readonly setModel: (sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
@@ -173,6 +188,9 @@ export const IpcChannels = {
   openSession: "sessions:open",
   inspectSession: "sessions:inspect",
   promptSession: "sessions:prompt",
+  editQueuedMessage: "sessions:queue-edit",
+  removeQueuedMessage: "sessions:queue-remove",
+  steerQueuedMessage: "sessions:queue-steer",
   abortSession: "sessions:abort",
   listModels: "sessions:models",
   setModel: "sessions:set-model",

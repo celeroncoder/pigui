@@ -213,6 +213,7 @@ for (const [index, info] of orderedInfos.entries()) {
     thinkingLevel: context.thinkingLevel,
     availableThinkingLevels: thinkingLevelsForModel(selectedModel),
     backgroundProcesses: projectBackgroundProcesses(manager.getBranch()),
+    queuedMessages: [],
     isStreaming: false,
     isCompacting: false
   })

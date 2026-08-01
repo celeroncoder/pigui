@@ -15,7 +15,7 @@ A focused Electron workspace for browsing projects and working with existing or 
 - Preview Pi CLI image paths inline, paste validated images, and send them to Pi as native image attachments
 - Open securely linked Pi subagent sessions in an on-demand, read-only right split view
 - Inspect Pi-managed background terminals in a parallel read-only process pane
-- Send and abort prompts
+- Send, queue, steer, and abort prompts
 - Pick from the models currently authenticated and available in Pi, with provider marks loaded from Logo.dev
 - Choose the active model’s Pi-supported reasoning effort for the next prompt
 - Reuse Pi’s existing credentials, settings, context files, skills, extensions, and tools

@@ -19,6 +19,8 @@ const SessionSummarySchema = Schema.Struct({
   parentSessionPath: Schema.optional(Schema.String)
 })
 const ThinkingLevelSchema = Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+const QueueDeliverySchema = Schema.Literals(["follow-up", "steer"])
+const QueuedMessageSchema = Schema.Struct({ id: Schema.String, delivery: QueueDeliverySchema, text: Schema.String })
 const MessageBlockSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
   Schema.Struct({ type: Schema.Literal("thinking"), text: Schema.String }),
@@ -54,6 +56,7 @@ const SessionDetailSchema = Schema.Struct({
   thinkingLevel: ThinkingLevelSchema,
   availableThinkingLevels: Schema.Array(ThinkingLevelSchema),
   backgroundProcesses: Schema.Array(BackgroundProcessSchema),
+  queuedMessages: Schema.Array(QueuedMessageSchema),
   isStreaming: Schema.Boolean,
   isCompacting: Schema.Boolean
 })
@@ -103,6 +106,9 @@ export const createE2eApi = (): PiDesktopApi => ({
       return detail
     },
     prompt: async () => Promise.reject(new Error("Live prompting is tested in Electron, not the browser review harness")),
+    editQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
+    removeQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
+    steerQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
     abort: async () => undefined,
     models: async () => (await loadFixture()).models,
     setModel: async (sessionPath, provider, modelId) => {

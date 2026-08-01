@@ -2,6 +2,7 @@ import { join } from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron"
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect"
 import { IpcChannels, type Project } from "../shared/contracts"
+import { AppError, toAppError } from "./services/AppError"
 import { AttachmentStore, AttachmentStoreLive } from "./services/AttachmentStore"
 import { GitContext, GitContextLive } from "./services/GitContext"
 import { PiSessions, PiSessionsLive } from "./services/PiSessions"
@@ -16,11 +17,21 @@ const AttachmentSaveSchema = Schema.Struct({
   mimeType: Schema.optional(Schema.String)
 })
 const AttachmentPathsSchema = Schema.Array(NonEmptyString)
-const decodeString = Schema.decodeUnknownEffect(NonEmptyString)
-const decodePromptText = Schema.decodeUnknownEffect(Schema.String)
-const decodeThinkingLevel = Schema.decodeUnknownEffect(ThinkingLevelSchema)
-const decodeAttachmentSave = Schema.decodeUnknownEffect(AttachmentSaveSchema)
-const decodeAttachmentPaths = Schema.decodeUnknownEffect(Schema.Union([AttachmentPathsSchema, Schema.Undefined]))
+const QueueDeliverySchema = Schema.Literals(["follow-up", "steer"])
+
+const invalidIpcInput = (error: { readonly message: string }) => AppError.make({ operation: "validate IPC input", message: error.message })
+const decodeString = (input: unknown) => Schema.decodeUnknownEffect(NonEmptyString)(input).pipe(Effect.mapError(invalidIpcInput))
+const decodePromptText = (input: unknown) => Schema.decodeUnknownEffect(Schema.String)(input).pipe(Effect.mapError(invalidIpcInput))
+const decodeThinkingLevel = (input: unknown) => Schema.decodeUnknownEffect(ThinkingLevelSchema)(input).pipe(Effect.mapError(invalidIpcInput))
+const decodeAttachmentSave = (input: unknown) => Schema.decodeUnknownEffect(AttachmentSaveSchema)(input).pipe(Effect.mapError(invalidIpcInput))
+const decodeAttachmentPaths = (input: unknown) => Schema.decodeUnknownEffect(Schema.Union([AttachmentPathsSchema, Schema.Undefined]))(input).pipe(Effect.mapError(invalidIpcInput))
+const decodeQueueDelivery = (input: unknown) => Schema.decodeUnknownEffect(QueueDeliverySchema)(input).pipe(Effect.mapError(invalidIpcInput))
+const decodeMessageText = Effect.fn("decodeMessageText")(function*(input: unknown) {
+  const text = yield* decodeString(input)
+  const normalized = text.trim()
+  if (!normalized) return yield* Effect.fail(AppError.make({ operation: "validate IPC input", message: "Message text cannot be blank" }))
+  return normalized
+})
 
 const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive, AttachmentStoreLive)
 const AppServices = Layer.mergeAll(ProjectStoreLive, PiSessionsLive)
@@ -40,7 +51,7 @@ const resolveKnownProject = Effect.fn("resolveKnownProject")(function*(input: un
   const store = yield* ProjectStore
   const projects = yield* store.list()
   const project = projects.find((candidate) => candidate.path === requestedPath)
-  if (!project) return yield* Effect.fail(new Error("Unknown project folder"))
+  if (!project) return yield* Effect.fail(AppError.make({ operation: "resolve project", message: "Unknown project folder" }))
   return project.path
 })
 
@@ -107,7 +118,7 @@ const registerIpc = () => {
   ipcMain.handle(IpcChannels.addProject, () => run(Effect.gen(function*() {
     const result = yield* Effect.tryPromise({
       try: () => dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"], title: "Add a project folder" }),
-      catch: (cause) => cause instanceof Error ? cause : new Error(String(cause))
+      catch: toAppError("choose project folder")
     })
     const folderPath = result.filePaths[0]
     if (result.canceled || !folderPath) return null
@@ -157,12 +168,35 @@ const registerIpc = () => {
     return yield* sessions.inspect(cwd, parentPath, path)
   })))
 
-  ipcMain.handle(IpcChannels.promptSession, (_event, sessionPath: unknown, text: unknown, attachmentPaths: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.promptSession, (_event, sessionPath: unknown, text: unknown, delivery: unknown, attachmentPaths: unknown) => run(Effect.gen(function*() {
     const path = yield* decodeString(sessionPath)
     const prompt = yield* decodePromptText(text)
+    const queueDelivery = yield* decodeQueueDelivery(delivery === undefined ? "follow-up" : delivery)
     const paths = yield* decodeAttachmentPaths(attachmentPaths)
     const sessions = yield* PiSessions
-    yield* sessions.prompt(path, prompt, paths ?? [])
+    yield* sessions.prompt(path, prompt, queueDelivery, paths ?? [])
+  })))
+
+  ipcMain.handle(IpcChannels.editQueuedMessage, (_event, sessionPath: unknown, messageId: unknown, text: unknown) => run(Effect.gen(function*() {
+    const path = yield* decodeString(sessionPath)
+    const id = yield* decodeString(messageId)
+    const message = yield* decodeMessageText(text)
+    const sessions = yield* PiSessions
+    yield* sessions.editQueuedMessage(path, id, message)
+  })))
+
+  ipcMain.handle(IpcChannels.removeQueuedMessage, (_event, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+    const path = yield* decodeString(sessionPath)
+    const id = yield* decodeString(messageId)
+    const sessions = yield* PiSessions
+    yield* sessions.removeQueuedMessage(path, id)
+  })))
+
+  ipcMain.handle(IpcChannels.steerQueuedMessage, (_event, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+    const path = yield* decodeString(sessionPath)
+    const id = yield* decodeString(messageId)
+    const sessions = yield* PiSessions
+    yield* sessions.steerQueuedMessage(path, id)
   })))
 
   ipcMain.handle(IpcChannels.saveAttachment, (_event, input: unknown) => run(Effect.gen(function*() {

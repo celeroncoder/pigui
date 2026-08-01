@@ -1,6 +1,6 @@
-import { ArrowUp, ChevronDown, ShieldCheck, Square, X } from "lucide-react"
+import { ArrowUp, Check, ChevronDown, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
-import type { AttachmentPreview, ImageAttachment, ModelOption, ThinkingLevel } from "../../../shared/contracts"
+import type { AttachmentPreview, ImageAttachment, ModelOption, QueueDelivery, QueuedMessage, ThinkingLevel } from "../../../shared/contracts"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
 
@@ -14,6 +14,136 @@ const effortLabel: Record<ThinkingLevel, string> = {
   max: "Max"
 }
 
+interface PromptQueueProps {
+  readonly messages: ReadonlyArray<QueuedMessage>
+  readonly disabled: boolean
+  readonly onEdit: (message: QueuedMessage, text: string) => Promise<void>
+  readonly onRemove: (message: QueuedMessage) => Promise<void>
+  readonly onSteer: (message: QueuedMessage) => Promise<void>
+}
+
+function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQueueProps) {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingText, setEditingText] = useState("")
+  const [pendingId, setPendingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (editingId && !messages.some((message) => message.id === editingId)) {
+      setEditingId(null)
+      setEditingText("")
+    }
+  }, [editingId, messages])
+
+  if (messages.length === 0) return null
+
+  const runAction = async (id: string, action: () => Promise<void>): Promise<boolean> => {
+    setPendingId(id)
+    try {
+      await action()
+      return true
+    } catch {
+      return false
+    } finally {
+      setPendingId((current) => current === id ? null : current)
+    }
+  }
+
+  const saveEdit = async (message: QueuedMessage) => {
+    const text = editingText.trim()
+    if (!text) return
+    if (await runAction(message.id, () => onEdit(message, text))) {
+      setEditingId(null)
+      setEditingText("")
+    }
+  }
+
+  return (
+    <section className="prompt-queue" aria-label="Queued Pi messages">
+      <header className="prompt-queue-header">
+        <span><Send size={11} /> Queue <small>{messages.length}</small></span>
+        <em>Pi-managed</em>
+      </header>
+      <ol className="prompt-queue-list">
+        {messages.map((message) => {
+          const editing = editingId === message.id
+          const pending = pendingId === message.id
+          const controlsDisabled = disabled || pendingId !== null
+          return (
+            <li className={`prompt-queue-item ${message.delivery === "steer" ? "steering" : "follow-up"}`} key={message.id}>
+              <span className="prompt-queue-delivery">{message.delivery === "steer" ? "Steering" : "Follow-up"}</span>
+              {editing ? (
+                <div className="prompt-queue-edit">
+                  <textarea
+                    aria-label="Edit queued message"
+                    value={editingText}
+                    disabled={controlsDisabled}
+                    rows={2}
+                    onChange={(event) => setEditingText(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault()
+                        setEditingId(null)
+                        setEditingText("")
+                      }
+                      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                        event.preventDefault()
+                        void saveEdit(message)
+                      }
+                    }}
+                  />
+                  <div className="prompt-queue-edit-actions">
+                    <button type="button" className="queue-action save" aria-label="Save queued message" title="Save (⌘/Ctrl+Enter)" disabled={controlsDisabled || !editingText.trim()} onClick={() => void saveEdit(message)}>
+                      <Check size={12} /> Save
+                    </button>
+                    <button type="button" className="queue-action" aria-label="Cancel editing queued message" disabled={controlsDisabled} onClick={() => {
+                      setEditingId(null)
+                      setEditingText("")
+                    }}>
+                      <X size={12} /> Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <p className="prompt-queue-text" title={message.text}>{message.text}</p>
+                  <div className="prompt-queue-actions">
+                    <button
+                      type="button"
+                      className="queue-action"
+                      aria-label="Edit queued message"
+                      title="Edit"
+                      disabled={controlsDisabled}
+                      onClick={() => {
+                        setEditingId(message.id)
+                        setEditingText(message.text)
+                      }}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button type="button" className="queue-action remove" aria-label="Remove queued message" title="Remove" disabled={controlsDisabled} onClick={() => void runAction(message.id, () => onRemove(message))}>
+                      <Trash2 size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className="queue-action steer"
+                      aria-label={message.delivery === "steer" ? "Steer this message first" : "Steer this message after Pi's current tool turn"}
+                      title={message.delivery === "steer" ? "Steer first" : "Steer after the current tool turn"}
+                      disabled={controlsDisabled}
+                      onClick={() => void runAction(message.id, () => onSteer(message))}
+                    >
+                      <Send size={11} /> {pending ? "Sending" : message.delivery === "steer" ? "Steer first" : "Steer"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </section>
+  )
+}
+
 interface ComposerProps {
   readonly value: string
   readonly disabled: boolean
@@ -24,17 +154,43 @@ interface ComposerProps {
   readonly modelOptions: ReadonlyArray<ModelOption>
   readonly thinkingLevel: ThinkingLevel
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
+  readonly queuedMessages: ReadonlyArray<QueuedMessage>
   readonly onModelChange: (option: ModelOption) => void
   readonly onThinkingLevelChange: (level: ThinkingLevel) => void
   readonly onChange: (value: string) => void
   readonly onOpenImage: (preview: AttachmentPreview) => void
   readonly onPasteImage: (bytes: Uint8Array, name: string, mimeType: string) => void
   readonly onRemoveAttachment: (id: string) => void
-  readonly onSubmit: () => void
+  readonly onSubmit: (delivery?: QueueDelivery) => void
+  readonly onEditQueuedMessage: (message: QueuedMessage, text: string) => Promise<void>
+  readonly onRemoveQueuedMessage: (message: QueuedMessage) => Promise<void>
+  readonly onSteerQueuedMessage: (message: QueuedMessage) => Promise<void>
   readonly onAbort: () => void
 }
 
-export function Composer({ value, disabled, attachments, isStreaming, model, modelProvider, modelOptions, thinkingLevel, availableThinkingLevels, onModelChange, onThinkingLevelChange, onChange, onOpenImage, onPasteImage, onRemoveAttachment, onSubmit, onAbort }: ComposerProps) {
+export function Composer({
+  value,
+  disabled,
+  attachments,
+  isStreaming,
+  model,
+  modelProvider,
+  modelOptions,
+  thinkingLevel,
+  availableThinkingLevels,
+  queuedMessages,
+  onModelChange,
+  onThinkingLevelChange,
+  onChange,
+  onOpenImage,
+  onPasteImage,
+  onRemoveAttachment,
+  onSubmit,
+  onEditQueuedMessage,
+  onRemoveQueuedMessage,
+  onSteerQueuedMessage,
+  onAbort
+}: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
   const [openPicker, setOpenPicker] = useState<"model" | "effort" | null>(null)
@@ -78,6 +234,13 @@ export function Composer({ value, disabled, attachments, isStreaming, model, mod
 
   return (
     <div className="composer-shell">
+      <PromptQueue
+        messages={queuedMessages}
+        disabled={disabled}
+        onEdit={onEditQueuedMessage}
+        onRemove={onRemoveQueuedMessage}
+        onSteer={onSteerQueuedMessage}
+      />
       <div className={`composer ${isStreaming ? "streaming" : ""}`}>
         <textarea
           ref={inputRef}
@@ -85,12 +248,12 @@ export function Composer({ value, disabled, attachments, isStreaming, model, mod
           value={value}
           disabled={disabled}
           aria-label="Message Pi"
-          placeholder={disabled ? "Select a project to begin" : "Ask Pi to build, inspect, or fix…"}
+          placeholder={disabled ? "Select a project to begin" : isStreaming ? "Queue a follow-up or steer Pi…" : "Ask Pi to build, inspect, or fix…"}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault()
-              if (!isStreaming && (value.trim() || attachments.length > 0)) onSubmit()
+              if (value.trim() || attachments.length > 0) onSubmit(isStreaming && event.altKey ? "steer" : "follow-up")
             }
           }}
           onPaste={(event) => {
@@ -189,13 +352,19 @@ export function Composer({ value, disabled, attachments, isStreaming, model, mod
             <span className="context-pill" title="Pi uses its configured tool access"><ShieldCheck size={14} /><span>Full access</span></span>
           </div>
           {isStreaming ? (
-            <button type="button" className="send-button stop" aria-label="Stop Pi" onClick={onAbort}><Square size={12} fill="currentColor" /></button>
+            <div className="composer-run-actions">
+              <button type="button" className="send-button queue" aria-label="Queue follow-up message" title="Queue follow-up" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={() => onSubmit("follow-up")}><Send size={14} /></button>
+              <button type="button" className="send-button stop" aria-label="Stop Pi" onClick={onAbort}><Square size={12} fill="currentColor" /></button>
+            </div>
           ) : (
-            <button type="button" className="send-button" aria-label="Send message" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={onSubmit}><ArrowUp size={17} /></button>
+            <button type="button" className="send-button" aria-label="Send message" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={() => onSubmit()}><ArrowUp size={17} /></button>
           )}
         </div>
       </div>
-      <div className="composer-caption"><span>Enter to send · Shift+Enter for new line</span><span>Pi can make mistakes. Review changes.</span></div>
+      <div className="composer-caption">
+        <span>{isStreaming ? "Enter to queue follow-up · Alt+Enter to steer · Shift+Enter for new line" : "Enter to send · Shift+Enter for new line"}</span>
+        <span>Pi can make mistakes. Review changes.</span>
+      </div>
     </div>
   )
 }

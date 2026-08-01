@@ -8,11 +8,19 @@ import {
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent"
 import { Context, Effect, Layer, Semaphore } from "effect"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { normalizeImageReferences, parseImagePathReferences } from "../../shared/attachments"
 import { AppError, toAppError } from "./AppError"
 import { AttachmentStore } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
+import {
+  type NativePromptQueue,
+  prioritizeQueuedMessageForSteering,
+  reconcileQueuedMessages,
+  removeQueuedMessage,
+  sameQueuedMessages,
+  updateQueuedMessageText
+} from "./PromptQueue"
 import { WindowBus } from "./WindowBus"
 
 const canonicalPath = (value: string) => resolve(value)
@@ -24,10 +32,13 @@ interface ActiveSession {
   unsubscribe: () => void
   readonly backgroundProcesses: Map<string, BackgroundProcess>
   readonly pendingTools: Map<string, { readonly name: string; readonly args: unknown }>
+  queuedMessages: ReadonlyArray<QueuedMessage>
+  queueUpdatesSuspended: number
   liveMessageId: string | null
   gitRefreshTimer: ReturnType<typeof setTimeout> | undefined
   gitRefreshGeneration: number
   disposed: boolean
+  liveUserMessageIndex: number
 }
 
 const stringify = (value: unknown): string => {
@@ -354,9 +365,9 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary): Se
     model: context.model ? `${context.model.provider}/${context.model.modelId}` : "No model configured",
     thinkingLevel: thinkingLevelValue(context.thinkingLevel),
     availableThinkingLevels: ["off"],
-    // Background terminals are session-scoped and are killed on shutdown;
-    // stored entries are history, never live children for an inspected session.
+    // Background terminals and prompt queues are runtime-scoped, never historical.
     backgroundProcesses: [],
+    queuedMessages: [],
     isStreaming: false,
     isCompacting: false
   }
@@ -379,6 +390,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     thinkingLevel: active.session.thinkingLevel,
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
+    queuedMessages: active.queuedMessages,
     isStreaming: active.session.isStreaming,
     isCompacting: active.session.isCompacting
   }
@@ -389,7 +401,10 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly create: (cwd: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
-  readonly prompt: (sessionPath: string, text: string, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
+  readonly prompt: (sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
+  readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
+  readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
+  readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
   readonly abort: (sessionPath: string) => Effect.Effect<void, AppError>
   readonly models: (sessionPath: string) => Effect.Effect<ReadonlyArray<ModelOption>, AppError>
   readonly setModel: (sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
@@ -411,6 +426,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const attachments = yield* AttachmentStore
   const git = yield* GitContext
   const sessionLifecycleLock = yield* Semaphore.make(1)
+  const queueMutationLock = yield* Semaphore.make(1)
   const activeSessions = new Map<string, ActiveSession>()
 
   const emitSnapshot = (active: ActiveSession) => bus.emit({
@@ -451,6 +467,73 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }, 350)
   }
 
+
+  const nativePromptQueue = (session: AgentSession): NativePromptQueue => ({
+    steering: session.getSteeringMessages(),
+    followUp: session.getFollowUpMessages()
+  })
+
+  const refreshQueuedMessages = (active: ActiveSession): boolean => {
+    const next = reconcileQueuedMessages(active.queuedMessages, nativePromptQueue(active.session))
+    if (sameQueuedMessages(active.queuedMessages, next)) return false
+    active.queuedMessages = next
+    return true
+  }
+
+  const emitQueuedMessages = (active: ActiveSession) => bus.emit({
+    type: "queue-update",
+    sessionPath: active.session.sessionFile ?? "",
+    messages: active.queuedMessages
+  })
+
+  const queueCommandName = (text: string): string | undefined => {
+    if (!text.startsWith("/")) return undefined
+    const spaceIndex = text.indexOf(" ")
+    return spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex)
+  }
+
+  const queueabilityError = (session: AgentSession, text: string): AppError | undefined => {
+    const commandName = queueCommandName(text)
+    if (!commandName || !session.extensionRunner.getCommand(commandName)) return undefined
+    return AppError.make({
+      operation: "queue Pi message",
+      message: `Extension command "/${commandName}" cannot be queued`
+    })
+  }
+
+  const enqueueNativeMessages = (session: AgentSession, messages: ReadonlyArray<QueuedMessage>): Promise<void> => {
+    const steering = messages.filter((message) => message.delivery === "steer").map((message) => session.steer(message.text))
+    const followUps = messages.filter((message) => message.delivery === "follow-up").map((message) => session.followUp(message.text))
+    return Promise.all([...steering, ...followUps]).then(() => undefined)
+  }
+
+  // AgentSession exposes native enqueue plus clear-all, but no per-item mutation.
+  // Rebuild the SDK queues synchronously so edits/removals never become renderer-only state.
+  const replaceNativeQueue = Effect.fn("PiSessions.replaceNativeQueue")(function*(active: ActiveSession, messages: ReadonlyArray<QueuedMessage>) {
+    const previous = active.queuedMessages
+    yield* Effect.tryPromise({
+      try: async () => {
+        active.queueUpdatesSuspended += 1
+        try {
+          active.session.clearQueue()
+          await enqueueNativeMessages(active.session, messages)
+        } catch (cause) {
+          active.session.clearQueue()
+          try {
+            await enqueueNativeMessages(active.session, previous)
+          } catch {
+            // Preserve the original SDK failure; the following runtime snapshot reconciles the queue.
+          }
+          throw cause
+        } finally {
+          active.queueUpdatesSuspended -= 1
+          if (refreshQueuedMessages(active)) void Effect.runPromise(emitQueuedMessages(active))
+        }
+      },
+      catch: toAppError("update queued Pi message")
+    })
+  })
+
   const attach = Effect.fn("PiSessions.attach")(function*(cwd: string, manager: SessionManager) {
     const runtime = yield* Effect.tryPromise({
       try: async () => {
@@ -479,16 +562,35 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       session: runtime.session,
       backgroundProcesses: historicalBackgroundProcesses(manager),
       pendingTools: new Map(),
+      queuedMessages: reconcileQueuedMessages([], nativePromptQueue(runtime.session)),
+      queueUpdatesSuspended: 0,
       liveMessageId: null,
       gitRefreshTimer: undefined,
       gitRefreshGeneration: 0,
       disposed: false,
+      liveUserMessageIndex: 0,
       unsubscribe: () => undefined
     }
 
     active.unsubscribe = runtime.session.subscribe((event) => {
-      if (event.type === "agent_start") {
+      if (event.type === "queue_update") {
+        if (active.queueUpdatesSuspended === 0 && refreshQueuedMessages(active)) {
+          void Effect.runPromise(emitQueuedMessages(active))
+        }
+      } else if (event.type === "agent_start") {
         void Effect.runPromise(bus.emit({ type: "agent-status", sessionPath, isStreaming: true }))
+      } else if (event.type === "message_start" && event.message.role === "user") {
+        active.liveUserMessageIndex += 1
+        void Effect.runPromise(bus.emit({
+          type: "user-message",
+          sessionPath,
+          message: {
+            id: `live-user-${event.message.timestamp}-${active.liveUserMessageIndex}`,
+            role: "user",
+            blocks: [{ type: "text", text: textFromContent(event.message.content) }],
+            timestamp: event.message.timestamp
+          }
+        }))
       } else if (event.type === "message_start" && event.message.role === "assistant") {
         active.liveMessageId = `live-${event.message.timestamp}`
         void Effect.runPromise(bus.emit({ type: "assistant-start", sessionPath, messageId: active.liveMessageId, timestamp: event.message.timestamp }))
@@ -574,18 +676,18 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       return infos.map((info) => summaryFromInfo(info, parentByChild.get(info.path)))
     }),
     create: Effect.fn("PiSessions.create")(function*(cwd: string) {
-      return yield* sessionLifecycleLock.withPermit(Effect.gen(function*() {
+      return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
         const projectCwd = canonicalPath(cwd)
         const manager = yield* Effect.try({ try: () => SessionManager.create(projectCwd), catch: toAppError("create Pi session") })
         const active = yield* attach(projectCwd, manager)
         return detailFromActive(active)
-      }))
+      })))
     }),
     open: Effect.fn("PiSessions.open")(function*(cwd: string, sessionPath: string) {
-      return yield* sessionLifecycleLock.withPermit(Effect.gen(function*() {
+      return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
         const active = yield* getOrOpen(cwd, sessionPath)
         return detailFromActive(active)
-      }))
+      })))
     }),
     inspect: Effect.fn("PiSessions.inspect")(function*(cwd: string, parentSessionPath: string, sessionPath: string) {
       const projectCwd = canonicalPath(cwd)
@@ -601,10 +703,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
       return detailFromManager(manager, summaryFromInfo(info))
     }),
-    prompt: Effect.fn("PiSessions.prompt")(function*(sessionPath: string, text: string, attachmentPaths: ReadonlyArray<string>) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
+    prompt: Effect.fn("PiSessions.prompt")(function*(sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
+      const requestedPath = canonicalPath(sessionPath)
+      const active = activeSessions.get(requestedPath)
       if (!active) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Open the session before sending a message" }))
-      if (active.session.isStreaming) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Pi is already working in this session" }))
 
       const inferredPaths = parseImagePathReferences(text).map((reference) => reference.path)
       const paths = [...new Set([...inferredPaths, ...attachmentPaths])]
@@ -613,10 +715,73 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const images = yield* Effect.all(paths.map((path) => attachments.readForPi(path))).pipe(
         Effect.mapError((error) => AppError.make({ operation: "read image attachment", message: error.message }))
       )
+
+      const queued = yield* queueMutationLock.withPermit(Effect.gen(function*() {
+        if (activeSessions.get(requestedPath) !== active) {
+          return yield* Effect.fail(AppError.make({ operation: "queue Pi message", message: "The session changed before the message could be queued" }))
+        }
+        if (!active.session.isStreaming) return false
+        const error = queueabilityError(active.session, prompt)
+        if (error) return yield* Effect.fail(error)
+        yield* Effect.tryPromise({
+          try: () => delivery === "steer" ? active.session.steer(prompt, images) : active.session.followUp(prompt, images),
+          catch: toAppError(delivery === "steer" ? "steer Pi" : "queue follow-up Pi message")
+        })
+        return true
+      }))
+
+      if (queued) return
+      if (activeSessions.get(requestedPath) !== active) {
+        return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "The session changed before the message could be sent" }))
+      }
       yield* Effect.tryPromise({
         try: () => active.session.prompt(prompt, images.length > 0 ? { images } : undefined),
         catch: toAppError("prompt Pi")
       })
+    }),
+    editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(sessionPath: string, messageId: string, text: string) {
+      const requestedPath = canonicalPath(sessionPath)
+      yield* queueMutationLock.withPermit(Effect.gen(function*() {
+        const active = activeSessions.get(requestedPath)
+        if (!active) return yield* Effect.fail(AppError.make({ operation: "edit queued Pi message", message: "Open the session before editing its queue" }))
+        if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
+        if (!active.session.isStreaming) {
+          return yield* Effect.fail(AppError.make({ operation: "edit queued Pi message", message: "Pi already settled before this queued message could be edited" }))
+        }
+        const message = active.queuedMessages.find((candidate) => candidate.id === messageId)
+        if (!message) return yield* Effect.fail(AppError.make({ operation: "edit queued Pi message", message: "That queued message has already been delivered or removed" }))
+        const error = queueabilityError(active.session, text)
+        if (error) return yield* Effect.fail(error)
+        yield* replaceNativeQueue(active, updateQueuedMessageText(active.queuedMessages, message.id, text))
+      }))
+    }),
+    removeQueuedMessage: Effect.fn("PiSessions.removeQueuedMessage")(function*(sessionPath: string, messageId: string) {
+      const requestedPath = canonicalPath(sessionPath)
+      yield* queueMutationLock.withPermit(Effect.gen(function*() {
+        const active = activeSessions.get(requestedPath)
+        if (!active) return yield* Effect.fail(AppError.make({ operation: "remove queued Pi message", message: "Open the session before changing its queue" }))
+        if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
+        if (!active.session.isStreaming) {
+          return yield* Effect.fail(AppError.make({ operation: "remove queued Pi message", message: "Pi already settled before this queued message could be removed" }))
+        }
+        const message = active.queuedMessages.find((candidate) => candidate.id === messageId)
+        if (!message) return yield* Effect.fail(AppError.make({ operation: "remove queued Pi message", message: "That queued message has already been delivered or removed" }))
+        yield* replaceNativeQueue(active, removeQueuedMessage(active.queuedMessages, message.id))
+      }))
+    }),
+    steerQueuedMessage: Effect.fn("PiSessions.steerQueuedMessage")(function*(sessionPath: string, messageId: string) {
+      const requestedPath = canonicalPath(sessionPath)
+      yield* queueMutationLock.withPermit(Effect.gen(function*() {
+        const active = activeSessions.get(requestedPath)
+        if (!active) return yield* Effect.fail(AppError.make({ operation: "steer queued Pi message", message: "Open the session before changing its queue" }))
+        if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
+        if (!active.session.isStreaming) {
+          return yield* Effect.fail(AppError.make({ operation: "steer queued Pi message", message: "Pi already settled before this message could be steered" }))
+        }
+        const message = active.queuedMessages.find((candidate) => candidate.id === messageId)
+        if (!message) return yield* Effect.fail(AppError.make({ operation: "steer queued Pi message", message: "That queued message has already been delivered or removed" }))
+        yield* replaceNativeQueue(active, prioritizeQueuedMessageForSteering(active.queuedMessages, message.id))
+      }))
     }),
     abort: Effect.fn("PiSessions.abort")(function*(sessionPath: string) {
       const active = activeSessions.get(canonicalPath(sessionPath))
@@ -653,7 +818,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       return detail
     }),
     dispose: Effect.fn("PiSessions.dispose")(function*() {
-      yield* sessionLifecycleLock.withPermit(Effect.gen(function*() {
+      yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
         const active = [...activeSessions.values()]
         activeSessions.clear()
         yield* Effect.promise(async () => {
@@ -663,7 +828,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             await session.runtime.dispose()
           }
         })
-      }))
+      })))
     })
   }
 }))
