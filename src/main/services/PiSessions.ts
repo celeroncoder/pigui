@@ -14,7 +14,7 @@ import { AskUserInputSchema } from "../../shared/interaction"
 import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
-import { AttachmentStore } from "./AttachmentStore"
+import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import {
   type NativePromptQueue,
@@ -36,6 +36,7 @@ interface ActiveSession {
   readonly interaction: AskUserInteractionBridge
   readonly backgroundProcesses: Map<string, BackgroundProcess>
   readonly pendingTools: Map<string, { readonly name: string; readonly args: unknown }>
+  readonly queuedImages: Map<string, ReadonlyArray<PiImageAttachment>>
   queuedMessages: ReadonlyArray<QueuedMessage>
   queueUpdatesSuspended: number
   liveMessageId: string | null
@@ -480,6 +481,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
 
   const refreshQueuedMessages = (active: ActiveSession): boolean => {
     const next = reconcileQueuedMessages(active.queuedMessages, nativePromptQueue(active.session))
+    const nextIds = new Set(next.map((message) => message.id))
+    for (const id of active.queuedImages.keys()) {
+      if (!nextIds.has(id)) active.queuedImages.delete(id)
+    }
     if (sameQueuedMessages(active.queuedMessages, next)) return false
     active.queuedMessages = next
     return true
@@ -506,9 +511,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     })
   }
 
-  const enqueueNativeMessages = (session: AgentSession, messages: ReadonlyArray<QueuedMessage>): Promise<void> => {
-    const steering = messages.filter((message) => message.delivery === "steer").map((message) => session.steer(message.text))
-    const followUps = messages.filter((message) => message.delivery === "follow-up").map((message) => session.followUp(message.text))
+  const enqueueNativeMessages = (active: ActiveSession, messages: ReadonlyArray<QueuedMessage>): Promise<void> => {
+    const imagesFor = (message: QueuedMessage) => [...(active.queuedImages.get(message.id) ?? [])]
+    const steering = messages.filter((message) => message.delivery === "steer").map((message) => active.session.steer(message.text, imagesFor(message)))
+    const followUps = messages.filter((message) => message.delivery === "follow-up").map((message) => active.session.followUp(message.text, imagesFor(message)))
     return Promise.all([...steering, ...followUps]).then(() => undefined)
   }
 
@@ -516,23 +522,31 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   // Rebuild the SDK queues synchronously so edits/removals never become renderer-only state.
   const replaceNativeQueue = Effect.fn("PiSessions.replaceNativeQueue")(function*(active: ActiveSession, messages: ReadonlyArray<QueuedMessage>) {
     const previous = active.queuedMessages
+    const previousImages = new Map(active.queuedImages)
     yield* Effect.tryPromise({
       try: async () => {
+        let replaced = false
         active.queueUpdatesSuspended += 1
+        active.queuedMessages = messages
         try {
           active.session.clearQueue()
-          await enqueueNativeMessages(active.session, messages)
+          await enqueueNativeMessages(active, messages)
+          replaced = true
         } catch (cause) {
           active.session.clearQueue()
+          active.queuedMessages = previous
+          active.queuedImages.clear()
+          for (const [id, images] of previousImages) active.queuedImages.set(id, images)
           try {
-            await enqueueNativeMessages(active.session, previous)
+            await enqueueNativeMessages(active, previous)
           } catch {
             // Preserve the original SDK failure; the following runtime snapshot reconciles the queue.
           }
           throw cause
         } finally {
           active.queueUpdatesSuspended -= 1
-          if (refreshQueuedMessages(active)) void Effect.runPromise(emitQueuedMessages(active))
+          const reconciled = refreshQueuedMessages(active)
+          if (reconciled || replaced) void Effect.runPromise(emitQueuedMessages(active))
         }
       },
       catch: toAppError("update queued Pi message")
@@ -611,6 +625,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       interaction,
       backgroundProcesses: historicalBackgroundProcesses(manager),
       pendingTools: new Map(),
+      queuedImages: new Map(),
       queuedMessages: reconcileQueuedMessages([], nativePromptQueue(runtime.session)),
       queueUpdatesSuspended: 0,
       liveMessageId: null,
@@ -789,6 +804,13 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           try: () => delivery === "steer" ? active.session.steer(prompt, images) : active.session.followUp(prompt, images),
           catch: toAppError(delivery === "steer" ? "steer Pi" : "queue follow-up Pi message")
         })
+        if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
+        if (images.length > 0) {
+          const queuedMessage = [...active.queuedMessages].reverse().find((message) =>
+            message.delivery === delivery && message.text === prompt && !active.queuedImages.has(message.id)
+          )
+          if (queuedMessage) active.queuedImages.set(queuedMessage.id, images)
+        }
         return true
       }))
 

@@ -455,19 +455,14 @@ export default function App() {
     setPendingAttachments([])
     if (!wasStreaming) {
       setLiveThinking(null)
-      const userMessage: ChatMessage = {
-        id: `local-${Date.now()}`,
-        role: "user",
-        blocks: [{ type: "text", text }],
-        timestamp: Date.now()
-      }
-      setSession((current) => current ? { ...current, isStreaming: true, messages: [...current.messages, userMessage] } : current)
+      setSession((current) => current ? { ...current, isStreaming: true } : current)
     }
     setError(null)
     void desktopApi.sessions.prompt(sessionPath, rawText, delivery, attachmentPaths).catch((cause: unknown) => {
       if (activeSessionPathRef.current !== sessionPath) return
       setDraft(previousDraft)
       setPendingAttachments(previousAttachments)
+      if (!wasStreaming) setSession((current) => current ? { ...current, isStreaming: false } : current)
       setError(cause instanceof Error ? cause.message : "Pi could not process the message")
     })
   }
@@ -721,6 +716,7 @@ export default function App() {
             key={session?.summary.path ?? "no-session"}
             value={draft}
             disabled={!session || interactionRequest !== null}
+            disabledReason={interactionRequest ? "Answer Pi above to continue…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? "Choose model"}

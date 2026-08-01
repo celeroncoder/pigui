@@ -61,8 +61,9 @@
   }
   .workspace-layout { height: calc(100% - 48px); min-height: 0; display: grid; grid-template-columns: 260px minmax(480px, 1fr); overflow: hidden; }
   .workspace-layout.with-subagents { grid-template-columns: 260px minmax(420px, 1fr) 360px; }
+.workspace-layout.with-subagents .composer-caption span:last-child { display: none; }
   .project-sidebar { min-width: 0; border-right: 1px solid var(--line); background: #0e0f10; display: flex; flex-direction: column; padding: 12px 10px 10px; overflow: hidden; }
-  .conversation { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-rows: 61px minmax(0, 1fr) auto; overflow: hidden; background: radial-gradient(circle at 50% -20%, #181512 0, transparent 34%), var(--bg); }
+  .conversation { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 61px minmax(0, 1fr) auto; overflow: hidden; background: radial-gradient(circle at 50% -20%, #181512 0, transparent 34%), var(--bg); }
   .conversation.has-interaction { grid-template-rows: 61px auto minmax(0, 1fr) auto; }
   .inspector { min-width: 0; overflow-y: auto; border-left: 1px solid var(--line); background: #0e0f10; }
   .subagent-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px auto 32px minmax(0, 1fr); border-left: 1px solid var(--line); background: #0e0f10; overflow: hidden; }
@@ -326,7 +327,7 @@
   .onboarding-action { min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border: 0; border-radius: 10px; background: linear-gradient(180deg, #35271d, #241a14); color: #ecc399; font: 8px var(--display); letter-spacing: .02em; box-shadow: 0 1px 2px rgba(0,0,0,.34), inset 0 0 0 1px rgba(233,168,104,.25), inset 0 1px rgba(255,255,255,.07); }
   .onboarding-action:hover { filter: brightness(1.1); color: #ffd2a6; }
 
-  .composer-shell { z-index: 3; width: min(780px, calc(100% - 34px)); margin: 0 auto; padding: 0 0 11px; background: linear-gradient(180deg, transparent, var(--bg) 22%); }
+  .composer-shell { z-index: 3; width: calc(100% - 34px); max-width: 780px; min-width: 0; justify-self: center; margin: 0; padding: 0 0 11px; background: linear-gradient(180deg, transparent, var(--bg) 22%); }
   .prompt-queue { position: sticky; bottom: 0; z-index: 4; max-height: 184px; margin: 0 4px 7px; overflow: hidden; border: 1px solid #383a3c; border-radius: 10px; background: linear-gradient(180deg, #18191a, #111213); box-shadow: 0 10px 26px rgba(0,0,0,.28), inset 0 1px rgba(255,255,255,.035); }
   .prompt-queue-header { height: 25px; display: flex; align-items: center; justify-content: space-between; padding: 0 9px 0 10px; border-bottom: 1px solid #2b2d2f; color: #a9a49f; }
   .prompt-queue-header > span { display: inline-flex; align-items: center; gap: 5px; color: #d0b18f; font: 7.5px var(--display); letter-spacing: .06em; text-transform: uppercase; }

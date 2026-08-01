@@ -129,6 +129,12 @@ export function AskUserPanel({ request, submitting, onAnswer }: AskUserPanelProp
             disabled={submitting}
             placeholder="Write your answer…"
             onChange={(event) => setCustomAnswer(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault()
+                if (!submitting && customAnswer.trim()) onAnswer({ kind: "custom", answer: customAnswer })
+              }
+            }}
           />
           <div className="ask-user-custom-actions">
             <button type="button" className="ask-user-back" disabled={submitting} onClick={() => { setCustomMode(false); setCustomAnswer("") }}>
@@ -143,7 +149,7 @@ export function AskUserPanel({ request, submitting, onAnswer }: AskUserPanelProp
       )}
 
       <div className="ask-user-panel-footer">
-        <span>{customMode ? "Enter submits · Esc returns to options" : `Press 1–${request.options.length} or use the buttons · Esc dismisses`}</span>
+        <span>{customMode ? "Enter submits · Shift+Enter adds a line · Esc returns to options" : `Press 1–${request.options.length} or use the buttons · Esc dismisses`}</span>
         {submitting && <span role="status" aria-live="polite">Sending answer…</span>}
       </div>
     </section>

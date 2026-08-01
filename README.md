@@ -14,8 +14,10 @@ A focused Electron workspace for browsing projects and working with existing or 
 - Render both user and assistant messages as safe HTTPS-only Markdown
 - Preview Pi CLI image paths inline, paste validated images, and send them to Pi as native image attachments
 - Open securely linked Pi subagent sessions in an on-demand, read-only right split view
-- Inspect Pi-managed background terminals in a parallel read-only process pane
-- Send, queue, steer, and abort prompts
+- Inspect only currently running Pi-managed background terminals in a parallel read-only process pane
+- Send while Pi works, then edit, delete, or prioritize Pi-native queued follow-ups and steering prompts
+- Show each workspace’s current Git branch and working-tree `+/-` line totals in the header and sidebar
+- Abort active prompts safely
 - Pick from the models currently authenticated and available in Pi, with provider marks loaded from Logo.dev
 - Choose the active model’s Pi-supported reasoning effort for the next prompt
 - Render installed `ask_user` extension questions inline with 2–5 options and a free-form answer path

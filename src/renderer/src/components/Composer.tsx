@@ -126,12 +126,12 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
                     <button
                       type="button"
                       className="queue-action steer"
-                      aria-label={message.delivery === "steer" ? "Steer this message first" : "Steer this message after Pi's current tool turn"}
-                      title={message.delivery === "steer" ? "Steer first" : "Steer after the current tool turn"}
+                      aria-label={message.delivery === "steer" ? "Send this steering message first" : "Steer this message after Pi's current tool turn"}
+                      title={message.delivery === "steer" ? "Send first" : "Steer after the current tool turn"}
                       disabled={controlsDisabled}
                       onClick={() => void runAction(message.id, () => onSteer(message))}
                     >
-                      <Send size={11} /> {pending ? "Sending" : message.delivery === "steer" ? "Steer first" : "Steer"}
+                      <Send size={11} /> {pending ? "Sending" : message.delivery === "steer" ? "Send first" : "Steer now"}
                     </button>
                   </div>
                 </>
@@ -147,6 +147,7 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
 interface ComposerProps {
   readonly value: string
   readonly disabled: boolean
+  readonly disabledReason?: string
   readonly attachments: ReadonlyArray<ImageAttachment>
   readonly isStreaming: boolean
   readonly model: string
@@ -171,6 +172,7 @@ interface ComposerProps {
 export function Composer({
   value,
   disabled,
+  disabledReason,
   attachments,
   isStreaming,
   model,
@@ -248,7 +250,7 @@ export function Composer({
           value={value}
           disabled={disabled}
           aria-label="Message Pi"
-          placeholder={disabled ? "Select a project to begin" : isStreaming ? "Queue a follow-up or steer Pi…" : "Ask Pi to build, inspect, or fix…"}
+          placeholder={disabled ? disabledReason ?? "Select a project to begin" : isStreaming ? "Queue a follow-up or steer Pi…" : "Ask Pi to build, inspect, or fix…"}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
