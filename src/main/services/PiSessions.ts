@@ -10,6 +10,7 @@ import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactor
 import { Context, Effect, Layer, Semaphore } from "effect"
 import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { AppError, toAppError } from "./AppError"
+import { GitContext } from "./GitContext"
 import { WindowBus } from "./WindowBus"
 
 const canonicalPath = (value: string) => resolve(value)
@@ -18,10 +19,13 @@ interface ActiveSession {
   readonly cwd: string
   readonly runtime: AgentSessionRuntime
   readonly session: AgentSession
-  readonly unsubscribe: () => void
+  unsubscribe: () => void
   readonly backgroundProcesses: Map<string, BackgroundProcess>
   readonly pendingTools: Map<string, { readonly name: string; readonly args: unknown }>
   liveMessageId: string | null
+  gitRefreshTimer: ReturnType<typeof setTimeout> | undefined
+  gitRefreshGeneration: number
+  disposed: boolean
 }
 
 const stringify = (value: unknown): string => {
@@ -149,12 +153,20 @@ const processStatus = (value: unknown): BackgroundProcessStatus | undefined => {
 const sortedProcesses = (processes: ReadonlyMap<string, BackgroundProcess>): ReadonlyArray<BackgroundProcess> =>
   [...processes.values()].sort((left, right) => right.startedAt - left.startedAt)
 
+const runningProcesses = (processes: ReadonlyMap<string, BackgroundProcess>): ReadonlyArray<BackgroundProcess> =>
+  sortedProcesses(processes).filter((process) => process.status === "running")
+
 const updateProcess = (processes: Map<string, BackgroundProcess>, id: string, patch: Partial<BackgroundProcess>, at: number) => {
   const current = processes.get(id)
+  // A Pi background-terminal id cannot return to running once it has settled.
+  // Ignore an older status/list result that arrives after the completion event.
+  const status = patch.status === "running" && current && current.status !== "running"
+    ? current.status
+    : patch.status ?? current?.status ?? "running"
   processes.set(id, {
     id,
     title: patch.title ?? current?.title ?? `Terminal ${id}`,
-    status: patch.status ?? current?.status ?? "running",
+    status,
     startedAt: patch.startedAt ?? current?.startedAt ?? at,
     updatedAt: at,
     ...(patch.command ?? current?.command ? { command: patch.command ?? current?.command } : {}),
@@ -206,15 +218,24 @@ const applyBackgroundToolResult = (
   }
 
   if (toolName === "bg_list" && Array.isArray(details?.terminals)) {
+    const listed = new Set<string>()
     for (const item of details.terminals) {
       const terminal = recordValue(item)
       const id = stringValue(terminal?.id)
       if (!id) continue
+      listed.add(id)
       updateProcess(processes, id, {
         title: stringValue(terminal?.title),
         status: processStatus(terminal?.status),
         pid: numberValue(terminal?.pid)
       }, at)
+    }
+    // The extension never prunes a live child. If an id that we thought was
+    // running is missing from its authoritative list, it cannot still run.
+    for (const [id, process] of processes) {
+      if (process.status === "running" && !listed.has(id)) {
+        updateProcess(processes, id, { status: "stopped" }, at)
+      }
     }
     return
   }
@@ -331,7 +352,9 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary): Se
     model: context.model ? `${context.model.provider}/${context.model.modelId}` : "No model configured",
     thinkingLevel: thinkingLevelValue(context.thinkingLevel),
     availableThinkingLevels: ["off"],
-    backgroundProcesses: sortedProcesses(historicalBackgroundProcesses(manager)),
+    // Background terminals are session-scoped and are killed on shutdown;
+    // stored entries are history, never live children for an inspected session.
+    backgroundProcesses: [],
     isStreaming: false,
     isCompacting: false
   }
@@ -353,7 +376,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     model: active.session.model ? `${active.session.model.provider}/${active.session.model.id}` : "No model configured",
     thinkingLevel: active.session.thinkingLevel,
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
-    backgroundProcesses: sortedProcesses(active.backgroundProcesses),
+    backgroundProcesses: runningProcesses(active.backgroundProcesses),
     isStreaming: active.session.isStreaming,
     isCompacting: active.session.isCompacting
   }
@@ -383,6 +406,7 @@ const createPiRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir
 
 export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const bus = yield* WindowBus
+  const git = yield* GitContext
   const sessionLifecycleLock = yield* Semaphore.make(1)
   const activeSessions = new Map<string, ActiveSession>()
 
@@ -395,13 +419,40 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const emitBackgroundProcesses = (active: ActiveSession) => bus.emit({
     type: "background-processes",
     sessionPath: active.session.sessionFile ?? "",
-    processes: sortedProcesses(active.backgroundProcesses)
+    processes: runningProcesses(active.backgroundProcesses)
   })
+
+  const cancelGitRefresh = (active: ActiveSession) => {
+    active.disposed = true
+    active.gitRefreshGeneration++
+    if (active.gitRefreshTimer) clearTimeout(active.gitRefreshTimer)
+    active.gitRefreshTimer = undefined
+  }
+
+  const scheduleGitRefresh = (active: ActiveSession) => {
+    if (active.disposed || active.gitRefreshTimer) return
+    const generation = ++active.gitRefreshGeneration
+    const sessionKey = canonicalPath(active.session.sessionFile ?? "")
+    active.gitRefreshTimer = setTimeout(() => {
+      active.gitRefreshTimer = undefined
+      void Effect.runPromise(git.inspect(active.cwd).pipe(
+        Effect.flatMap((status) =>
+          active.disposed
+            || active.gitRefreshGeneration !== generation
+            || activeSessions.get(sessionKey) !== active
+            ? Effect.void
+            : bus.emit({ type: "project-git", projectPath: active.cwd, ...(status ? { git: status } : {}) })
+        ),
+        Effect.catchTag("GitContextError", () => Effect.void)
+      ))
+    }, 350)
+  }
 
   const attach = Effect.fn("PiSessions.attach")(function*(cwd: string, manager: SessionManager) {
     const runtime = yield* Effect.tryPromise({
       try: async () => {
         for (const active of activeSessions.values()) {
+          cancelGitRefresh(active)
           active.unsubscribe()
           await active.runtime.dispose()
         }
@@ -426,10 +477,13 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       backgroundProcesses: historicalBackgroundProcesses(manager),
       pendingTools: new Map(),
       liveMessageId: null,
+      gitRefreshTimer: undefined,
+      gitRefreshGeneration: 0,
+      disposed: false,
       unsubscribe: () => undefined
     }
 
-    const unsubscribe = runtime.session.subscribe((event) => {
+    active.unsubscribe = runtime.session.subscribe((event) => {
       if (event.type === "agent_start") {
         void Effect.runPromise(bus.emit({ type: "agent-status", sessionPath, isStreaming: true }))
       } else if (event.type === "message_start" && event.message.role === "assistant") {
@@ -467,6 +521,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           isError: event.isError,
           ...(diff ? { diff } : {})
         }))
+        scheduleGitRefresh(active)
       } else if (event.type === "message_end" && event.message.role === "custom" && event.message.customType === "background-terminal-result") {
         applyBackgroundResultMessage(active.backgroundProcesses, event.message, event.message.timestamp)
         void Effect.runPromise(emitBackgroundProcesses(active))
@@ -481,12 +536,12 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         active.liveMessageId = null
         void Effect.runPromise(bus.emit({ type: "agent-status", sessionPath, isStreaming: false }))
         void Effect.runPromise(emitSnapshot(active))
+        scheduleGitRefresh(active)
       }
     })
 
-    const attached: ActiveSession = { ...active, unsubscribe }
-    activeSessions.set(canonicalPath(sessionPath), attached)
-    return attached
+    activeSessions.set(canonicalPath(sessionPath), active)
+    return active
   })
 
   const getOrOpen = Effect.fn("PiSessions.getOrOpen")(function*(cwd: string, sessionPath: string) {
@@ -589,6 +644,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         activeSessions.clear()
         yield* Effect.promise(async () => {
           for (const session of active) {
+            cancelGitRefresh(session)
             session.unsubscribe()
             await session.runtime.dispose()
           }

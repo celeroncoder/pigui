@@ -1,8 +1,15 @@
+export interface GitStatus {
+  readonly branch: string
+  readonly additions: number
+  readonly deletions: number
+}
+
 export interface Project {
   readonly id: string
   readonly path: string
   readonly name: string
   readonly addedAt: number
+  readonly git?: GitStatus
 }
 
 export interface SessionSummary {
@@ -114,6 +121,7 @@ export type SessionEvent =
   | { readonly type: "agent-status"; readonly sessionPath: string; readonly isStreaming: boolean }
   | { readonly type: "compaction-status"; readonly sessionPath: string; readonly isCompacting: boolean }
   | { readonly type: "background-processes"; readonly sessionPath: string; readonly processes: ReadonlyArray<BackgroundProcess> }
+  | { readonly type: "project-git"; readonly projectPath: string; readonly git?: GitStatus }
   | { readonly type: "error"; readonly sessionPath?: string; readonly message: string }
 
 export interface PiDesktopApi {
@@ -121,6 +129,7 @@ export interface PiDesktopApi {
     readonly list: () => Promise<ReadonlyArray<Project>>
     readonly add: () => Promise<Project | null>
     readonly remove: (projectId: string) => Promise<void>
+    readonly refreshGit: (projectPath: string) => Promise<GitStatus | undefined>
   }
   readonly sessions: {
     readonly list: (projectPath: string) => Promise<ReadonlyArray<SessionSummary>>
@@ -140,6 +149,7 @@ export const IpcChannels = {
   listProjects: "projects:list",
   addProject: "projects:add",
   removeProject: "projects:remove",
+  refreshProjectGit: "projects:refresh-git",
   listSessions: "sessions:list",
   createSession: "sessions:create",
   openSession: "sessions:open",

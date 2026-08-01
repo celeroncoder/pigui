@@ -134,6 +134,10 @@
   .project-row .collapsed { transform: rotate(-90deg); }
   .row-more { opacity: 0; color: var(--text-3); }
   .project-row:hover .row-more { opacity: 1; }
+  .sidebar-git-context { min-width: 0; height: 20px; display: flex; align-items: center; gap: 5px; margin: -1px 8px 2px 34px; padding: 0 5px; border-left: 1px solid #5c4330; color: #a99b8e; font: 8px var(--mono); }
+  .sidebar-git-context svg { flex: 0 0 auto; color: #b98559; }
+  .sidebar-git-context > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .sidebar-git-context small { flex: 0 0 auto; margin-left: auto; color: #8e8378; font: inherit; }
   .session-list { position: relative; margin: 1px 0 7px 27px; padding-left: 10px; }
   .session-list::before { content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 1px; background: var(--line); }
   .session-row { position: relative; width: 100%; height: 31px; padding: 0 7px 0 9px; display: flex; align-items: center; gap: 6px; border-radius: 5px; background: transparent; color: var(--text-3); text-align: left; font-size: 11.5px; transition: background .14s ease, color .14s ease; }
@@ -151,7 +155,12 @@
   .conversation-header { height: 61px; display: flex; align-items: center; gap: 20px; padding: 0 24px; border-bottom: 1px solid var(--line-soft); background: rgba(11,12,13,.82); backdrop-filter: blur(16px); z-index: 2; }
   .conversation-title { min-width: 0; flex: 1; }
   .eyebrow { display: block; margin-bottom: 2px; color: var(--text-3); font-size: 9px; font-weight: 750; text-transform: uppercase; letter-spacing: .11em; }
-  .conversation-title h1 { width: 100%; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 9.5px/1.5 var(--display); letter-spacing: .015em; }
+  .session-heading { min-width: 0; display: flex; align-items: center; gap: 9px; }
+  .conversation-title h1 { min-width: 0; flex: 1; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 9.5px/1.5 var(--display); letter-spacing: .015em; }
+  .git-totals { flex: 0 0 auto; padding: 2px 5px; border: 1px solid #4e3b2c; border-radius: 5px; background: #171412; color: #dca46d; font: 8px var(--mono); }
+  .git-branch { min-width: 0; display: flex; align-items: center; gap: 5px; margin-top: 1px; overflow: hidden; color: #958c84; font: 8px/1.2 var(--mono); }
+  .git-branch svg { flex: 0 0 auto; color: #aa7e59; }
+  .git-branch > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .conversation-header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
   .subagent-toggle, .background-toggle { height: 30px; flex: 0 0 auto; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 0; border-radius: 10px; background: linear-gradient(180deg, #202122, #171819); color: #aaa5a0; font-size: 10px; box-shadow: 0 1px 2px rgba(0,0,0,.32), inset 0 0 0 1px rgba(255,255,255,.09), inset 0 1px rgba(255,255,255,.04); }
   .subagent-toggle:hover, .subagent-toggle.active, .background-toggle:hover, .background-toggle.active { color: #e7bd94; filter: brightness(1.1); }

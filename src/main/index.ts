@@ -1,7 +1,8 @@
 import { join } from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron"
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect"
-import { IpcChannels } from "../shared/contracts"
+import { IpcChannels, type Project } from "../shared/contracts"
+import { GitContext, GitContextLive } from "./services/GitContext"
 import { PiSessions, PiSessionsLive } from "./services/PiSessions"
 import { ProjectStore, ProjectStoreLive } from "./services/ProjectStore"
 import { WindowBusLive } from "./services/WindowBus"
@@ -11,12 +12,13 @@ const ThinkingLevelSchema = Schema.Literals(["off", "minimal", "low", "medium", 
 const decodeString = Schema.decodeUnknownEffect(NonEmptyString)
 const decodeThinkingLevel = Schema.decodeUnknownEffect(ThinkingLevelSchema)
 
-const PiLayer = Layer.provide(PiSessionsLive, WindowBusLive)
-const AppLayer = Layer.mergeAll(ProjectStoreLive, PiLayer)
+const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive)
+const AppServices = Layer.mergeAll(ProjectStoreLive, PiSessionsLive)
+const AppLayer = Layer.provideMerge(AppServices, AppDependencies)
 const runtime = ManagedRuntime.make(AppLayer)
 let isShuttingDown = false
 
-const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions>): Promise<A> => {
+const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext>): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect)
   if (Exit.isSuccess(exit)) return exit.value
   if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) return new Promise<A>(() => undefined)
@@ -30,6 +32,20 @@ const resolveKnownProject = Effect.fn("resolveKnownProject")(function*(input: un
   const project = projects.find((candidate) => candidate.path === requestedPath)
   if (!project) return yield* Effect.fail(new Error("Unknown project folder"))
   return project.path
+})
+
+const enrichProject = Effect.fn("enrichProject")(function*(project: Project) {
+  const git = yield* GitContext
+  const status = yield* git.inspect(project.path).pipe(
+    Effect.catchTag("GitContextError", () => Effect.succeed(undefined))
+  )
+  return status ? { ...project, git: status } : project
+})
+
+const listProjectsWithGit = Effect.fn("listProjectsWithGit")(function*() {
+  const store = yield* ProjectStore
+  const projects = yield* store.list()
+  return yield* Effect.forEach(projects, enrichProject, { concurrency: 4 })
 })
 
 const appIconPath = join(__dirname, "../renderer/pi-icon.png")
@@ -76,10 +92,7 @@ const createWindow = () => {
 }
 
 const registerIpc = () => {
-  ipcMain.handle(IpcChannels.listProjects, () => run(Effect.gen(function*() {
-    const store = yield* ProjectStore
-    return yield* store.list()
-  })))
+  ipcMain.handle(IpcChannels.listProjects, () => run(listProjectsWithGit()))
 
   ipcMain.handle(IpcChannels.addProject, () => run(Effect.gen(function*() {
     const result = yield* Effect.tryPromise({
@@ -89,13 +102,22 @@ const registerIpc = () => {
     const folderPath = result.filePaths[0]
     if (result.canceled || !folderPath) return null
     const store = yield* ProjectStore
-    return yield* store.add(folderPath)
+    const project = yield* store.add(folderPath)
+    return yield* enrichProject(project)
   })))
 
   ipcMain.handle(IpcChannels.removeProject, (_event, projectId: unknown) => run(Effect.gen(function*() {
     const id = yield* decodeString(projectId)
     const store = yield* ProjectStore
     yield* store.remove(id)
+  })))
+
+  ipcMain.handle(IpcChannels.refreshProjectGit, (_event, projectPath: unknown) => run(Effect.gen(function*() {
+    const cwd = yield* resolveKnownProject(projectPath)
+    const git = yield* GitContext
+    return yield* git.inspect(cwd).pipe(
+      Effect.catchTag("GitContextError", () => Effect.succeed(undefined))
+    )
   })))
 
   ipcMain.handle(IpcChannels.listSessions, (_event, projectPath: unknown) => run(Effect.gen(function*() {

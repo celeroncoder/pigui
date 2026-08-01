@@ -1,10 +1,31 @@
+import { execFile } from "node:child_process"
 import { copyFile, mkdir, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const cwd = root
+const execFileAsync = promisify(execFile)
+const gitOutput = async (args) => {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd, maxBuffer: 512 * 1024 })
+    return stdout
+  } catch {
+    return ""
+  }
+}
+const numericStat = (value) => {
+  const number = Number(value)
+  return Number.isSafeInteger(number) && number >= 0 ? number : 0
+}
+const gitBranch = (await gitOutput(["symbolic-ref", "--quiet", "--short", "HEAD"])).trim()
+const gitTotals = (await gitOutput(["diff", "--numstat", "--no-ext-diff", "--no-renames", "HEAD", "--"])).split("\n")
+  .reduce((totals, line) => {
+    const [added, deleted] = line.split("\t")
+    return { additions: totals.additions + numericStat(added), deletions: totals.deletions + numericStat(deleted) }
+  }, { additions: 0, deletions: 0 })
 const infos = await SessionManager.list(cwd)
 const preferred = infos.find((info) => !info.name?.startsWith("subagent:")) ?? infos[0]
 const orderedInfos = preferred ? [preferred, ...infos.filter((info) => info.path !== preferred.path)] : infos
@@ -38,7 +59,8 @@ const project = {
   id: `e2e-${Buffer.from(cwd).toString("base64url").slice(0, 12)}`,
   path: cwd,
   name: basename(cwd),
-  addedAt: Date.now()
+  addedAt: Date.now(),
+  ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals } } : {})
 }
 
 const parentCandidates = new Map()

@@ -1,4 +1,4 @@
-import { ChevronDown, Folder, FolderPlus, MoreHorizontal, Plus } from "lucide-react"
+import { ChevronDown, Folder, FolderPlus, GitBranch, MoreHorizontal, Plus } from "lucide-react"
 import type { Project, SessionSummary } from "../../../shared/contracts"
 
 interface ProjectSidebarProps {
@@ -72,6 +72,14 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 <span>{project.name}</span>
                 <MoreHorizontal className="row-more" size={15} />
               </button>
+
+              {isActive && project.git && (
+                <div className="sidebar-git-context" title={`Current branch: ${project.git.branch}`}>
+                  <GitBranch size={11} aria-hidden="true" />
+                  <span>{compactLabel(project.git.branch, 29)}</span>
+                  <small>+{project.git.additions}/-{project.git.deletions}</small>
+                </div>
+              )}
 
               {isActive && (
                 <div className="session-list">

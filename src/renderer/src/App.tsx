@@ -1,6 +1,6 @@
-import { CircleDashed, FolderPlus, PanelRightOpen, Sparkles, SquareTerminal } from "lucide-react"
+import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { ChatMessage, ModelOption, Project, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import type { ChatMessage, GitStatus, ModelOption, Project, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
 import { ActivityGroup } from "./components/ActivityGroup"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
@@ -126,6 +126,20 @@ export default function App() {
     }
   }, [])
 
+  const refreshProjectGit = useCallback(async (project: Project) => {
+    try {
+      const git = await desktopApi.projects.refreshGit(project.path)
+      if (activeProjectIdRef.current !== project.id) return
+      const updateProject = (current: Project) => current.id === project.id
+        ? git ? { ...current, git } : { id: current.id, path: current.path, name: current.name, addedAt: current.addedAt }
+        : current
+      setProjects((current) => current.map(updateProject))
+      setActiveProject((current) => current ? updateProject(current) : current)
+    } catch {
+      // Git context is auxiliary; a project remains usable if Git is unavailable.
+    }
+  }, [])
+
   const selectProject = useCallback(async (project: Project) => {
     const requestId = ++projectRequestRef.current
     ++sessionRequestRef.current
@@ -140,6 +154,7 @@ export default function App() {
     setActivities([])
     setLoadingSessions(true)
     setError(null)
+    void refreshProjectGit(project)
     try {
       const nextSessions = await desktopApi.sessions.list(project.path)
       if (requestId !== projectRequestRef.current || activeProjectIdRef.current !== project.id) return
@@ -153,7 +168,7 @@ export default function App() {
     } finally {
       if (requestId === projectRequestRef.current) setLoadingSessions(false)
     }
-  }, [openSession])
+  }, [openSession, refreshProjectGit])
 
   useEffect(() => {
     void desktopApi.projects.list().then((items) => {
@@ -185,6 +200,16 @@ export default function App() {
   useEffect(() => desktopApi.onSessionEvent((event: SessionEvent) => {
     if (event.type === "error") {
       setError(event.message)
+      return
+    }
+    if (event.type === "project-git") {
+      const project = activeProjectRef.current
+      if (!project || project.path !== event.projectPath) return
+      const updateProject = (current: Project) => current.path === event.projectPath
+        ? event.git ? { ...current, git: event.git } : { id: current.id, path: current.path, name: current.name, addedAt: current.addedAt }
+        : current
+      setProjects((current) => current.map(updateProject))
+      setActiveProject((current) => current ? updateProject(current) : current)
       return
     }
     if (event.sessionPath !== activeSessionPathRef.current) return
@@ -431,6 +456,7 @@ export default function App() {
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
   const runningProcesses = backgroundProcesses.length
   const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
+  const git: GitStatus | undefined = activeProject?.git
 
   return (
     <div className="app-shell">
@@ -459,7 +485,11 @@ export default function App() {
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
-              <h1 title={session?.summary.name}>{compactLabel(session?.summary.name ?? "New Pi session", 72)}</h1>
+              <div className="session-heading">
+                <h1 title={session?.summary.name}>{compactLabel(session?.summary.name ?? "New Pi session", 72)}</h1>
+                {git && <span className="git-totals" title={`${git.additions} lines added, ${git.deletions} lines deleted`} aria-label={`${git.additions} lines added, ${git.deletions} lines deleted`}>+{git.additions}/-{git.deletions}</span>}
+              </div>
+              {git && <span className="git-branch" title={`Current branch: ${git.branch}`}><GitBranch size={11} aria-hidden="true" /><span>{git.branch}</span></span>}
             </div>
             <div className="conversation-header-actions">
               {backgroundProcesses.length > 0 && (

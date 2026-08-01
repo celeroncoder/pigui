@@ -1,7 +1,14 @@
 import { Schema } from "effect"
 import type { PiDesktopApi, SessionDetail } from "../../../shared/contracts"
 
-const ProjectSchema = Schema.Struct({ id: Schema.String, path: Schema.String, name: Schema.String, addedAt: Schema.Number })
+const GitStatusSchema = Schema.Struct({ branch: Schema.String, additions: Schema.Number, deletions: Schema.Number })
+const ProjectSchema = Schema.Struct({
+  id: Schema.String,
+  path: Schema.String,
+  name: Schema.String,
+  addedAt: Schema.Number,
+  git: Schema.optionalKey(GitStatusSchema)
+})
 const SessionSummarySchema = Schema.Struct({
   id: Schema.String,
   path: Schema.String,
@@ -75,7 +82,8 @@ export const createE2eApi = (): PiDesktopApi => ({
   projects: {
     list: async () => (await loadFixture()).projects,
     add: async () => (await loadFixture()).projects[0] ?? null,
-    remove: async () => undefined
+    remove: async () => undefined,
+    refreshGit: async (projectPath) => (await loadFixture()).projects.find((project) => project.path === projectPath)?.git
   },
   sessions: {
     list: async () => (await loadFixture()).sessions,
