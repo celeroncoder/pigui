@@ -142,7 +142,7 @@ export function AskUserPanel({ request, submitting, onAnswer }: AskUserPanelProp
             </button>
             <button type="submit" className="ask-user-submit" disabled={submitting || !customAnswer.trim()}>
               <Check size={14} />
-              {submitting ? "Sending…" : "Submit answer"}
+              {submitting ? "Sending…" : "Submit"}
             </button>
           </div>
         </form>

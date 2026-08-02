@@ -7,7 +7,7 @@ const statusLabel: Record<BackgroundProcess["status"], string> = {
   done: "Complete",
   failed: "Failed",
   killed: "Stopped",
-  stopped: "Historical"
+  stopped: "Previous"
 }
 
 const formatElapsed = (process: BackgroundProcess) => {

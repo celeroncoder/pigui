@@ -11,7 +11,7 @@ const effortLabel: Record<ThinkingLevel, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
-  xhigh: "XHigh",
+  xhigh: "Very high",
   max: "Max"
 }
 
