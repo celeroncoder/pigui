@@ -171,6 +171,12 @@ export interface ModelOption {
   readonly name: string
 }
 
+/** Provider models known to Pi, with a non-blocking availability check status. */
+export interface ModelAvailability {
+  readonly models: ReadonlyArray<ModelOption>
+  readonly status: "pending" | "ready" | "error"
+}
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
 /** Pi's native runtime delivery queues. */
@@ -248,6 +254,7 @@ export type SessionEvent =
   | { readonly type: "compaction-status"; readonly sessionPath: string; readonly isCompacting: boolean }
   | { readonly type: "context-usage"; readonly sessionPath: string; readonly contextUsage?: ContextUsage }
   | { readonly type: "background-processes"; readonly sessionPath: string; readonly processes: ReadonlyArray<BackgroundProcess> }
+  | { readonly type: "model-availability"; readonly sessionPath: string; readonly availability: ModelAvailability }
   | { readonly type: "project-git"; readonly worktreePath: string; readonly git?: GitStatus }
   | { readonly type: "interaction-request"; readonly sessionPath: string; readonly request: AskUserInteractionRequest }
   | { readonly type: "interaction-cleared"; readonly sessionPath: string; readonly requestId: string }
@@ -281,7 +288,7 @@ export interface PiDesktopApi {
     readonly removeQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<void>
     readonly steerQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<void>
     readonly abort: (context: WorktreeContext, sessionPath: string) => Promise<void>
-    readonly models: (context: WorktreeContext, sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
+    readonly models: (context: WorktreeContext, sessionPath: string) => Promise<ModelAvailability>
     readonly setModel: (context: WorktreeContext, sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
     readonly setThinkingLevel: (context: WorktreeContext, sessionPath: string, level: ThinkingLevel) => Promise<SessionDetail>
     readonly answerInteraction: (context: WorktreeContext, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Promise<void>
