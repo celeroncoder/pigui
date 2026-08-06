@@ -1,4 +1,4 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
@@ -14,11 +14,10 @@ import { ProjectSidebar, type WorktreeSessionList } from "./components/ProjectSi
 import { ProviderLogo } from "./components/ProviderLogo"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
-import { TransportRecoveryPanel } from "./components/TransportRecoveryPanel"
 import styles from "./App.module.css"
 import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
-import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
+import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, findLastUserTurnIndex, latestTransientStatus } from "./lib/conversation"
 import { applySessionRuntimeStatus } from "./lib/runtimeStatuses"
 import { compactLabel } from "./lib/text"
 
@@ -813,6 +812,7 @@ export default function App() {
       previewLandmarks: allPreviews.filter((_landmark, index) => index === 0 || index === allPreviews.length - 1 || index % previewStride === 0)
     }
   }, [displayMessages])
+  const recoveryTurnIndex = session?.recovery ? findLastUserTurnIndex(conversationItems) : -1
   const linkedSubagents = sessions.filter((candidate) => candidate.parentSessionPath === session?.summary.path)
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
   const runningProcesses = backgroundProcesses.length
@@ -850,7 +850,7 @@ export default function App() {
           onNewSession={(project, worktree) => void newSession(project, worktree)}
         />
 
-        <main className={`conversation ${(interactionRequest || session?.recovery) ? "has-interaction" : ""}`} id="main-content">
+        <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject && activeWorktree ? `${activeProject.name} / ${activeWorktree.name}` : "Workspace"}</span>
@@ -949,19 +949,9 @@ export default function App() {
             </div>
           </div>
 
-          {(interactionRequest || session?.recovery) && (
+          {interactionRequest && (
             <div className={styles.sessionNotices}>
-              {session?.recovery && (
-                <TransportRecoveryPanel
-                  recovery={session.recovery}
-                  queuedCount={session.queuedMessages.length}
-                  busy={recoverySubmitting}
-                  onRecover={recoverSession}
-                />
-              )}
-              {interactionRequest && (
-                <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
-              )}
+              <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
             </div>
           )}
 
@@ -975,6 +965,11 @@ export default function App() {
               isStreaming={session?.isStreaming ?? false}
               liveStatus={liveStatus}
               onOpenImage={setLightboxImage}
+              recovery={session?.recovery}
+              recoveryTurnIndex={recoveryTurnIndex}
+              queuedRecoveryCount={session?.queuedMessages.length ?? 0}
+              recoveryBusy={recoverySubmitting}
+              onRecover={recoverSession}
             />
           ) : (
             <div className="message-scroll-shell">
@@ -1009,7 +1004,7 @@ export default function App() {
             key={session?.summary.path ?? (sessionDraft ? `draft:${activeWorktree?.id ?? "worktree"}` : "no-session")}
             value={draft}
             disabled={(!session && (!sessionDraft || draftContextLoading || draftStarting)) || interactionRequest !== null || session?.recovery !== undefined || recoverySubmitting}
-            disabledReason={interactionRequest ? "Answer Pi above to continue…" : session?.recovery ? "Choose a recovery option above…" : recoverySubmitting ? "Recovering Pi session…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
+            disabledReason={interactionRequest ? "Answer Pi above to continue…" : session?.recovery ? "Choose how to recover below your last message…" : recoverySubmitting ? "Recovering Pi session…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? (sessionDraft ? "Pi default" : modelAvailability === "pending" ? "Checking providers…" : "Choose model")}

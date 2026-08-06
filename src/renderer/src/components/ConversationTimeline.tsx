@@ -1,10 +1,11 @@
 import { CircleDashed } from "lucide-react"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import type { AttachmentPreview } from "../../../shared/contracts"
+import type { AttachmentPreview, SessionRecovery, SessionRecoveryAction } from "../../../shared/contracts"
 import { ActivityGroup } from "./ActivityGroup"
 import { MessagePreviewRail } from "./MessagePreviewRail"
 import { MessageView } from "./MessageView"
+import { TransportRecoveryPanel } from "./TransportRecoveryPanel"
 import type { ConversationItem, MessagePreviewLandmark } from "../lib/conversation"
 import { buildVirtualLayout, calculateVirtualRange, ESTIMATED_TIMELINE_ITEM_HEIGHT, initialHistoryStart, nextHistoryStart } from "../lib/timelineVirtualization"
 
@@ -16,6 +17,11 @@ type ConversationTimelineProps = {
   readonly isStreaming: boolean
   readonly liveStatus?: string
   readonly onOpenImage: (preview: AttachmentPreview) => void
+  readonly recovery?: SessionRecovery
+  readonly recoveryTurnIndex: number
+  readonly queuedRecoveryCount: number
+  readonly recoveryBusy: boolean
+  readonly onRecover: (action: SessionRecoveryAction) => void
 }
 
 type PendingScroll = { readonly type: "target"; readonly id: string }
@@ -28,7 +34,7 @@ const setScrollTopImmediately = (root: HTMLDivElement, top: number) => {
   root.style.scrollBehavior = previousBehavior
 }
 
-export function ConversationTimeline({ items, landmarks, previewLandmarks, previewTotalCount, isStreaming, liveStatus, onOpenImage }: ConversationTimelineProps) {
+export function ConversationTimeline({ items, landmarks, previewLandmarks, previewTotalCount, isStreaming, liveStatus, onOpenImage, recovery, recoveryTurnIndex, queuedRecoveryCount, recoveryBusy, onRecover }: ConversationTimelineProps) {
   const [historyStart, setHistoryStart] = useState(() => initialHistoryStart(items.length))
   const [viewport, setViewport] = useState({ top: 0, height: 0 })
   const [surfaceOffset, setSurfaceOffset] = useState(0)
@@ -257,10 +263,16 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
                   {item.type === "message"
                     ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={onOpenImage} />
                     : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={isStreaming && absoluteIndex === lastActivityIndex} onOpenImage={onOpenImage} />}
+                  {recovery && absoluteIndex === recoveryTurnIndex && (
+                    <TransportRecoveryPanel recovery={recovery} queuedCount={queuedRecoveryCount} busy={recoveryBusy} onRecover={onRecover} />
+                  )}
                 </li>
               )
             })}
           </ol>
+          {recovery && (recoveryTurnIndex < 0 || recoveryTurnIndex < clampedHistoryStart) && (
+            <TransportRecoveryPanel recovery={recovery} queuedCount={queuedRecoveryCount} busy={recoveryBusy} onRecover={onRecover} />
+          )}
           {isStreaming && (
             <div className="live-status" role="status" aria-live="polite">
               <CircleDashed size={14} />
