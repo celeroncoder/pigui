@@ -1,7 +1,8 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal, X } from "lucide-react"
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
+import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { ActivityGroup } from "./components/ActivityGroup"
 import { AskUserPanel } from "./components/AskUserPanel"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
@@ -21,33 +22,12 @@ const compactLabel = (value: string, maxLength: number) => {
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized
 }
 
-const appendTextDelta = (detail: SessionDetail, messageId: string, delta: string): SessionDetail => {
-  const found = detail.messages.some((message) => message.id === messageId)
-  const messages = found ? detail.messages : [
-    ...detail.messages,
-    { id: messageId, role: "assistant", blocks: [], timestamp: Date.now() } satisfies ChatMessage
-  ]
-
-  return {
-    ...detail,
-    messages: messages.map((message) => {
-      if (message.id !== messageId) return message
-      const last = message.blocks.at(-1)
-      if (last?.type === "text") {
-        return { ...message, blocks: [...message.blocks.slice(0, -1), { type: "text", text: `${last.text}${delta}` }] }
-      }
-      return { ...message, blocks: [...message.blocks, { type: "text", text: delta }] }
-    })
-  }
-}
-
 export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
   const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [liveThinking, setLiveThinking] = useState<{ readonly messageId: string; readonly text: string } | null>(null)
-  const [activities, setActivities] = useState<ReadonlyArray<ToolActivity>>([])
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
   const [backgroundPaneOpen, setBackgroundPaneOpen] = useState(false)
   const [selectedSubagent, setSelectedSubagent] = useState<SessionSummary | null>(null)
@@ -110,7 +90,6 @@ export default function App() {
     setDraft("")
     setModelOptions([])
     setError(null)
-    setActivities([])
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
@@ -179,7 +158,6 @@ export default function App() {
     setDraft("")
     setSessions([])
     setModelOptions([])
-    setActivities([])
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
@@ -230,6 +208,7 @@ export default function App() {
 
   useEffect(() => desktopApi.onSessionEvent((event: SessionEvent) => {
     if (event.type === "error") {
+      if (event.sessionPath && event.sessionPath !== activeSessionPathRef.current) return
       setError(event.message)
       return
     }
@@ -244,7 +223,8 @@ export default function App() {
       setActiveProject((current) => current ? updateProject(current) : current)
       return
     }
-    if (event.sessionPath !== activeSessionPathRef.current) return
+    const activeSessionPath = activeSessionPathRef.current
+    if (event.sessionPath !== activeSessionPath) return
 
     if (event.type === "interaction-request") {
       setInteractionRequest(event.request)
@@ -261,7 +241,7 @@ export default function App() {
 
     if (event.type === "session-state") {
       setLiveThinking(null)
-      setSession(event.detail)
+      setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
       setInteractionRequest(event.detail.interactionRequest ?? null)
       setSessions((current) => [
         event.detail.summary,
@@ -269,31 +249,11 @@ export default function App() {
       ])
       return
     }
-    if (event.type === "queue-update") {
-      setSession((current) => current ? { ...current, queuedMessages: event.messages } : current)
-      return
-    }
-    if (event.type === "user-message") {
-      setSession((current) => current ? {
-        ...current,
-        messages: current.messages.some((message) => message.id === event.message.id) ? current.messages : [...current.messages, event.message]
-      } : current)
-      return
-    }
     if (event.type === "assistant-start") {
       setLiveThinking(null)
-      setSession((current) => current ? {
-        ...current,
-        messages: current.messages.some((message) => message.id === event.messageId)
-          ? current.messages
-          : [...current.messages, { id: event.messageId, role: "assistant", blocks: [], timestamp: event.timestamp }]
-      } : current)
-      return
     }
     if (event.type === "text-delta") {
       setLiveThinking(null)
-      setSession((current) => current ? appendTextDelta(current, event.messageId, event.delta) : current)
-      return
     }
     if (event.type === "thinking-delta") {
       setLiveThinking((current) => ({
@@ -303,7 +263,6 @@ export default function App() {
       return
     }
     if (event.type === "tool-start") {
-      setActivities((current) => [event.tool, ...current.filter((item) => item.id !== event.tool.id)])
       if (event.tool.name === "subagent_spawn") {
         window.setTimeout(() => {
           const project = activeProjectRef.current
@@ -313,64 +272,11 @@ export default function App() {
           })
         }, 1200)
       }
-      setSession((current) => {
-        if (!current) return current
-        const assistantIndex = current.messages.findLastIndex((message) => message.role === "assistant")
-        const assistant = current.messages[assistantIndex]
-        if (!assistant || assistant.blocks.some((block) => block.type === "tool-call" && block.id === event.tool.id)) return current
-        return {
-          ...current,
-          messages: current.messages.map((message, index) => index === assistantIndex ? {
-            ...message,
-            blocks: [...message.blocks, { type: "tool-call", id: event.tool.id, name: event.tool.name, input: event.tool.input ?? "" }]
-          } : message)
-        }
-      })
-      return
-    }
-    if (event.type === "tool-update") {
-      setActivities((current) => current.map((item) => item.id === event.toolId ? { ...item, output: event.output } : item))
-      return
-    }
-    if (event.type === "tool-end") {
-      setActivities((current) => current.map((item) => item.id === event.toolId
-        ? { ...item, output: event.output, status: event.isError ? "error" : "success" }
-        : item))
-      setSession((current) => {
-        if (!current) return current
-        const assistantIndex = current.messages.findLastIndex((message) => message.blocks.some((block) => block.type === "tool-call" && block.id === event.toolId))
-        const assistant = current.messages[assistantIndex]
-        if (!assistant || assistant.blocks.some((block) => block.type === "tool-result" && block.id === event.toolId)) return current
-        const toolCall = assistant.blocks.find((block) => block.type === "tool-call" && block.id === event.toolId)
-        return {
-          ...current,
-          messages: current.messages.map((message, index) => index === assistantIndex ? {
-            ...message,
-            blocks: [...message.blocks, {
-              type: "tool-result",
-              id: event.toolId,
-              name: toolCall?.type === "tool-call" ? toolCall.name : "tool",
-              output: event.output,
-              isError: event.isError,
-              ...(event.diff ? { diff: event.diff } : {})
-            }]
-          } : message)
-        }
-      })
-      return
-    }
-    if (event.type === "compaction-status") {
-      setSession((current) => current ? { ...current, isCompacting: event.isCompacting } : current)
-      return
-    }
-    if (event.type === "background-processes") {
-      setSession((current) => current ? { ...current, backgroundProcesses: event.processes } : current)
-      return
     }
     if (event.type === "agent-status") {
       if (!event.isStreaming) setLiveThinking(null)
-      setSession((current) => current ? { ...current, isStreaming: event.isStreaming } : current)
     }
+    setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
   }), [])
 
   useEffect(() => {
@@ -423,7 +329,6 @@ export default function App() {
       interactionSubmittingRef.current = false
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
       void loadModels(detail.summary.path)
-      setActivities([])
     } catch (cause) {
       if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
         setError(cause instanceof Error ? cause.message : "Could not create session")
