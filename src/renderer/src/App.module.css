@@ -1,0 +1,5 @@
+@layer components {
+  .headerControl { height: 30px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; padding: 0 9px; border: 0; border-radius: 10px; background: linear-gradient(180deg, #202122, #171819); color: #aaa5a0; box-shadow: 0 1px 2px rgba(0,0,0,.32), inset 0 0 0 1px rgba(255,255,255,.09), inset 0 1px rgba(255,255,255,.04); }
+  .headerControl:hover, .headerControl.active { color: #e7bd94; filter: brightness(1.1); }
+  .gitTotals { font: 8px var(--mono); white-space: nowrap; }
+}

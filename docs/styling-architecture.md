@@ -2,7 +2,7 @@
 
 ## Decision: CSS Modules, migrated incrementally
 
-Use CSS Modules for component-owned renderer styles and retain `src/renderer/src/styles.css` as the deliberately limited global foundation. The Background Processes pane is the proof of concept: its styles are now in the co-located `BackgroundProcessesPane.module.css`, with no visual or behavioral change intended.
+Use CSS Modules for component-owned renderer styles and retain `src/renderer/src/styles.css` as the deliberately limited global foundation. The Background Processes pane, Git Diff pane, and context-usage controls demonstrate the approach: each owns a co-located module, with no visual or behavioral change intended during migration.
 
 ### Why CSS Modules fit Pi Desktop
 
@@ -27,7 +27,7 @@ When a parent changes a child’s layout (for example, `.workspace-layout.with-s
 
 ## Incremental migration plan
 
-1. Move leaf components with self-contained markup first: `BackgroundProcessesPane` (complete), then `Inspector`, `ImageAttachmentCard`, and `ActivityGroup`.
+1. Move leaf components with self-contained markup first: `BackgroundProcessesPane`, `GitDiffPane`, `ContextUsageDonut`, and `DitherProgressBar` are complete; next are `Inspector`, `ImageAttachmentCard`, and `ActivityGroup`.
 2. Move medium-sized component families in reviewable commits: `ProjectSidebar`, `AskUserPanel`, `SubagentPane`, and `Composer`. Keep shared controls separate until their ownership is clear.
 3. Move message rendering and `App` last. First replace cross-component descendant selectors with props or local wrapper classes, then co-locate their CSS.
 4. Delete each global block only in the same change that introduces its module. Preserve selectors and declarations initially; refactoring names or visual values is a separate change.

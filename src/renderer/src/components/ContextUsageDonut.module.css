@@ -1,0 +1,20 @@
+@layer components {
+  .control { position: relative; flex: 0 0 auto; color: #7b8d80; }
+  .control.warning { color: #d39a67; }
+  .control.critical { color: #df8980; }
+  .control.unknown { color: #777773; }
+  .button { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; }
+  .button:hover { background: #202122; }
+  .button svg { width: 25px; height: 25px; transform: rotate(-90deg); overflow: visible; }
+  .track, .fill { fill: none; stroke-width: 3.5; }
+  .track { stroke: #383a3c; }
+  .fill { stroke: currentColor; stroke-linecap: round; transition: stroke-dashoffset .2s ease; }
+  .tooltip { position: absolute; z-index: 26; right: 0; bottom: calc(100% + 9px); width: 307px; max-width: min(307px, calc(100vw - 34px)); display: grid; gap: 10px; padding: 14px; border: 1px solid #3d3f41; border-radius: 9px; background: linear-gradient(145deg, #1a1b1c, #151617); color: #aaa7a2; font: 12px/1.25 var(--sans); white-space: normal; box-shadow: 0 16px 40px rgba(0,0,0,.5), inset 0 1px rgba(255,255,255,.025); opacity: 0; pointer-events: none; transform: translateY(3px); transition: opacity .15s ease, transform .15s ease; }
+  .control.isOpen .tooltip { opacity: 1; transform: translateY(0); }
+  .tooltipHeader, .tooltipRow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .tooltipHeader strong { color: #b5b2ad; font-size: 13px; font-weight: 650; }
+  .tooltipHeader small { color: #97938f; font: 11px var(--mono); white-space: nowrap; }
+  .divider { height: 1px; background: #2d2f31; }
+  .tooltipRow > span { color: #817d78; }
+  .tooltipRow > strong { color: #aaa6a1; font: 11px var(--mono); font-weight: 400; text-align: right; }
+}

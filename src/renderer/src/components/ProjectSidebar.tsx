@@ -1,5 +1,6 @@
 import { ChevronDown, Folder, FolderPlus, GitBranch, MoreHorizontal, Plus } from "lucide-react"
 import type { Project, SessionSummary } from "../../../shared/contracts"
+import { compactLabel } from "../lib/text"
 
 interface ProjectSidebarProps {
   readonly projects: ReadonlyArray<Project>
@@ -11,11 +12,6 @@ interface ProjectSidebarProps {
   readonly onSelectSession: (session: SessionSummary) => void
   readonly onAddProject: () => void
   readonly onNewSession: () => void
-}
-
-const compactLabel = (value: string, maxLength = 34) => {
-  const normalized = value.replace(/\s+/g, " ").trim()
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized
 }
 
 const formatRelative = (timestamp: number) => {
@@ -77,7 +73,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 <div className="sidebar-git-context" title={`Current branch: ${project.git.branch}`}>
                   <GitBranch size={11} aria-hidden="true" />
                   <span>{compactLabel(project.git.branch, 29)}</span>
-                  <small>+{project.git.additions}/-{project.git.deletions}</small>
+                  {(project.git.additions > 0 || project.git.deletions > 0) && <small>+{project.git.additions}/-{project.git.deletions}</small>}
                 </div>
               )}
 

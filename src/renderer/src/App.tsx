@@ -1,45 +1,26 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal, X } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolActivity } from "../../shared/contracts"
+import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
+import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { ActivityGroup } from "./components/ActivityGroup"
 import { AskUserPanel } from "./components/AskUserPanel"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
 import { Composer } from "./components/Composer"
 // import { Inspector } from "./components/Inspector"
-import { MessagePreviewRail, type MessagePreviewLandmark } from "./components/MessagePreviewRail"
+import { MessagePreviewRail } from "./components/MessagePreviewRail"
 import { MessageView } from "./components/MessageView"
 import { ProjectSidebar } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
+import styles from "./App.module.css"
+import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
-import { buildConversationItems, latestTransientStatus } from "./lib/conversation"
+import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
+import { compactLabel } from "./lib/text"
 
-const compactLabel = (value: string, maxLength: number) => {
-  const normalized = value.replace(/\s+/g, " ").trim()
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized
-}
-
-const appendTextDelta = (detail: SessionDetail, messageId: string, delta: string): SessionDetail => {
-  const found = detail.messages.some((message) => message.id === messageId)
-  const messages = found ? detail.messages : [
-    ...detail.messages,
-    { id: messageId, role: "assistant", blocks: [], timestamp: Date.now() } satisfies ChatMessage
-  ]
-
-  return {
-    ...detail,
-    messages: messages.map((message) => {
-      if (message.id !== messageId) return message
-      const last = message.blocks.at(-1)
-      if (last?.type === "text") {
-        return { ...message, blocks: [...message.blocks.slice(0, -1), { type: "text", text: `${last.text}${delta}` }] }
-      }
-      return { ...message, blocks: [...message.blocks, { type: "text", text: delta }] }
-    })
-  }
-}
+const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
 
 export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
@@ -47,9 +28,11 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [liveThinking, setLiveThinking] = useState<{ readonly messageId: string; readonly text: string } | null>(null)
-  const [activities, setActivities] = useState<ReadonlyArray<ToolActivity>>([])
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
   const [backgroundPaneOpen, setBackgroundPaneOpen] = useState(false)
+  const [gitPaneOpen, setGitPaneOpen] = useState(false)
+  const [gitDiff, setGitDiff] = useState<GitDiff | null>(null)
+  const [gitDiffLoading, setGitDiffLoading] = useState(false)
   const [selectedSubagent, setSelectedSubagent] = useState<SessionSummary | null>(null)
   const [subagentDetail, setSubagentDetail] = useState<SessionDetail | null>(null)
   const [subagentLoading, setSubagentLoading] = useState(false)
@@ -72,6 +55,7 @@ export default function App() {
   const activeProjectIdRef = useRef<string | null>(null)
   const projectRequestRef = useRef(0)
   const gitRequestRef = useRef(0)
+  const gitDiffRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const modelRequestRef = useRef(0)
   const subagentRequestRef = useRef(0)
@@ -110,7 +94,6 @@ export default function App() {
     setDraft("")
     setModelOptions([])
     setError(null)
-    setActivities([])
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
@@ -162,6 +145,19 @@ export default function App() {
     }
   }, [])
 
+  const loadGitDiff = useCallback(async (project: Project) => {
+    const requestId = ++gitDiffRequestRef.current
+    setGitDiffLoading(true)
+    try {
+      const diff = await desktopApi.projects.diff(project.path)
+      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setGitDiff(diff ?? { files: [], truncated: false, omittedFiles: 0 })
+    } catch (cause) {
+      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setError(cause instanceof Error ? cause.message : "Could not load Git changes")
+    } finally {
+      if (requestId === gitDiffRequestRef.current) setGitDiffLoading(false)
+    }
+  }, [])
+
   const selectProject = useCallback(async (project: Project) => {
     const requestId = ++projectRequestRef.current
     ++sessionRequestRef.current
@@ -172,6 +168,10 @@ export default function App() {
     draftRevisionRef.current += 1
     attachmentRevisionRef.current += 1
     setActiveProject(project)
+    ++gitDiffRequestRef.current
+    setGitPaneOpen(false)
+    setGitDiff(null)
+    setGitDiffLoading(false)
     setSession(null)
     setPendingAttachments([])
     setLightboxImage(null)
@@ -179,7 +179,6 @@ export default function App() {
     setDraft("")
     setSessions([])
     setModelOptions([])
-    setActivities([])
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
@@ -215,6 +214,9 @@ export default function App() {
     ++subagentRequestRef.current
     setSubagentPaneOpen(false)
     setBackgroundPaneOpen(false)
+    setGitPaneOpen(false)
+    setGitDiff(null)
+    setGitDiffLoading(false)
     setSelectedSubagent(null)
     setSubagentDetail(null)
     setSubagentLoading(false)
@@ -230,6 +232,7 @@ export default function App() {
 
   useEffect(() => desktopApi.onSessionEvent((event: SessionEvent) => {
     if (event.type === "error") {
+      if (event.sessionPath && event.sessionPath !== activeSessionPathRef.current) return
       setError(event.message)
       return
     }
@@ -242,9 +245,11 @@ export default function App() {
         : current
       setProjects((current) => current.map(updateProject))
       setActiveProject((current) => current ? updateProject(current) : current)
+      if (gitPaneOpen) void loadGitDiff(project)
       return
     }
-    if (event.sessionPath !== activeSessionPathRef.current) return
+    const activeSessionPath = activeSessionPathRef.current
+    if (event.sessionPath !== activeSessionPath) return
 
     if (event.type === "interaction-request") {
       setInteractionRequest(event.request)
@@ -261,7 +266,7 @@ export default function App() {
 
     if (event.type === "session-state") {
       setLiveThinking(null)
-      setSession(event.detail)
+      setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
       setInteractionRequest(event.detail.interactionRequest ?? null)
       setSessions((current) => [
         event.detail.summary,
@@ -269,31 +274,11 @@ export default function App() {
       ])
       return
     }
-    if (event.type === "queue-update") {
-      setSession((current) => current ? { ...current, queuedMessages: event.messages } : current)
-      return
-    }
-    if (event.type === "user-message") {
-      setSession((current) => current ? {
-        ...current,
-        messages: current.messages.some((message) => message.id === event.message.id) ? current.messages : [...current.messages, event.message]
-      } : current)
-      return
-    }
     if (event.type === "assistant-start") {
       setLiveThinking(null)
-      setSession((current) => current ? {
-        ...current,
-        messages: current.messages.some((message) => message.id === event.messageId)
-          ? current.messages
-          : [...current.messages, { id: event.messageId, role: "assistant", blocks: [], timestamp: event.timestamp }]
-      } : current)
-      return
     }
     if (event.type === "text-delta") {
       setLiveThinking(null)
-      setSession((current) => current ? appendTextDelta(current, event.messageId, event.delta) : current)
-      return
     }
     if (event.type === "thinking-delta") {
       setLiveThinking((current) => ({
@@ -303,7 +288,6 @@ export default function App() {
       return
     }
     if (event.type === "tool-start") {
-      setActivities((current) => [event.tool, ...current.filter((item) => item.id !== event.tool.id)])
       if (event.tool.name === "subagent_spawn") {
         window.setTimeout(() => {
           const project = activeProjectRef.current
@@ -313,65 +297,12 @@ export default function App() {
           })
         }, 1200)
       }
-      setSession((current) => {
-        if (!current) return current
-        const assistantIndex = current.messages.findLastIndex((message) => message.role === "assistant")
-        const assistant = current.messages[assistantIndex]
-        if (!assistant || assistant.blocks.some((block) => block.type === "tool-call" && block.id === event.tool.id)) return current
-        return {
-          ...current,
-          messages: current.messages.map((message, index) => index === assistantIndex ? {
-            ...message,
-            blocks: [...message.blocks, { type: "tool-call", id: event.tool.id, name: event.tool.name, input: event.tool.input ?? "" }]
-          } : message)
-        }
-      })
-      return
-    }
-    if (event.type === "tool-update") {
-      setActivities((current) => current.map((item) => item.id === event.toolId ? { ...item, output: event.output } : item))
-      return
-    }
-    if (event.type === "tool-end") {
-      setActivities((current) => current.map((item) => item.id === event.toolId
-        ? { ...item, output: event.output, status: event.isError ? "error" : "success" }
-        : item))
-      setSession((current) => {
-        if (!current) return current
-        const assistantIndex = current.messages.findLastIndex((message) => message.blocks.some((block) => block.type === "tool-call" && block.id === event.toolId))
-        const assistant = current.messages[assistantIndex]
-        if (!assistant || assistant.blocks.some((block) => block.type === "tool-result" && block.id === event.toolId)) return current
-        const toolCall = assistant.blocks.find((block) => block.type === "tool-call" && block.id === event.toolId)
-        return {
-          ...current,
-          messages: current.messages.map((message, index) => index === assistantIndex ? {
-            ...message,
-            blocks: [...message.blocks, {
-              type: "tool-result",
-              id: event.toolId,
-              name: toolCall?.type === "tool-call" ? toolCall.name : "tool",
-              output: event.output,
-              isError: event.isError,
-              ...(event.diff ? { diff: event.diff } : {})
-            }]
-          } : message)
-        }
-      })
-      return
-    }
-    if (event.type === "compaction-status") {
-      setSession((current) => current ? { ...current, isCompacting: event.isCompacting } : current)
-      return
-    }
-    if (event.type === "background-processes") {
-      setSession((current) => current ? { ...current, backgroundProcesses: event.processes } : current)
-      return
     }
     if (event.type === "agent-status") {
       if (!event.isStreaming) setLiveThinking(null)
-      setSession((current) => current ? { ...current, isStreaming: event.isStreaming } : current)
     }
-  }), [])
+    setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
+  }), [gitPaneOpen, loadGitDiff])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: session?.isStreaming ? "instant" : "smooth", block: "end" })
@@ -423,7 +354,6 @@ export default function App() {
       interactionSubmittingRef.current = false
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
       void loadModels(detail.summary.path)
-      setActivities([])
     } catch (cause) {
       if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
         setError(cause instanceof Error ? cause.message : "Could not create session")
@@ -563,49 +493,8 @@ export default function App() {
     ? [...session.messages, { id: "compaction-active", role: "system", blocks: [{ type: "compaction", status: "compacting" }], timestamp: Date.now() }]
     : session?.messages ?? []
   const conversationItems = buildConversationItems(displayMessages)
-  const allPreviewLandmarks: ReadonlyArray<MessagePreviewLandmark> = conversationItems.map((item) => {
-    const targetId = `conversation-landmark-${item.id}`
-    if (item.type === "activity") {
-      const toolNames = [...new Set(item.messages.flatMap((message) => message.blocks.flatMap((block) => block.type === "tool-call" ? [block.name] : [])))]
-      const toolCount = item.messages.reduce((total, message) => total + message.blocks.filter((block) => block.type === "tool-call").length, 0)
-      const thinkingCount = item.messages.reduce((total, message) => total + message.blocks.filter((block) => block.type === "thinking").length, 0)
-      const activityLabel = toolCount > 0
-        ? `${toolCount} tool ${toolCount === 1 ? "call" : "calls"}`
-        : `${thinkingCount} thinking ${thinkingCount === 1 ? "step" : "steps"}`
-      return {
-        id: `preview-${item.id}`,
-        targetId,
-        kind: "activity",
-        label: activityLabel,
-        detail: toolNames.slice(0, 2).join(" · ") || "Agent trace"
-      }
-    }
-
-    const compaction = item.message.blocks.find((block) => block.type === "compaction")
-    if (compaction?.type === "compaction") {
-      return {
-        id: `preview-${item.id}`,
-        targetId,
-        kind: "compaction",
-        label: compaction.status === "compacting" ? "Compacting context…" : "Context compacted",
-        detail: "Full history remains visible"
-      }
-    }
-
-    const text = item.message.blocks
-      .flatMap((block) => block.type === "text" ? [block.text] : [])
-      .join(" ")
-      .replace(/[#*_`~>\[\]]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-    return {
-      id: `preview-${item.id}`,
-      targetId,
-      kind: item.message.role === "user" ? "user" : "assistant",
-      label: compactLabel(text || (item.message.role === "user" ? "New prompt" : "Pi response"), 43),
-      detail: item.message.role === "user" ? "Your message" : "Assistant response"
-    }
-  })
+  const conversationLandmarks = buildConversationPreviewLandmarks(conversationItems)
+  const allPreviewLandmarks = filterUserMessagePreviewLandmarks(conversationLandmarks)
   const previewStride = Math.max(1, Math.ceil(allPreviewLandmarks.length / 28))
   const previewLandmarks = allPreviewLandmarks.filter((_landmark, index) => index === 0 || index === allPreviewLandmarks.length - 1 || index % previewStride === 0)
   const lastActivityIndex = conversationItems.findLastIndex((item) => item.type === "activity")
@@ -615,6 +504,12 @@ export default function App() {
   const runningProcesses = backgroundProcesses.length
   const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
   const git: GitStatus | undefined = activeProject?.git
+  const gitLineTotalsVisible = !!git && (git.additions > 0 || git.deletions > 0)
+  const gitChangedFiles = git?.changedFiles ?? 0
+  const gitChangesVisible = gitLineTotalsVisible || gitChangedFiles > 0
+  const gitChangeLabel = gitLineTotalsVisible
+    ? `${git?.additions ?? 0} lines added, ${git?.deletions ?? 0} lines deleted`
+    : `${gitChangedFiles} changed ${gitChangedFiles === 1 ? "file" : "files"}`
 
   return (
     <div className="app-shell">
@@ -626,7 +521,7 @@ export default function App() {
         <div className="titlebar-actions" />
       </header>
 
-      <div className={`workspace-layout ${(subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0) ? "with-subagents" : ""}`}>
+      <div className={`workspace-layout ${(gitPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""} ${gitPaneOpen ? "with-git" : ""}`}>
         <ProjectSidebar
           projects={projects}
           sessions={sidebarSessions}
@@ -645,7 +540,29 @@ export default function App() {
               <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
               <div className="session-heading">
                 <h1 title={session?.summary.name}>{compactLabel(session?.summary.name ?? "New Pi session", 72)}</h1>
-                {git && <span className="git-totals" title={`${git.additions} lines added, ${git.deletions} lines deleted`} aria-label={`${git.additions} lines added, ${git.deletions} lines deleted`}>+{git.additions}/-{git.deletions}</span>}
+                {git && gitChangesVisible && (
+                  <button
+                    type="button"
+                    className={`${styles.headerControl} ${styles.gitTotals} ${gitPaneOpen ? styles.active : ""}`}
+                    aria-expanded={gitPaneOpen}
+                    title={gitChangeLabel}
+                    aria-label={gitChangeLabel}
+                    onClick={() => {
+                      if (gitPaneOpen) {
+                        setGitPaneOpen(false)
+                        return
+                      }
+                      if (!activeProject) return
+                      setSubagentPaneOpen(false)
+                      setBackgroundPaneOpen(false)
+                      setGitPaneOpen(true)
+                      void loadGitDiff(activeProject)
+                    }}
+                  >
+                    <span>{gitLineTotalsVisible ? `+${git.additions}/-${git.deletions}` : `${gitChangedFiles} ${gitChangedFiles === 1 ? "file" : "files"}`}</span>
+                    <PanelRightOpen size={14} aria-hidden="true" />
+                  </button>
+                )}
               </div>
               {git && <span className="git-branch" title={`Current branch: ${git.branch}`}><GitBranch size={11} aria-hidden="true" /><span>{git.branch}</span></span>}
             </div>
@@ -653,12 +570,13 @@ export default function App() {
               {backgroundProcesses.length > 0 && (
                 <button
                   type="button"
-                  className={`background-toggle ${backgroundPaneOpen ? "active" : ""}`}
+                  className={`${styles.headerControl} background-toggle ${backgroundPaneOpen ? styles.active : ""}`}
                   aria-expanded={backgroundPaneOpen}
                   aria-label={`${backgroundProcesses.length} background processes, ${runningProcesses} running`}
                   title={runningProcesses > 0 ? `${runningProcesses} running background ${runningProcesses === 1 ? "process" : "processes"}` : `${backgroundProcesses.length} background processes in this session`}
                   onClick={() => {
                     setSubagentPaneOpen(false)
+                    setGitPaneOpen(false)
                     setBackgroundPaneOpen((open) => !open)
                   }}
                 >
@@ -670,7 +588,7 @@ export default function App() {
               {linkedSubagents.length > 0 && activeProject && (
                 <button
                   type="button"
-                  className={`subagent-toggle ${subagentPaneOpen ? "active" : ""}`}
+                  className={`${styles.headerControl} subagent-toggle ${subagentPaneOpen ? styles.active : ""}`}
                   aria-expanded={subagentPaneOpen}
                   onClick={() => {
                     if (subagentPaneOpen) {
@@ -679,6 +597,7 @@ export default function App() {
                     }
                     const first = linkedSubagents[0]
                     setBackgroundPaneOpen(false)
+                    setGitPaneOpen(false)
                     setSubagentPaneOpen(true)
                     if (first) void inspectSubagent(activeProject, first)
                   }}
@@ -707,7 +626,7 @@ export default function App() {
             {displayMessages.length ? (
               <div className="message-list">
                 {conversationItems.map((item, index) => {
-                  const landmark = allPreviewLandmarks[index]
+                  const landmark = conversationLandmarks[index]
                   return item.type === "message"
                     ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={setLightboxImage} key={item.id} />
                     : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} onOpenImage={setLightboxImage} key={item.id} />
@@ -758,6 +677,7 @@ export default function App() {
             thinkingLevel={session?.thinkingLevel ?? "off"}
             availableThinkingLevels={session?.availableThinkingLevels ?? []}
             queuedMessages={session?.queuedMessages ?? []}
+            contextUsage={session?.contextUsage}
             onModelChange={(option) => {
               if (!session) return
               const sessionPath = session.summary.path
@@ -768,7 +688,8 @@ export default function App() {
                       ...current,
                       model: detail.model,
                       thinkingLevel: detail.thinkingLevel,
-                      availableThinkingLevels: detail.availableThinkingLevels
+                      availableThinkingLevels: detail.availableThinkingLevels,
+                      contextUsage: detail.contextUsage
                     } : current)
                   }
                 })
@@ -787,7 +708,8 @@ export default function App() {
                     setSession((current) => current ? {
                       ...current,
                       thinkingLevel: detail.thinkingLevel,
-                      availableThinkingLevels: detail.availableThinkingLevels
+                      availableThinkingLevels: detail.availableThinkingLevels,
+                      contextUsage: detail.contextUsage
                     } : current)
                   }
                 })
@@ -824,6 +746,16 @@ export default function App() {
         )}
         {backgroundPaneOpen && backgroundProcesses.length > 0 && (
           <BackgroundProcessesPane processes={backgroundProcesses} onClose={() => setBackgroundPaneOpen(false)} />
+        )}
+        {gitPaneOpen && activeProject && (
+          <Suspense fallback={<aside className={gitDiffStyles.root} aria-label="Git changes"><div className={gitDiffStyles.loading}><RefreshCw size={16} /> Preparing diff…</div></aside>}>
+            <GitDiffPane
+              diff={gitDiff}
+              loading={gitDiffLoading}
+              onClose={() => setGitPaneOpen(false)}
+              onRefresh={() => void loadGitDiff(activeProject)}
+            />
+          </Suspense>
         )}
       </div>
       {lightboxImage && (

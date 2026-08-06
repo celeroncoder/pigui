@@ -3,7 +3,7 @@ import { copyFile, mkdir, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent"
+import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const cwd = root
@@ -26,11 +26,14 @@ const gitTotals = (await gitOutput(["diff", "--numstat", "--no-ext-diff", "--no-
     const [added, deleted] = line.split("\t")
     return { additions: totals.additions + numericStat(added), deletions: totals.deletions + numericStat(deleted) }
   }, { additions: 0, deletions: 0 })
+const gitTrackedFiles = (await gitOutput(["diff", "--name-only", "-z", "--no-ext-diff", "--no-renames", "HEAD", "--"])).split("\0").filter(Boolean)
+const gitUntrackedFiles = (await gitOutput(["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)
+const gitChangedFiles = gitTrackedFiles.length + gitUntrackedFiles.length
 const infos = await SessionManager.list(cwd)
 const preferred = infos.find((info) => !info.name?.startsWith("subagent:")) ?? infos[0]
 const orderedInfos = preferred ? [preferred, ...infos.filter((info) => info.path !== preferred.path)] : infos
-const modelRuntime = await ModelRuntime.create()
-const availableModels = await modelRuntime.getAvailable()
+const services = await createAgentSessionServices({ cwd, agentDir: getAgentDir() })
+const availableModels = await services.modelRuntime.getAvailable()
 
 const stringify = (value) => {
   if (typeof value === "string") return value
@@ -60,7 +63,7 @@ const project = {
   path: cwd,
   name: basename(cwd),
   addedAt: Date.now(),
-  ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals } } : {})
+  ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
 }
 
 const parentCandidates = new Map()
@@ -247,6 +250,16 @@ for (const [index, info] of orderedInfos.entries()) {
     : selectedModel
       ? `${selectedModel.provider}/${selectedModel.id}`
       : ""
+  // The browser fixture uses the same AgentSession source as the desktop app.
+  // Do not estimate historical usage from session entries here.
+  const contextSession = await createAgentSessionFromServices({ services, sessionManager: manager })
+  let contextUsage
+  try {
+    contextUsage = contextSession.session.getContextUsage()
+  } finally {
+    // AgentSession owns listeners/resources; always dispose even if usage lookup throws.
+    contextSession.session.dispose()
+  }
   details.push({
     summary,
     messages: projectEntries(manager.getBranch()),
@@ -255,6 +268,7 @@ for (const [index, info] of orderedInfos.entries()) {
     availableThinkingLevels: thinkingLevelsForModel(selectedModel),
     backgroundProcesses: projectBackgroundProcesses(manager.getBranch()),
     queuedMessages: [],
+    ...(contextUsage ? { contextUsage } : {}),
     isStreaming: false,
     isCompacting: false
   })

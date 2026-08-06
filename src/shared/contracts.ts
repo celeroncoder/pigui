@@ -6,6 +6,23 @@ export interface GitStatus {
   readonly branch: string
   readonly additions: number
   readonly deletions: number
+  readonly changedFiles: number
+}
+
+export type GitDiffStatus = "added" | "untracked" | "modified" | "deleted"
+
+export interface GitDiffFile {
+  readonly path: string
+  readonly status: GitDiffStatus
+  readonly oldContents: string | null
+  readonly newContents: string | null
+  readonly binary: boolean
+}
+
+export interface GitDiff {
+  readonly files: ReadonlyArray<GitDiffFile>
+  readonly truncated: boolean
+  readonly omittedFiles: number
 }
 
 export interface Project {
@@ -56,6 +73,7 @@ export interface ToolResultBlock {
   readonly name: string
   readonly output: string
   readonly isError: boolean
+  readonly status?: "running" | "success" | "error"
   readonly diff?: string
 }
 
@@ -117,6 +135,15 @@ export interface BackgroundProcess {
   readonly updatedAt: number
 }
 
+/** Pi's current model-context measurement, if the selected model exposes one. */
+export interface ContextUsage {
+  /** Estimated tokens in context, or null until Pi can measure them after compaction. */
+  readonly tokens: number | null
+  readonly contextWindow: number
+  /** Pi's context percentage, or null when token usage is temporarily unknown. */
+  readonly percent: number | null
+}
+
 export interface SessionDetail {
   readonly summary: SessionSummary
   readonly messages: ReadonlyArray<ChatMessage>
@@ -125,6 +152,8 @@ export interface SessionDetail {
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly backgroundProcesses: ReadonlyArray<BackgroundProcess>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
+  /** Omitted when no model with a context window is selected. */
+  readonly contextUsage?: ContextUsage
   readonly interactionRequest?: AskUserInteractionRequest
   readonly isStreaming: boolean
   readonly isCompacting: boolean
@@ -146,11 +175,12 @@ export type SessionEvent =
   | { readonly type: "queue-update"; readonly sessionPath: string; readonly messages: ReadonlyArray<QueuedMessage> }
   | { readonly type: "text-delta"; readonly sessionPath: string; readonly messageId: string; readonly delta: string }
   | { readonly type: "thinking-delta"; readonly sessionPath: string; readonly messageId: string; readonly delta: string }
-  | { readonly type: "tool-start"; readonly sessionPath: string; readonly tool: ToolActivity }
+  | { readonly type: "tool-start"; readonly sessionPath: string; readonly messageId: string; readonly tool: ToolActivity }
   | { readonly type: "tool-update"; readonly sessionPath: string; readonly toolId: string; readonly output: string }
   | { readonly type: "tool-end"; readonly sessionPath: string; readonly toolId: string; readonly output: string; readonly isError: boolean; readonly diff?: string }
   | { readonly type: "agent-status"; readonly sessionPath: string; readonly isStreaming: boolean }
   | { readonly type: "compaction-status"; readonly sessionPath: string; readonly isCompacting: boolean }
+  | { readonly type: "context-usage"; readonly sessionPath: string; readonly contextUsage?: ContextUsage }
   | { readonly type: "background-processes"; readonly sessionPath: string; readonly processes: ReadonlyArray<BackgroundProcess> }
   | { readonly type: "project-git"; readonly projectPath: string; readonly git?: GitStatus }
   | { readonly type: "interaction-request"; readonly sessionPath: string; readonly request: AskUserInteractionRequest }
@@ -163,6 +193,7 @@ export interface PiDesktopApi {
     readonly add: () => Promise<Project | null>
     readonly remove: (projectId: string) => Promise<void>
     readonly refreshGit: (projectPath: string) => Promise<GitStatus | undefined>
+    readonly diff: (projectPath: string) => Promise<GitDiff | undefined>
   }
   readonly attachments: {
     readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
@@ -191,6 +222,7 @@ export const IpcChannels = {
   addProject: "projects:add",
   removeProject: "projects:remove",
   refreshProjectGit: "projects:refresh-git",
+  gitDiff: "projects:git-diff",
   listSessions: "sessions:list",
   createSession: "sessions:create",
   openSession: "sessions:open",

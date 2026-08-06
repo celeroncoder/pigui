@@ -1,13 +1,8 @@
 import { useEffect, useRef, useState, type RefObject } from "react"
 import { createPortal } from "react-dom"
-
-export type MessagePreviewLandmark = {
-  readonly id: string
-  readonly targetId: string
-  readonly kind: "user" | "assistant" | "activity" | "compaction"
-  readonly label: string
-  readonly detail: string
-}
+import type { MessagePreviewLandmark } from "../lib/conversation"
+import styles from "./MessagePreviewRail.module.css"
+export type { MessagePreviewLandmark } from "../lib/conversation"
 
 type MessagePreviewRailProps = {
   readonly landmarks: ReadonlyArray<MessagePreviewLandmark>
@@ -26,7 +21,6 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
   const [activeId, setActiveId] = useState(landmarks[0]?.id ?? null)
   const [preview, setPreview] = useState<{
     readonly landmark: MessagePreviewLandmark
-    readonly index: number
     readonly top: number
     readonly left: number
   } | null>(null)
@@ -88,11 +82,10 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
 
   if (landmarks.length === 0) return null
 
-  const showPreview = (landmark: MessagePreviewLandmark, index: number, target: HTMLElement) => {
+  const showPreview = (landmark: MessagePreviewLandmark, target: HTMLElement) => {
     const bounds = target.getBoundingClientRect()
     setPreview({
       landmark,
-      index,
       top: Math.max(54, Math.min(window.innerHeight - 54, bounds.top + bounds.height / 2)),
       left: Math.max(8, bounds.left - 227)
     })
@@ -106,7 +99,7 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
       </div>
       <div className="preview-rail-track" ref={trackRef} onScroll={() => setPreview(null)}>
         <ol className="preview-rail-list" ref={listRef}>
-          {landmarks.map((landmark, index) => {
+          {landmarks.map((landmark) => {
             const isActive = activeId === landmark.id
             return (
               <li
@@ -121,9 +114,9 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
                   aria-current={isActive ? "location" : undefined}
                   aria-label={`Jump to ${kindLabel[landmark.kind].toLowerCase()}: ${landmark.label}`}
                   title={landmark.label}
-                  onMouseEnter={(event) => showPreview(landmark, index, event.currentTarget)}
+                  onMouseEnter={(event) => showPreview(landmark, event.currentTarget)}
                   onMouseLeave={() => setPreview(null)}
-                  onFocus={(event) => showPreview(landmark, index, event.currentTarget)}
+                  onFocus={(event) => showPreview(landmark, event.currentTarget)}
                   onBlur={() => setPreview(null)}
                   onClick={() => {
                     const target = document.getElementById(landmark.targetId)
@@ -144,16 +137,11 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
       </div>
       {preview && createPortal(
         <div
-          className="preview-rail-card"
+          className={styles.card}
           style={{ top: preview.top, left: preview.left }}
           aria-hidden="true"
         >
-          <span className="preview-rail-card-meta">
-            <span>{kindLabel[preview.landmark.kind]}</span>
-            <span>{String(preview.index + 1).padStart(2, "0")}</span>
-          </span>
-          <span className="preview-rail-label">{preview.landmark.label}</span>
-          <span className="preview-rail-detail">{preview.landmark.detail}</span>
+          <span className={styles.label}>{preview.landmark.label}</span>
         </div>,
         document.body
       )}

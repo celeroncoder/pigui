@@ -142,6 +142,12 @@ const registerIpc = () => {
     return yield* git.inspect(cwd)
   })))
 
+  ipcMain.handle(IpcChannels.gitDiff, (_event, projectPath: unknown) => run(Effect.gen(function*() {
+    const cwd = yield* resolveKnownProject(projectPath)
+    const git = yield* GitContext
+    return yield* git.diff(cwd)
+  })))
+
   ipcMain.handle(IpcChannels.listSessions, (_event, projectPath: unknown) => run(Effect.gen(function*() {
     const cwd = yield* resolveKnownProject(projectPath)
     const sessions = yield* PiSessions
