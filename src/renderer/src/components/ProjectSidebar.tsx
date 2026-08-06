@@ -1,6 +1,8 @@
 import { ChevronDown, Folder, FolderPlus, GitBranch, MoreHorizontal, Plus } from "lucide-react"
+import { useState } from "react"
 import type { Project, SessionSummary } from "../../../shared/contracts"
 import { compactLabel } from "../lib/text"
+import { isProjectExpanded, toggleProjectCollapse } from "./projectSidebarState"
 
 interface ProjectSidebarProps {
   readonly projects: ReadonlyArray<Project>
@@ -34,6 +36,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     onAddProject,
     onNewSession
   } = props
+  const [collapsedProjectIds, setCollapsedProjectIds] = useState<ReadonlySet<string>>(() => new Set())
 
   return (
     <aside className="project-sidebar" aria-label="Projects and sessions">
@@ -47,22 +50,29 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       <nav className="project-list">
         {projects.map((project) => {
           const isActive = activeProject?.id === project.id
+          const isExpanded = isProjectExpanded(activeProject?.id ?? null, project.id, collapsedProjectIds)
           return (
             <div className="project-group" key={project.id}>
               <button
                 className={`project-row ${isActive ? "active" : ""}`}
                 type="button"
-                onClick={() => onSelectProject(project)}
-                aria-expanded={isActive}
+                onClick={() => {
+                  if (isActive) {
+                    setCollapsedProjectIds((current) => toggleProjectCollapse(current, project.id))
+                  } else {
+                    onSelectProject(project)
+                  }
+                }}
+                aria-expanded={isExpanded}
                 aria-current={isActive ? "page" : undefined}
               >
-                <ChevronDown className={isActive ? "" : "collapsed"} size={14} />
+                <ChevronDown className={isExpanded ? "" : "collapsed"} size={14} />
                 <Folder size={15} />
                 <span>{project.name}</span>
                 <MoreHorizontal className="row-more" size={15} />
               </button>
 
-              {isActive && project.git && (
+              {isExpanded && project.git && (
                 <div className="sidebar-git-context" title={`Current branch: ${project.git.branch}`}>
                   <GitBranch size={11} aria-hidden="true" />
                   <span>{compactLabel(project.git.branch, 29)}</span>
@@ -85,8 +95,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                     {isActive && <kbd>⌘N</kbd>}
                   </button>
                 </div>
-
-                {isActive && (
+                {isExpanded && (
                   <div className="session-list">
                     {isLoading && <div className="session-skeleton" aria-label="Loading sessions" />}
                     {!isLoading && sessions.length === 0 && (
