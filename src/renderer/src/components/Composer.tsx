@@ -1,7 +1,8 @@
 import { ArrowUp, Check, ChevronDown, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseImagePathReferences } from "../../../shared/attachments"
-import type { AttachmentPreview, ImageAttachment, ModelOption, QueueDelivery, QueuedMessage, ThinkingLevel } from "../../../shared/contracts"
+import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelOption, QueueDelivery, QueuedMessage, ThinkingLevel } from "../../../shared/contracts"
+import { ContextUsageDonut } from "./ContextUsageDonut"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
 
@@ -158,6 +159,7 @@ interface ComposerProps {
   readonly thinkingLevel: ThinkingLevel
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
+  readonly contextUsage?: ContextUsage
   readonly onModelChange: (option: ModelOption) => void
   readonly onThinkingLevelChange: (level: ThinkingLevel) => void
   readonly onChange: (value: string) => void
@@ -183,6 +185,7 @@ export function Composer({
   thinkingLevel,
   availableThinkingLevels,
   queuedMessages,
+  contextUsage,
   onModelChange,
   onThinkingLevelChange,
   onChange,
@@ -355,14 +358,17 @@ export function Composer({
             )}
             <span className="context-pill" title="Pi uses its configured tool access"><ShieldCheck size={14} /><span>Full access</span></span>
           </div>
-          {isStreaming ? (
-            <div className="composer-run-actions">
-              <button type="button" className="send-button queue" aria-label="Queue follow-up message" title="Queue follow-up" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={() => onSubmit("follow-up")}><Send size={14} /></button>
-              <button type="button" className="send-button stop" aria-label="Stop Pi" onClick={onAbort}><Square size={12} fill="currentColor" /></button>
-            </div>
-          ) : (
-            <button type="button" className="send-button" aria-label="Send message" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={() => onSubmit()}><ArrowUp size={17} /></button>
-          )}
+          <div className="composer-run-actions">
+            <ContextUsageDonut contextUsage={contextUsage} />
+            {isStreaming ? (
+              <>
+                <button type="button" className="send-button queue" aria-label="Queue follow-up message" title="Queue follow-up" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={() => onSubmit("follow-up")}><Send size={14} /></button>
+                <button type="button" className="send-button stop" aria-label="Stop Pi" onClick={onAbort}><Square size={12} fill="currentColor" /></button>
+              </>
+            ) : (
+              <button type="button" className="send-button" aria-label="Send message" disabled={disabled || (!value.trim() && attachments.length === 0)} onClick={() => onSubmit()}><ArrowUp size={17} /></button>
+            )}
+          </div>
         </div>
       </div>
       <div className="composer-caption">

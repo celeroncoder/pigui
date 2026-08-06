@@ -3,7 +3,7 @@ import { copyFile, mkdir, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent"
+import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const cwd = root
@@ -29,8 +29,8 @@ const gitTotals = (await gitOutput(["diff", "--numstat", "--no-ext-diff", "--no-
 const infos = await SessionManager.list(cwd)
 const preferred = infos.find((info) => !info.name?.startsWith("subagent:")) ?? infos[0]
 const orderedInfos = preferred ? [preferred, ...infos.filter((info) => info.path !== preferred.path)] : infos
-const modelRuntime = await ModelRuntime.create()
-const availableModels = await modelRuntime.getAvailable()
+const services = await createAgentSessionServices({ cwd, agentDir: getAgentDir() })
+const availableModels = await services.modelRuntime.getAvailable()
 
 const stringify = (value) => {
   if (typeof value === "string") return value
@@ -247,6 +247,11 @@ for (const [index, info] of orderedInfos.entries()) {
     : selectedModel
       ? `${selectedModel.provider}/${selectedModel.id}`
       : ""
+  // The browser fixture uses the same AgentSession source as the desktop app.
+  // Do not estimate historical usage from session entries here.
+  const contextSession = await createAgentSessionFromServices({ services, sessionManager: manager })
+  const contextUsage = contextSession.session.getContextUsage()
+  contextSession.session.dispose()
   details.push({
     summary,
     messages: projectEntries(manager.getBranch()),
@@ -255,6 +260,7 @@ for (const [index, info] of orderedInfos.entries()) {
     availableThinkingLevels: thinkingLevelsForModel(selectedModel),
     backgroundProcesses: projectBackgroundProcesses(manager.getBranch()),
     queuedMessages: [],
+    ...(contextUsage ? { contextUsage } : {}),
     isStreaming: false,
     isCompacting: false
   })
