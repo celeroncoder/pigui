@@ -702,27 +702,31 @@ export default function App() {
     const sessionPath = session.summary.path
     const context = worktreeContext(activeProject, activeWorktree)
     const contextKey = worktreeKey(activeProject, activeWorktree)
+    const requestId = sessionRequestRef.current
+    const isCurrentRecovery = () => activeSessionPathRef.current === sessionPath
+      && activeWorktreeKeyRef.current === contextKey
+      && sessionRequestRef.current === requestId
     setRecoverySubmitting(true)
     setError(null)
     if (action !== "resume") setSession((current) => current ? { ...current, recovery: undefined, isStreaming: true } : current)
     void desktopApi.sessions.recover(context, sessionPath, action).then((detail) => {
-      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
+      if (!isCurrentRecovery()) return
       setSession(detail)
       setInteractionRequest(detail.interactionRequest ?? null)
     }).catch(async (cause: unknown) => {
-      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
+      if (!isCurrentRecovery()) return
       setError(cause instanceof Error ? cause.message : "Pi could not recover this session")
       if (action !== "resume") {
         try {
           const detail = await desktopApi.sessions.open(context, sessionPath)
-          if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setSession(detail)
+          if (isCurrentRecovery()) setSession(detail)
         } catch {
           // Keep the original recovery failure visible; a later explicit reopen
           // can retry loading the preserved Pi state.
         }
       }
     }).finally(() => {
-      if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setRecoverySubmitting(false)
+      if (isCurrentRecovery()) setRecoverySubmitting(false)
     })
   }
 
