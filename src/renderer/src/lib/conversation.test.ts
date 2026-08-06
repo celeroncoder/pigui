@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { ChatMessage } from "../../../shared/contracts"
-import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./conversation"
+import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, findLastUserTurnIndex, latestTransientStatus } from "./conversation"
 
 const message = (id: string, role: ChatMessage["role"], blocks: ChatMessage["blocks"]): ChatMessage => ({ id, role, blocks, timestamp: 1 })
 
@@ -65,5 +65,17 @@ describe("conversation presentation", () => {
 
   it("keeps only the latest streamed status line", () => {
     expect(latestTransientStatus("**Designing the UI**\n\n**Parsing subagent sessions**")).toBe("Parsing subagent sessions")
+  })
+
+  it("anchors recovery choices to the latest user turn", () => {
+    const items = buildConversationItems([
+      message("first-prompt", "user", [{ type: "text", text: "Start" }]),
+      message("answer", "assistant", [{ type: "text", text: "Working" }]),
+      message("latest-prompt", "user", [{ type: "text", text: "Continue" }]),
+      message("partial", "assistant", [{ type: "text", text: "Interrupted" }])
+    ])
+
+    expect(findLastUserTurnIndex(items)).toBe(2)
+    expect(findLastUserTurnIndex(items.slice(1, 2))).toBe(-1)
   })
 })

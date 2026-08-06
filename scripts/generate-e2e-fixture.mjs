@@ -238,6 +238,10 @@ const projectBackgroundProcesses = (entries) => {
 
 const details = []
 const recoveryPreview = process.env.PI_E2E_RECOVERY === "1"
+const recoveryPromptText = "Finish the transport recovery implementation"
+const withRecoveryPrompt = (messages, includeRecovery) => includeRecovery
+  ? [...messages, { id: "fixture-recovery-prompt", role: "user", blocks: [{ type: "text", text: recoveryPromptText }], timestamp: Date.now() - 1_000 }]
+  : messages
 for (const [index, info] of orderedInfos.entries()) {
   const summary = summaries[index]
   if (!summary) continue
@@ -263,7 +267,7 @@ for (const [index, info] of orderedInfos.entries()) {
   }
   details.push({
     summary,
-    messages: projectEntries(manager.getBranch()),
+    messages: withRecoveryPrompt(projectEntries(manager.getBranch()), recoveryPreview && info.path === preferred?.path),
     model,
     thinkingLevel: context.thinkingLevel,
     availableThinkingLevels: thinkingLevelsForModel(selectedModel),
@@ -278,7 +282,7 @@ for (const [index, info] of orderedInfos.entries()) {
       recovery: {
         reason: "The Pi response pipe closed before the turn completed.",
         interruptedAt: Date.now(),
-        lastPrompt: "Finish the transport recovery implementation"
+        lastPrompt: recoveryPromptText
       }
     } : {}),
     ...(contextUsage ? { contextUsage } : {}),
@@ -308,7 +312,7 @@ if (details.length === 0) {
   }
   details.push({
     summary,
-    messages: [],
+    messages: withRecoveryPrompt([], recoveryPreview),
     model: selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "",
     thinkingLevel: "off",
     availableThinkingLevels: thinkingLevelsForModel(selectedModel),
@@ -323,7 +327,7 @@ if (details.length === 0) {
       recovery: {
         reason: "The Pi response pipe closed before the turn completed.",
         interruptedAt: Date.now(),
-        lastPrompt: "Finish the transport recovery implementation"
+        lastPrompt: recoveryPromptText
       }
     } : {}),
     ...(contextUsage ? { contextUsage } : {}),

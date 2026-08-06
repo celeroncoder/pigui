@@ -1,5 +1,5 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
+import { Fragment, lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRecoveryAction, SessionSummary, ThinkingLevel } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
@@ -18,7 +18,7 @@ import { TransportRecoveryPanel } from "./components/TransportRecoveryPanel"
 import styles from "./App.module.css"
 import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
-import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
+import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, findLastUserTurnIndex, latestTransientStatus } from "./lib/conversation"
 import { compactLabel } from "./lib/text"
 
 const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
@@ -526,6 +526,7 @@ export default function App() {
     ? [...session.messages, { id: "compaction-active", role: "system", blocks: [{ type: "compaction", status: "compacting" }], timestamp: Date.now() }]
     : session?.messages ?? []
   const conversationItems = buildConversationItems(displayMessages)
+  const recoveryTurnIndex = session?.recovery ? findLastUserTurnIndex(conversationItems) : -1
   const conversationLandmarks = buildConversationPreviewLandmarks(conversationItems)
   const allPreviewLandmarks = filterUserMessagePreviewLandmarks(conversationLandmarks)
   const previewStride = Math.max(1, Math.ceil(allPreviewLandmarks.length / 28))
@@ -567,7 +568,7 @@ export default function App() {
           onNewSession={() => void newSession()}
         />
 
-        <main className={`conversation ${(interactionRequest || session?.recovery) ? "has-interaction" : ""}`} id="main-content">
+        <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
@@ -643,19 +644,9 @@ export default function App() {
             </div>
           </div>
 
-          {(interactionRequest || session?.recovery) && (
+          {interactionRequest && (
             <div className={styles.sessionNotices}>
-              {session?.recovery && (
-                <TransportRecoveryPanel
-                  recovery={session.recovery}
-                  queuedCount={session.queuedMessages.length}
-                  busy={recoverySubmitting}
-                  onRecover={recoverSession}
-                />
-              )}
-              {interactionRequest && (
-                <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
-              )}
+              <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
             </div>
           )}
 
@@ -668,10 +659,20 @@ export default function App() {
               <div className="message-list">
                 {conversationItems.map((item, index) => {
                   const landmark = conversationLandmarks[index]
-                  return item.type === "message"
-                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={setLightboxImage} key={item.id} />
-                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} onOpenImage={setLightboxImage} key={item.id} />
+                  return (
+                    <Fragment key={item.id}>
+                      {item.type === "message"
+                        ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={setLightboxImage} />
+                        : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} onOpenImage={setLightboxImage} />}
+                      {session?.recovery && index === recoveryTurnIndex && (
+                        <TransportRecoveryPanel recovery={session.recovery} queuedCount={session.queuedMessages.length} busy={recoverySubmitting} onRecover={recoverSession} />
+                      )}
+                    </Fragment>
+                  )
                 })}
+                {session?.recovery && recoveryTurnIndex < 0 && (
+                  <TransportRecoveryPanel recovery={session.recovery} queuedCount={session.queuedMessages.length} busy={recoverySubmitting} onRecover={recoverSession} />
+                )}
                 {session?.isStreaming && (
                   <div className="live-status" role="status" aria-live="polite">
                     <CircleDashed size={14} />
@@ -709,7 +710,7 @@ export default function App() {
             key={session?.summary.path ?? "no-session"}
             value={draft}
             disabled={!session || interactionRequest !== null || session.recovery !== undefined || recoverySubmitting}
-            disabledReason={interactionRequest ? "Answer Pi above to continue…" : session?.recovery ? "Choose a recovery option above…" : recoverySubmitting ? "Recovering Pi session…" : undefined}
+            disabledReason={interactionRequest ? "Answer Pi above to continue…" : session?.recovery ? "Choose how to recover below your last message…" : recoverySubmitting ? "Recovering Pi session…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? "Choose model"}
