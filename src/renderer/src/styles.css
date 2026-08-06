@@ -167,7 +167,6 @@
   .session-status.running svg { animation: spin 1.1s linear infinite; }
   .session-status.input-required { border-color: #78583c; background: #302319; color: #f0bd83; }
   .session-status.waiting { border-color: #4b5559; background: #192023; color: #9ebcc6; }
-  .session-status.done { color: #779987; }
   .session-status.failed { border-color: #71443e; background: #2a1a19; color: #e4897f; }
   .pull-request-state { position: relative; display: grid; place-items: center; color: #85898c; }
   .pull-request-state > i { position: absolute; right: -3px; bottom: -2px; width: 6px; height: 6px; border: 1.5px solid #101112; border-radius: 50%; background: #e1b94f; }

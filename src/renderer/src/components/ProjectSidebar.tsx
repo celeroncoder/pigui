@@ -1,4 +1,4 @@
-import { ChevronDown, CircleAlert, CircleCheck, CircleDashed, CirclePause, FolderGit2, FolderPlus, GitBranch, GitFork, GitMerge, GitPullRequest, HardDrive, MessageCircleQuestionMark, MoreHorizontal, SquarePen } from "lucide-react"
+import { ChevronDown, CircleAlert, CircleDashed, CirclePause, FolderGit2, FolderPlus, GitBranch, GitFork, GitMerge, GitPullRequest, HardDrive, MessageCircleQuestionMark, MoreHorizontal, SquarePen } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import type { GitHubBranchPullRequest, Project, ProjectWorktree, SessionRuntimeStatus, SessionSummary } from "../../../shared/contracts"
@@ -34,11 +34,11 @@ const pullRequestStateLabel = (pullRequest: GitHubBranchPullRequest) => pullRequ
       ? `PR #${pullRequest.number} is merged`
       : `PR #${pullRequest.number} has checks pending or failing`
 
-const sessionStatusPresentation: Record<SessionRuntimeStatus, { readonly label: string; readonly Icon: typeof CircleCheck }> = {
+const sessionStatusPresentation: Record<SessionRuntimeStatus, { readonly label: string; readonly Icon?: typeof CircleAlert }> = {
   running: { label: "Working", Icon: CircleDashed },
   "input-required": { label: "Needs input", Icon: MessageCircleQuestionMark },
   waiting: { label: "Waiting", Icon: CirclePause },
-  done: { label: "Done", Icon: CircleCheck },
+  done: { label: "Done" },
   failed: { label: "Failed", Icon: CircleAlert }
 }
 
@@ -248,9 +248,11 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                               </span>
                             )}
                           </span>
-                          <span className={`session-status ${runtimeStatus}`} role="img" aria-label={`Session status: ${statusLabel}`} title={`Session status: ${statusLabel}`}>
-                            <Icon size={13} aria-hidden="true" />
-                          </span>
+                          {Icon && (
+                            <span className={`session-status ${runtimeStatus}`} role="img" aria-label={`Session status: ${statusLabel}`} title={`Session status: ${statusLabel}`}>
+                              <Icon size={13} aria-hidden="true" />
+                            </span>
+                          )}
                         </button>
                       )
                     })

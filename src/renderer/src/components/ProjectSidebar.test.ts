@@ -97,7 +97,6 @@ describe("ProjectSidebar", () => {
     ["running", "Working"],
     ["input-required", "Needs input"],
     ["waiting", "Waiting"],
-    ["done", "Done"],
     ["failed", "Failed"]
   ] as const)("renders the %s runtime treatment", (runtimeStatus, label) => {
     const alpha = project("alpha", "Alpha")
@@ -105,6 +104,16 @@ describe("ProjectSidebar", () => {
 
     expect(markup).toContain(`session-status ${runtimeStatus}`)
     expect(markup).toContain(`aria-label="Session status: ${label}"`)
+  })
+
+  it("does not render an indicator for a completed session", () => {
+    const alpha = project("alpha", "Alpha")
+    const markup = renderSidebar([alpha], alpha, { localRuntimeStatus: "done" })
+
+    expect(markup).toContain("Session done.")
+    expect(markup).not.toContain("session-status done")
+    expect(markup).not.toContain('aria-label="Session status: Done"')
+    expect(markup).not.toContain("lucide-circle-check")
   })
 
   it("keeps project details and new-session icon actions beside each independently collapsible project", () => {
