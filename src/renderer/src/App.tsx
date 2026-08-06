@@ -332,9 +332,13 @@ export default function App() {
     }
   }
 
-  const newSession = useCallback(async () => {
-    if (!activeProject) return
-    const project = activeProject
+  const newSession = useCallback(async (requestedProject?: Project) => {
+    const project = requestedProject ?? activeProjectRef.current
+    if (!project) return
+    if (activeProjectIdRef.current !== project.id) {
+      await selectProject(project)
+      if (activeProjectIdRef.current !== project.id) return
+    }
     const requestId = ++sessionRequestRef.current
     setError(null)
     try {
@@ -359,7 +363,7 @@ export default function App() {
         setError(cause instanceof Error ? cause.message : "Could not create session")
       }
     }
-  }, [activeProject, loadModels])
+  }, [loadModels, selectProject])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -531,7 +535,7 @@ export default function App() {
           onSelectProject={(project) => void selectProject(project)}
           onSelectSession={(summary) => activeProject && void openSession(activeProject, summary)}
           onAddProject={() => void addProject()}
-          onNewSession={() => void newSession()}
+          onNewSession={(project) => void newSession(project)}
         />
 
         <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
