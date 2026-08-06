@@ -25,6 +25,7 @@ const WorktreeContextSchema = Schema.Struct({
   projectId: NonEmptyString,
   worktreeId: NonEmptyString
 })
+const SessionRecoveryActionSchema = Schema.Literals(["resume", "continue", "restart"])
 
 const invalidIpcInput = (error: { readonly message: string }) => AppError.make({ operation: "validate IPC input", message: error.message })
 const decodeString = (input: unknown) => Schema.decodeUnknownEffect(NonEmptyString)(input).pipe(Effect.mapError(invalidIpcInput))
@@ -33,6 +34,7 @@ const decodeThinkingLevel = (input: unknown) => Schema.decodeUnknownEffect(Think
 const decodeAttachmentSave = (input: unknown) => Schema.decodeUnknownEffect(AttachmentSaveSchema)(input).pipe(Effect.mapError(invalidIpcInput))
 const decodeAttachmentPaths = (input: unknown) => Schema.decodeUnknownEffect(Schema.Union([AttachmentPathsSchema, Schema.Undefined]))(input).pipe(Effect.mapError(invalidIpcInput))
 const decodeQueueDelivery = (input: unknown) => Schema.decodeUnknownEffect(QueueDeliverySchema)(input).pipe(Effect.mapError(invalidIpcInput))
+const decodeSessionRecoveryAction = (input: unknown) => Schema.decodeUnknownEffect(SessionRecoveryActionSchema)(input).pipe(Effect.mapError(invalidIpcInput))
 const decodeMessageText = Effect.fn("decodeMessageText")(function*(input: unknown) {
   const text = yield* decodeString(input)
   const normalized = text.trim()
@@ -266,6 +268,14 @@ const registerIpc = () => {
     const paths = yield* decodeAttachmentPaths(attachmentPaths)
     const sessions = yield* PiSessions
     yield* sessions.prompt(worktree.path, path, prompt, queueDelivery, paths ?? [])
+  })))
+
+  ipcMain.handle(IpcChannels.recoverSession, (_event, context: unknown, sessionPath: unknown, action: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
+    const path = yield* decodeString(sessionPath)
+    const selectedAction = yield* decodeSessionRecoveryAction(action)
+    const sessions = yield* PiSessions
+    return yield* sessions.recover(worktree.path, path, selectedAction)
   })))
 
   ipcMain.handle(IpcChannels.editQueuedMessage, (_event, context: unknown, sessionPath: unknown, messageId: unknown, text: unknown) => run(Effect.gen(function*() {

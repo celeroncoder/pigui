@@ -1,6 +1,6 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AskUserPanel } from "./components/AskUserPanel"
@@ -14,6 +14,7 @@ import { ProjectSidebar, type WorktreeSessionList } from "./components/ProjectSi
 import { ProviderLogo } from "./components/ProviderLogo"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
+import { TransportRecoveryPanel } from "./components/TransportRecoveryPanel"
 import styles from "./App.module.css"
 import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
@@ -56,6 +57,7 @@ export default function App() {
   const [lightboxImage, setLightboxImage] = useState<AttachmentPreview | null>(null)
   const [interactionRequest, setInteractionRequest] = useState<AskUserInteractionRequest | null>(null)
   const [interactionSubmitting, setInteractionSubmitting] = useState(false)
+  const [recoverySubmitting, setRecoverySubmitting] = useState(false)
   const interactionSubmittingRef = useRef(false)
   const draftRevisionRef = useRef(0)
   const attachmentRevisionRef = useRef(0)
@@ -208,6 +210,7 @@ export default function App() {
     setError(null)
     setInteractionRequest(null)
     setInteractionSubmitting(false)
+    setRecoverySubmitting(false)
     interactionSubmittingRef.current = false
     try {
       const detail = await desktopApi.sessions.open(worktreeContext(project, worktree), summary.path)
@@ -312,6 +315,7 @@ export default function App() {
     setModelAvailability("ready")
     setInteractionRequest(null)
     setInteractionSubmitting(false)
+    setRecoverySubmitting(false)
     interactionSubmittingRef.current = false
     setError(null)
     void refreshProjectGit(project, worktree)
@@ -434,6 +438,7 @@ export default function App() {
     if (event.type === "interaction-cleared") {
       setInteractionRequest((current) => current?.requestId === event.requestId ? null : current)
       setInteractionSubmitting(false)
+      setRecoverySubmitting(false)
       interactionSubmittingRef.current = false
       return
     }
@@ -693,6 +698,31 @@ export default function App() {
     })
   }
 
+  const recoverSession = (action: SessionRecoveryAction) => {
+    if (!session || !activeProject || !activeWorktree || recoverySubmitting) return
+    const sessionPath = session.summary.path
+    const context = worktreeContext(activeProject, activeWorktree)
+    const contextKey = worktreeKey(activeProject, activeWorktree)
+    setRecoverySubmitting(true)
+    setError(null)
+    if (action !== "resume") setSession((current) => current ? { ...current, recovery: undefined, isStreaming: true } : current)
+    void desktopApi.sessions.recover(context, sessionPath, action).then((detail) => {
+      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
+      setSession(detail)
+      setInteractionRequest(detail.interactionRequest ?? null)
+    }).catch((cause: unknown) => {
+      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
+      setError(cause instanceof Error ? cause.message : "Pi could not recover this session")
+      if (action !== "resume") {
+        void desktopApi.sessions.open(context, sessionPath).then((detail) => {
+          if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setSession(detail)
+        }).catch(() => undefined)
+      }
+    }).finally(() => {
+      if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setRecoverySubmitting(false)
+    })
+  }
+
   const addPastedImage = async (image: File) => {
     if ((!session && !sessionDraft) || !activeProject || !activeWorktree) return
     const sessionPath = session?.summary.path ?? null
@@ -816,7 +846,7 @@ export default function App() {
           onNewSession={(project, worktree) => void newSession(project, worktree)}
         />
 
-        <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
+        <main className={`conversation ${(interactionRequest || session?.recovery) ? "has-interaction" : ""}`} id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject && activeWorktree ? `${activeProject.name} / ${activeWorktree.name}` : "Workspace"}</span>
@@ -915,12 +945,20 @@ export default function App() {
             </div>
           </div>
 
-          {interactionRequest && (
-            <AskUserPanel
-              request={interactionRequest}
-              submitting={interactionSubmitting}
-              onAnswer={answerInteraction}
-            />
+          {(interactionRequest || session?.recovery) && (
+            <div className={styles.sessionNotices}>
+              {session?.recovery && (
+                <TransportRecoveryPanel
+                  recovery={session.recovery}
+                  queuedCount={session.queuedMessages.length}
+                  busy={recoverySubmitting}
+                  onRecover={recoverSession}
+                />
+              )}
+              {interactionRequest && (
+                <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
+              )}
+            </div>
           )}
 
           {displayMessages.length ? (
@@ -966,8 +1004,8 @@ export default function App() {
           <Composer
             key={session?.summary.path ?? (sessionDraft ? `draft:${activeWorktree?.id ?? "worktree"}` : "no-session")}
             value={draft}
-            disabled={(!session && (!sessionDraft || draftContextLoading || draftStarting)) || interactionRequest !== null}
-            disabledReason={interactionRequest ? "Answer Pi above to continue…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
+            disabled={(!session && (!sessionDraft || draftContextLoading || draftStarting)) || interactionRequest !== null || session?.recovery !== undefined || recoverySubmitting}
+            disabledReason={interactionRequest ? "Answer Pi above to continue…" : session?.recovery ? "Choose a recovery option above…" : recoverySubmitting ? "Recovering Pi session…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? (sessionDraft ? "Pi default" : modelAvailability === "pending" ? "Checking providers…" : "Choose model")}
