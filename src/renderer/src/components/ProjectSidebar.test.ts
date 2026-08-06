@@ -23,12 +23,20 @@ const summary: SessionSummary = {
   messageCount: 2
 }
 
+const linkedSummary: SessionSummary = {
+  ...summary,
+  id: "linked-session",
+  path: "/sessions/linked-worktree.jsonl",
+  name: "Issue #19 — linked worktree status"
+}
+
 const renderSidebar = (projects: ReadonlyArray<Project>, activeProject: Project) => renderToStaticMarkup(createElement(ProjectSidebar, {
   projects,
   sessionsByWorktree: {
     [`${activeProject.id}:${activeProject.id}-local`]: { sessions: [summary], loading: false },
-    [`${activeProject.id}:${activeProject.id}-linked`]: { sessions: [], loading: false }
+    [`${activeProject.id}:${activeProject.id}-linked`]: { sessions: [linkedSummary], loading: false }
   },
+  runtimeStatuses: { [summary.path]: "running", [linkedSummary.path]: "failed" },
   activeProject,
   activeWorktree: activeProject.worktrees.find((worktree) => worktree.kind === "local") ?? null,
   activeSessionPath: summary.path,
@@ -40,11 +48,14 @@ const renderSidebar = (projects: ReadonlyArray<Project>, activeProject: Project)
 }))
 
 describe("ProjectSidebar", () => {
-  it("renders a flat, context-labelled session list without empty-worktree rows", () => {
+  it("renders live statuses in the same flat local and linked-worktree rows", () => {
     const alpha = project("alpha", "Alpha")
     const markup = renderSidebar([alpha], alpha)
 
-    expect(markup).toContain("Issue #14 — full worktree support. local checkout, branch main, 1 changed file, path /repo/alpha. Session running.")
+    expect(markup).toContain("Issue #14 — full worktree support. local checkout, branch main, 1 changed file, path /repo/alpha. Session working.")
+    expect(markup).toContain("Issue #19 — linked worktree status. linked worktree, branch issue-14, Git status not loaded, path /repo/alpha-linked. Session failed.")
+    expect(markup).toContain('role="img" aria-label="Session status: Working"')
+    expect(markup).toContain('role="img" aria-label="Session status: Failed"')
     expect(markup).toContain('aria-current="page"')
     expect(markup).not.toContain("empty-worktree-row")
     expect(markup).not.toContain("worktree-list")
@@ -72,6 +83,7 @@ describe("ProjectSidebar", () => {
         "alpha:alpha-local": { sessions: [], loading: false, unavailable: true },
         "alpha:alpha-linked": { sessions: [], loading: false, unavailable: true }
       },
+      runtimeStatuses: {},
       activeProject: alpha,
       activeWorktree: alpha.worktrees[1] ?? null,
       activeSessionPath: null,
