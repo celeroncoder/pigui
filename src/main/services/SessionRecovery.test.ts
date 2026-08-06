@@ -29,6 +29,16 @@ describe("Pi session transport recovery", () => {
     expect(interruptedTransportReason([{ role: "assistant", stopReason: "stop" }], false, false)).toBeUndefined()
   })
 
+  it.each(["application quit", "signal cleanup", "renderer crash cleanup", "inactive runtime disposal"])(
+    "does not recover an intentional abort caused by %s",
+    () => {
+      expect(interruptedTransportReason([
+        { role: "user", content: "Keep working" },
+        { role: "assistant", stopReason: "aborted", errorMessage: "This operation was aborted" }
+      ], false, false)).toBeUndefined()
+    }
+  )
+
   it("maps resume, continue, and restart to distinct recovery behavior", () => {
     const recovery = { reason: "pipe reset", interruptedAt: 123, lastPrompt: "Run the tests" }
     expect(recoveryPrompt("resume", recovery)).toBeUndefined()
