@@ -121,6 +121,7 @@ export const reduceSessionEvent = (
     return upsertToolResult(current, event.toolId, event.output, event.isError ? "error" : "success", event.isError, event.diff)
   }
   if (event.type === "compaction-status") return { ...current, isCompacting: event.isCompacting }
+  if (event.type === "context-usage") return { ...current, contextUsage: event.contextUsage }
   if (event.type === "background-processes") return { ...current, backgroundProcesses: event.processes }
   if (event.type === "agent-status") return { ...current, isStreaming: event.isStreaming }
   return current

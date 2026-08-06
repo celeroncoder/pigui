@@ -120,12 +120,17 @@ describe("live session event reconciliation", () => {
     expect(toolResult(current, "call-failure")).toMatchObject({ output: "command failed", status: "error", isError: true })
   })
 
-  it("applies queue, background-process, and settled-state updates", () => {
+  it("applies queue, context, background-process, and settled-state updates", () => {
     let current = detail()
     current = apply(current, {
       type: "queue-update",
       sessionPath,
       messages: [{ id: "queued", delivery: "follow-up", text: "Continue" }]
+    })
+    current = apply(current, {
+      type: "context-usage",
+      sessionPath,
+      contextUsage: { tokens: 4_000, contextWindow: 128_000, percent: 3.125 }
     })
     current = apply(current, {
       type: "background-processes",
@@ -142,6 +147,7 @@ describe("live session event reconciliation", () => {
     current = apply(current, { type: "agent-status", sessionPath, isStreaming: false })
 
     expect(current.queuedMessages).toEqual([{ id: "queued", delivery: "follow-up", text: "Continue" }])
+    expect(current.contextUsage).toEqual({ tokens: 4_000, contextWindow: 128_000, percent: 3.125 })
     expect(current.backgroundProcesses).toEqual([expect.objectContaining({ id: "terminal-1", output: "Ready" })])
     expect(current.isStreaming).toBe(false)
   })

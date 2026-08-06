@@ -9,9 +9,10 @@ import {
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent"
 import { Context, Effect, Exit, Layer, Schema, Semaphore } from "effect"
 import { normalizeImageReferences, parseImagePathReferences } from "../../shared/attachments"
+import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
@@ -369,7 +370,7 @@ const summaryFromInfo = (info: PiSessionInfo, parentSessionPath?: string): Sessi
   ...(parentSessionPath ? { parentSessionPath } : {})
 })
 
-const detailFromManager = (manager: SessionManager, summary: SessionSummary): SessionDetail => {
+const detailFromManager = (manager: SessionManager, summary: SessionSummary, contextUsage?: ContextUsage): SessionDetail => {
   const context = manager.buildSessionContext()
   return {
     summary,
@@ -380,6 +381,7 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary): Se
     // Background terminals and prompt queues are runtime-scoped, never historical.
     backgroundProcesses: [],
     queuedMessages: [],
+    ...(contextUsage ? { contextUsage } : {}),
     isStreaming: false,
     isCompacting: false
   }
@@ -389,6 +391,7 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
   const messages = historyToChat(active.session.sessionManager)
   const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
   const interactionRequest = active.interaction.pendingRequest()
+  const contextUsage = projectContextUsage(active.session)
   return {
     summary: {
       id: active.session.sessionId,
@@ -404,6 +407,7 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
+    ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
@@ -412,7 +416,8 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
 
 const detailFromActive = (active: ActiveSession): SessionDetail => {
   const detail = active.liveDetail ?? snapshotFromActive(active)
-  const { interactionRequest: _previousInteraction, ...base } = detail
+  const { contextUsage: _previousContextUsage, interactionRequest: _previousInteraction, ...base } = detail
+  const contextUsage = projectContextUsage(active.session)
   const interactionRequest = active.interaction.pendingRequest()
   return {
     ...base,
@@ -421,6 +426,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
+    ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
@@ -471,10 +477,16 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     return bus.emit(event)
   }
 
-  const emitSnapshot = (active: ActiveSession) => emitActiveEvent(active, {
+  const emitSnapshot = (active: ActiveSession, overrides?: Pick<Partial<SessionDetail>, "isCompacting">) => emitActiveEvent(active, {
     type: "session-state",
     sessionPath: active.session.sessionFile ?? "",
-    detail: snapshotFromActive(active)
+    detail: { ...snapshotFromActive(active), ...overrides }
+  })
+
+  const emitContextUsage = (active: ActiveSession) => emitActiveEvent(active, {
+    type: "context-usage",
+    sessionPath: active.session.sessionFile ?? "",
+    contextUsage: projectContextUsage(active.session)
   })
 
   const emitBackgroundProcesses = (active: ActiveSession) => emitActiveEvent(active, {
@@ -700,7 +712,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           void Effect.runPromise(emitQueuedMessages(active))
         }
       } else if (event.type === "agent_start") {
-        void Effect.runPromise(emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: true }))
+        void Effect.runPromise(Effect.gen(function*() {
+          yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: true })
+          yield* emitContextUsage(active)
+        }))
       } else if (event.type === "message_start" && event.message.role === "user") {
         active.liveUserMessageIndex += 1
         void Effect.runPromise(emitActiveEvent(active, {
@@ -776,15 +791,28 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           ...(diff ? { diff } : {})
         }))
         scheduleGitRefresh(active)
-      } else if (event.type === "message_end" && event.message.role === "custom" && event.message.customType === "background-terminal-result") {
-        applyBackgroundResultMessage(active.backgroundProcesses, event.message, event.message.timestamp)
-        void Effect.runPromise(emitBackgroundProcesses(active))
-        scheduleGitRefresh(active)
+      } else if (event.type === "message_end") {
+        if (event.message.role === "assistant") void Effect.runPromise(emitContextUsage(active))
+        if (event.message.role === "custom" && event.message.customType === "background-terminal-result") {
+          applyBackgroundResultMessage(active.backgroundProcesses, event.message, event.message.timestamp)
+          void Effect.runPromise(emitBackgroundProcesses(active))
+          scheduleGitRefresh(active)
+        }
+      } else if (event.type === "entry_appended") {
+        void Effect.runPromise(emitContextUsage(active))
       } else if (event.type === "compaction_start") {
-        void Effect.runPromise(emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: true }))
+        void Effect.runPromise(Effect.gen(function*() {
+          yield* emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: true })
+          yield* emitContextUsage(active)
+        }))
       } else if (event.type === "compaction_end") {
-        void Effect.runPromise(emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: false }))
-        void Effect.runPromise(emitSnapshot(active))
+        void Effect.runPromise(Effect.gen(function*() {
+          yield* emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: false })
+          yield* emitContextUsage(active)
+          // Pi clears its compaction controller immediately after this event.
+          // The end event itself is authoritative, so keep the snapshot in sync.
+          yield* emitSnapshot(active, { isCompacting: false })
+        }))
       } else if (event.type === "thinking_level_changed") {
         void Effect.runPromise(emitSnapshot(active))
       } else if (event.type === "agent_settled") {
@@ -857,7 +885,15 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         return yield* Effect.fail(AppError.make({ operation: "inspect Pi session", message: "Session is not linked to this parent" }))
       }
       const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
-      return detailFromManager(manager, summaryFromInfo(info))
+      const runtime = yield* Effect.tryPromise({
+        try: () => createAgentSessionRuntime(createPiRuntime, { cwd: projectCwd, agentDir: getAgentDir(), sessionManager: manager }),
+        catch: toAppError("inspect Pi context usage")
+      })
+      try {
+        return detailFromManager(manager, summaryFromInfo(info), projectContextUsage(runtime.session))
+      } finally {
+        yield* Effect.promise(() => runtime.dispose())
+      }
     }),
     prompt: Effect.fn("PiSessions.prompt")(function*(sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
       const requestedPath = canonicalPath(sessionPath)
