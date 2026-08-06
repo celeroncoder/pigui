@@ -459,6 +459,7 @@ export default function App() {
       ?? project?.worktrees[0]
     if (!project || !worktree) return
     const contextKey = worktreeKey(project, worktree)
+    setGitHubMessageId(null)
     ++projectRequestRef.current
     ++sessionRequestRef.current
     ++modelRequestRef.current

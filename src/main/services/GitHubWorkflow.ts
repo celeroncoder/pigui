@@ -104,8 +104,12 @@ const PullRequestSchema = Schema.Struct({
   baseRefName: Schema.String
 })
 const PullRequestListSchema = Schema.Array(Schema.Struct({
-  ...PullRequestSchema.fields,
-  headRepositoryOwner: Schema.Struct({ login: Schema.String }),
+  number: Schema.Number,
+  title: Schema.String,
+  url: Schema.String,
+  isDraft: Schema.Boolean,
+  baseRefName: Schema.String,
+  headRepositoryOwner: Schema.NullOr(Schema.Struct({ login: Schema.String })),
   isCrossRepository: Schema.Boolean
 }))
 
@@ -221,10 +225,10 @@ export const makeGitHubWorkflow = (executor: GitHubCommandExecutor) => Effect.ge
     )
     const repositoryOwner = repository.nameWithOwner.split("/")[0]
     if (!repositoryOwner) return yield* Effect.fail(GitHubWorkflowError.make({ operation: "inspect GitHub repository", message: "GitHub returned an invalid repository owner" }))
-    const pulls = yield* required(worktree, "gh", ["pr", "list", "--head", branch, "--state", "open", "--limit", "20", "--json", "number,title,url,isDraft,body,baseRefName,headRepositoryOwner,isCrossRepository"], "inspect pull request").pipe(
+    const pulls = yield* required(worktree, "gh", ["pr", "list", "--head", branch, "--state", "open", "--limit", "100", "--json", "number,title,url,isDraft,baseRefName,headRepositoryOwner,isCrossRepository"], "inspect pull request").pipe(
       Effect.flatMap((json) => decodeJson("decode pull request", PullRequestListSchema, json))
     )
-    const existing = pulls.find((pull) => !pull.isCrossRepository && pull.headRepositoryOwner.login.toLocaleLowerCase() === repositoryOwner.toLocaleLowerCase())
+    const existing = pulls.find((pull) => !pull.isCrossRepository && pull.headRepositoryOwner?.login.toLocaleLowerCase() === repositoryOwner.toLocaleLowerCase())
     const baseBranch = existing?.baseRefName ?? repository.defaultBranchRef.name
     yield* required(worktree, "git", ["fetch", "--quiet", "origin", baseBranch], "refresh pull request base")
     const baseRefCandidates = [`refs/remotes/origin/${baseBranch}`, `refs/heads/${baseBranch}`]
