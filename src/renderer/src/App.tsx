@@ -1,4 +1,4 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { CircleDashed, FolderPlus, GitBranch, GitPullRequest, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
@@ -8,6 +8,7 @@ import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
 import { Composer } from "./components/Composer"
 import { ConversationTimeline } from "./components/ConversationTimeline"
+import { GitHubWorkflowDialog } from "./components/GitHubWorkflowDialog"
 // import { Inspector } from "./components/Inspector"
 import { ProjectSidebar, type WorktreeSessionList } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
@@ -41,6 +42,7 @@ export default function App() {
   const [gitPaneOpen, setGitPaneOpen] = useState(false)
   const [gitDiff, setGitDiff] = useState<GitDiff | null>(null)
   const [gitDiffLoading, setGitDiffLoading] = useState(false)
+  const [githubMessageId, setGitHubMessageId] = useState<string | null>(null)
   const [selectedSubagent, setSelectedSubagent] = useState<SessionSummary | null>(null)
   const [subagentDetail, setSubagentDetail] = useState<SessionDetail | null>(null)
   const [subagentLoading, setSubagentLoading] = useState(false)
@@ -129,6 +131,7 @@ export default function App() {
     composerEpochRef.current += 1
     draftRevisionRef.current += 1
     attachmentRevisionRef.current += 1
+    setGitHubMessageId(null)
     setSession(null)
     setSessionDraft(null)
     setDraftBaseBranch(undefined)
@@ -151,6 +154,7 @@ export default function App() {
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
       setSessionRuntimeStatuses((current) => ({ ...current, [detail.summary.path]: detail.runtimeStatus }))
+      setGitHubMessageId(null)
       setInteractionRequest(detail.interactionRequest ?? null)
       void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
     } catch (cause) {
@@ -230,6 +234,7 @@ export default function App() {
     setGitPaneOpen(false)
     setGitDiff(null)
     setGitDiffLoading(false)
+    setGitHubMessageId(null)
     setSession(null)
     setSessionDraft(null)
     setDraftBaseBranch(undefined)
@@ -711,6 +716,9 @@ export default function App() {
   const gitChangeLabel = gitLineTotalsVisible
     ? `${git?.additions ?? 0} lines added, ${git?.deletions ?? 0} lines deleted`
     : `${gitChangedFiles} changed ${gitChangedFiles === 1 ? "file" : "files"}`
+  const latestShareableMessage = [...conversationItems].reverse().find((item) => item.type === "message"
+    && item.message.role === "assistant"
+    && item.message.blocks.some((block) => block.type === "text" && block.text.trim()))
 
   return (
     <div className="app-shell">
@@ -770,6 +778,18 @@ export default function App() {
               {git && <span className="git-branch" title={`Current branch: ${git.branch}`}><GitBranch size={11} aria-hidden="true" /><span>{git.branch}</span></span>}
             </div>
             <div className="conversation-header-actions">
+              {activeProject && activeWorktree && session && latestShareableMessage?.type === "message" && (
+                <button
+                  type="button"
+                  className={styles.headerControl}
+                  disabled={session.isStreaming}
+                  title={session.isStreaming ? "Wait for Pi to finish before publishing a response" : "Publish the latest Pi response to GitHub"}
+                  onClick={() => setGitHubMessageId(latestShareableMessage.message.id)}
+                >
+                  <GitPullRequest size={14} />
+                  <span>GitHub</span>
+                </button>
+              )}
               {backgroundProcesses.length > 0 && (
                 <button
                   type="button"
@@ -831,6 +851,7 @@ export default function App() {
               isStreaming={session?.isStreaming ?? false}
               liveStatus={liveStatus}
               onOpenImage={setLightboxImage}
+              onShareToGitHub={!session?.isStreaming ? (message) => setGitHubMessageId(message.id) : undefined}
             />
           ) : (
             <div className="message-scroll-shell">
@@ -986,6 +1007,14 @@ export default function App() {
             <div className="image-lightbox-canvas"><img src={lightboxImage.dataUrl} alt={lightboxImage.name} /></div>
           </div>
         </div>
+      )}
+      {githubMessageId && activeProject && activeWorktree && session && (
+        <GitHubWorkflowDialog
+          worktreeContext={worktreeContext(activeProject, activeWorktree)}
+          sessionPath={session.summary.path}
+          messageId={githubMessageId}
+          onClose={() => setGitHubMessageId(null)}
+        />
       )}
     </div>
   )

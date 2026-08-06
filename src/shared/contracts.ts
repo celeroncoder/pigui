@@ -25,6 +25,38 @@ export interface GitDiff {
   readonly omittedFiles: number
 }
 
+export interface GitHubPullRequest {
+  readonly number: number
+  readonly title: string
+  readonly url: string
+  readonly isDraft: boolean
+}
+
+export interface GitHubWorkflowContext {
+  readonly repository: string
+  readonly repositoryUrl: string
+  readonly branch: string
+  readonly baseBranch: string
+  readonly commit: string
+  readonly compareUrl: string
+  readonly committedFiles: number
+  readonly additions: number
+  readonly deletions: number
+  readonly commits: number
+  readonly hasUncommittedChanges: boolean
+  readonly summary: string
+  readonly sessionName: string
+  readonly existingPullRequest?: GitHubPullRequest
+}
+
+export interface GitHubCommentResult {
+  readonly url: string
+}
+
+export interface GitHubPullRequestResult extends GitHubPullRequest {
+  readonly action: "created" | "updated"
+}
+
 export interface ProjectWorktree {
   readonly id: string
   readonly path: string
@@ -239,6 +271,11 @@ export interface PiDesktopApi {
     readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
     readonly preview: (path: string) => Promise<AttachmentPreview>
   }
+  readonly github: {
+    readonly inspect: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<GitHubWorkflowContext>
+    readonly comment: (context: WorktreeContext, sessionPath: string, messageId: string, target: string) => Promise<GitHubCommentResult>
+    readonly createOrUpdateDraft: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<GitHubPullRequestResult>
+  }
   readonly sessions: {
     readonly list: (context: WorktreeContext) => Promise<ReadonlyArray<SessionSummary>>
     readonly start: (context: WorktreeContext, requestId: string, text: string, baseBranch?: string, attachmentPaths?: ReadonlyArray<string>) => Promise<SessionDetail>
@@ -279,5 +316,8 @@ export const IpcChannels = {
   answerInteraction: "sessions:answer-interaction",
   saveAttachment: "attachments:save",
   previewAttachment: "attachments:preview",
+  inspectGitHubWorkflow: "github:inspect-workflow",
+  postGitHubComment: "github:comment",
+  createOrUpdateGitHubDraft: "github:create-or-update-draft",
   sessionEvent: "sessions:event"
 } as const

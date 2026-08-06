@@ -1,7 +1,7 @@
 import { CircleDashed } from "lucide-react"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import type { AttachmentPreview } from "../../../shared/contracts"
+import type { AttachmentPreview, ChatMessage } from "../../../shared/contracts"
 import { ActivityGroup } from "./ActivityGroup"
 import { MessagePreviewRail } from "./MessagePreviewRail"
 import { MessageView } from "./MessageView"
@@ -16,6 +16,7 @@ type ConversationTimelineProps = {
   readonly isStreaming: boolean
   readonly liveStatus?: string
   readonly onOpenImage: (preview: AttachmentPreview) => void
+  readonly onShareToGitHub?: (message: ChatMessage) => void
 }
 
 type PendingScroll = { readonly type: "target"; readonly id: string }
@@ -28,7 +29,7 @@ const setScrollTopImmediately = (root: HTMLDivElement, top: number) => {
   root.style.scrollBehavior = previousBehavior
 }
 
-export function ConversationTimeline({ items, landmarks, previewLandmarks, previewTotalCount, isStreaming, liveStatus, onOpenImage }: ConversationTimelineProps) {
+export function ConversationTimeline({ items, landmarks, previewLandmarks, previewTotalCount, isStreaming, liveStatus, onOpenImage, onShareToGitHub }: ConversationTimelineProps) {
   const [historyStart, setHistoryStart] = useState(() => initialHistoryStart(items.length))
   const [viewport, setViewport] = useState({ top: 0, height: 0 })
   const [surfaceOffset, setSurfaceOffset] = useState(0)
@@ -255,7 +256,7 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
                   {item.type === "message"
-                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={onOpenImage} />
+                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={onOpenImage} onShareToGitHub={item.message.role === "assistant" ? onShareToGitHub : undefined} />
                     : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={isStreaming && absoluteIndex === lastActivityIndex} onOpenImage={onOpenImage} />}
                 </li>
               )

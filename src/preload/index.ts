@@ -7,6 +7,11 @@ const api: PiDesktopApi = {
     save: (bytes, name, mimeType) => ipcRenderer.invoke(IpcChannels.saveAttachment, { bytes, name, mimeType }),
     preview: (path) => ipcRenderer.invoke(IpcChannels.previewAttachment, path)
   },
+  github: {
+    inspect: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.inspectGitHubWorkflow, context, sessionPath, messageId),
+    comment: (context, sessionPath, messageId, target) => ipcRenderer.invoke(IpcChannels.postGitHubComment, context, sessionPath, messageId, target),
+    createOrUpdateDraft: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.createOrUpdateGitHubDraft, context, sessionPath, messageId)
+  },
   projects: {
     list: () => ipcRenderer.invoke(IpcChannels.listProjects),
     add: () => ipcRenderer.invoke(IpcChannels.addProject),

@@ -6,6 +6,7 @@ import { AskUserInteractionAnswerSchema } from "../shared/interaction"
 import { AppError, toAppError } from "./services/AppError"
 import { AttachmentStore, AttachmentStoreLive } from "./services/AttachmentStore"
 import { GitContext, GitContextLive } from "./services/GitContext"
+import { GitHubWorkflow, GitHubWorkflowLive } from "./services/GitHubWorkflow"
 import { PiSessions, PiSessionsLive } from "./services/PiSessions"
 import { ProjectStore, ProjectStoreLive } from "./services/ProjectStore"
 import { WindowBus, WindowBusLive } from "./services/WindowBus"
@@ -38,13 +39,13 @@ const decodeMessageText = Effect.fn("decodeMessageText")(function*(input: unknow
   return normalized
 })
 
-const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive, AttachmentStoreLive)
+const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive, AttachmentStoreLive, GitHubWorkflowLive)
 const AppServices = Layer.mergeAll(ProjectStoreLive, PiSessionsLive)
 const AppLayer = Layer.provideMerge(AppServices, AppDependencies)
 const runtime = ManagedRuntime.make(AppLayer)
 let isShuttingDown = false
 
-const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | AttachmentStore | WindowBus>): Promise<A> => {
+const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | GitHubWorkflow | AttachmentStore | WindowBus>): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect)
   if (Exit.isSuccess(exit)) return exit.value
   if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) {
@@ -76,6 +77,15 @@ const listProjectsWithGit = Effect.fn("listProjectsWithGit")(function*() {
   const store = yield* ProjectStore
   const projects = yield* store.list()
   return yield* Effect.forEach(projects, enrichProject, { concurrency: 4 })
+})
+
+const resolveGitHubSummary = Effect.fn("resolveGitHubSummary")(function*(context: unknown, sessionPath: unknown, messageId: unknown) {
+  const { worktree } = yield* resolveKnownWorktree(context)
+  const path = yield* decodeString(sessionPath)
+  const id = yield* decodeString(messageId)
+  const sessions = yield* PiSessions
+  const summary = yield* sessions.shareSummary(worktree.path, path, id)
+  return { cwd: worktree.path, summary }
 })
 
 const appIconPath = join(__dirname, "../renderer/pi-icon.png")
@@ -161,6 +171,25 @@ const registerIpc = () => {
     const { context } = yield* resolveKnownWorktree(input)
     const store = yield* ProjectStore
     return yield* store.sessionDraft(context.projectId, context.worktreeId)
+  })))
+
+  ipcMain.handle(IpcChannels.inspectGitHubWorkflow, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+    const { cwd, summary } = yield* resolveGitHubSummary(context, sessionPath, messageId)
+    const github = yield* GitHubWorkflow
+    return yield* github.inspect(cwd, summary)
+  })))
+
+  ipcMain.handle(IpcChannels.postGitHubComment, (_event, context: unknown, sessionPath: unknown, messageId: unknown, target: unknown) => run(Effect.gen(function*() {
+    const { cwd, summary } = yield* resolveGitHubSummary(context, sessionPath, messageId)
+    const requestedTarget = yield* decodeString(target)
+    const github = yield* GitHubWorkflow
+    return yield* github.comment(cwd, summary, requestedTarget)
+  })))
+
+  ipcMain.handle(IpcChannels.createOrUpdateGitHubDraft, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+    const { cwd, summary } = yield* resolveGitHubSummary(context, sessionPath, messageId)
+    const github = yield* GitHubWorkflow
+    return yield* github.createOrUpdateDraft(cwd, summary)
   })))
 
   ipcMain.handle(IpcChannels.listSessions, (_event, context: unknown) => run(Effect.gen(function*() {

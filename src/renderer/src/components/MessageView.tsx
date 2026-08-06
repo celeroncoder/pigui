@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleAlert, CircleDashed, Copy } from "lucide-react"
+import { Brain, Check, ChevronDown, CircleAlert, CircleDashed, Copy, GitPullRequest } from "lucide-react"
 import { lazy, Suspense, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -107,7 +107,7 @@ function UserMessageContent({ text, onOpenImage }: { readonly text: string; read
   )
 }
 
-export function MessageView({ message, anchorId, onOpenImage }: { readonly message: ChatMessage; readonly anchorId?: string; readonly onOpenImage?: (preview: AttachmentPreview) => void }) {
+export function MessageView({ message, anchorId, onOpenImage, onShareToGitHub }: { readonly message: ChatMessage; readonly anchorId?: string; readonly onOpenImage?: (preview: AttachmentPreview) => void; readonly onShareToGitHub?: (message: ChatMessage) => void }) {
   const [copied, setCopied] = useState(false)
   const hasText = message.blocks.some((block) => block.type === "text" && block.text.trim().length > 0)
   const compaction = message.blocks.find((block) => block.type === "compaction")
@@ -151,6 +151,11 @@ export function MessageView({ message, anchorId, onOpenImage }: { readonly messa
             >
               {copied ? <Check size={13} /> : <Copy size={13} />}
             </button>
+            {onShareToGitHub && (
+              <button type="button" aria-label="Send response to GitHub" title="Send response to GitHub" onClick={() => onShareToGitHub(message)}>
+                <GitPullRequest size={13} />
+              </button>
+            )}
           </div>
         )}
       </div>

@@ -162,6 +162,31 @@ export const createE2eApi = (): PiDesktopApi => {
       save: async () => Promise.reject(new Error("Image attachments are tested in Electron, not the browser review harness")),
       preview: async () => Promise.reject(new Error("Local image previews are unavailable in the browser review harness"))
     },
+    github: {
+      inspect: async (_context, sessionPath, messageId) => {
+        const detail = (await loadFixture()).details.find((candidate) => candidate.summary.path === sessionPath)
+        const message = detail?.messages.find((candidate) => candidate.id === messageId)
+        const summary = message?.blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n\n").trim()
+        if (!detail || !summary) throw new Error("The selected Pi response is unavailable")
+        return {
+          repository: "celeroncoder/pigui",
+          repositoryUrl: "https://github.com/celeroncoder/pigui",
+          branch: "codex/browser-review",
+          baseBranch: "main",
+          commit: "a1b2c3d4e5f6",
+          compareUrl: "https://github.com/celeroncoder/pigui/compare/main...codex/browser-review",
+          committedFiles: 4,
+          additions: 128,
+          deletions: 17,
+          commits: 2,
+          hasUncommittedChanges: true,
+          summary,
+          sessionName: detail.summary.name
+        }
+      },
+      comment: async () => ({ url: "https://github.com/celeroncoder/pigui/issues/17#issuecomment-browser-review" }),
+      createOrUpdateDraft: async () => ({ number: 117, title: "Browser review draft", url: "https://github.com/celeroncoder/pigui/pull/117", isDraft: true, action: "created" })
+    },
     projects: {
       list: async () => (await loadFixture()).projects,
       add: async () => {
