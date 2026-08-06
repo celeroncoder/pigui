@@ -1,12 +1,28 @@
-export const toggleProjectCollapse = (collapsedProjectIds: ReadonlySet<string>, projectId: string): Set<string> => {
-  const next = new Set(collapsedProjectIds)
-  if (next.has(projectId)) next.delete(projectId)
-  else next.add(projectId)
-  return next
-}
+export type ProjectExpansionState = ReadonlyMap<string, boolean>
 
 export const isProjectExpanded = (
   activeProjectId: string | null,
   projectId: string,
-  collapsedProjectIds: ReadonlySet<string>
-): boolean => activeProjectId === projectId && !collapsedProjectIds.has(projectId)
+  expansionState: ProjectExpansionState
+): boolean => expansionState.get(projectId) ?? activeProjectId === projectId
+
+export const toggleProjectExpansion = (
+  expansionState: ProjectExpansionState,
+  activeProjectId: string | null,
+  projectId: string
+): Map<string, boolean> => {
+  const next = new Map(expansionState)
+  next.set(projectId, !isProjectExpanded(activeProjectId, projectId, expansionState))
+  return next
+}
+
+export const preserveProjectExpansionOnSelection = (
+  expansionState: ProjectExpansionState,
+  activeProjectId: string | null,
+  nextProjectId: string
+): Map<string, boolean> => {
+  const next = new Map(expansionState)
+  if (activeProjectId && !next.has(activeProjectId)) next.set(activeProjectId, true)
+  if (!next.has(nextProjectId)) next.set(nextProjectId, true)
+  return next
+}

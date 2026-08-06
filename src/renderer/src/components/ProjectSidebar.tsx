@@ -1,17 +1,17 @@
 import { ChevronDown, Folder, FolderPlus, GitBranch, MoreHorizontal, Plus } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { Project, SessionSummary } from "../../../shared/contracts"
 import { compactLabel } from "../lib/text"
-import { isProjectExpanded, toggleProjectCollapse } from "./projectSidebarState"
+import { isProjectExpanded, preserveProjectExpansionOnSelection, toggleProjectExpansion } from "./projectSidebarState"
 
 interface ProjectSidebarProps {
   readonly projects: ReadonlyArray<Project>
-  readonly sessions: ReadonlyArray<SessionSummary>
+  readonly sessionsByProjectId: Readonly<Record<string, ReadonlyArray<SessionSummary>>>
   readonly activeProject: Project | null
   readonly activeSessionPath: string | null
-  readonly isLoading: boolean
+  readonly loadingProjectId: string | null
   readonly onSelectProject: (project: Project) => void
-  readonly onSelectSession: (session: SessionSummary) => void
+  readonly onSelectSession: (project: Project, session: SessionSummary) => void
   readonly onAddProject: () => void
   readonly onNewSession: (project: Project) => void
 }
@@ -27,16 +27,26 @@ const formatRelative = (timestamp: number) => {
 export function ProjectSidebar(props: ProjectSidebarProps) {
   const {
     projects,
-    sessions,
+    sessionsByProjectId,
     activeProject,
     activeSessionPath,
-    isLoading,
+    loadingProjectId,
     onSelectProject,
     onSelectSession,
     onAddProject,
     onNewSession
   } = props
-  const [collapsedProjectIds, setCollapsedProjectIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [expansionState, setExpansionState] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const previousActiveProjectIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const nextActiveProjectId = activeProject?.id ?? null
+    const previousActiveProjectId = previousActiveProjectIdRef.current
+    if (nextActiveProjectId && nextActiveProjectId !== previousActiveProjectId) {
+      setExpansionState((current) => preserveProjectExpansionOnSelection(current, previousActiveProjectId, nextActiveProjectId))
+    }
+    previousActiveProjectIdRef.current = nextActiveProjectId
+  }, [activeProject?.id])
 
   return (
     <aside className="project-sidebar" aria-label="Projects and sessions">
@@ -50,7 +60,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       <nav className="project-list">
         {projects.map((project) => {
           const isActive = activeProject?.id === project.id
-          const isExpanded = isProjectExpanded(activeProject?.id ?? null, project.id, collapsedProjectIds)
+          const isExpanded = isProjectExpanded(activeProject?.id ?? null, project.id, expansionState)
+          const sessions = (sessionsByProjectId[project.id] ?? []).filter((session) => !session.parentSessionPath)
+          const isLoading = loadingProjectId === project.id
           return (
             <div className="project-group" key={project.id}>
               <button
@@ -58,8 +70,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 type="button"
                 onClick={() => {
                   if (isActive) {
-                    setCollapsedProjectIds((current) => toggleProjectCollapse(current, project.id))
+                    setExpansionState((current) => toggleProjectExpansion(current, activeProject?.id ?? null, project.id))
                   } else {
+                    setExpansionState((current) => preserveProjectExpansionOnSelection(current, activeProject?.id ?? null, project.id))
                     onSelectProject(project)
                   }
                 }}
@@ -80,22 +93,22 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 </div>
               )}
 
-              <div className={`project-panel ${isActive ? "active" : ""}`} aria-label={`${project.name} session actions`}>
-                <div className="project-panel-heading">
-                  <span className="project-panel-label">{isActive ? "Sessions" : "Workspace"}</span>
-                  <button
-                    className="project-new-session"
-                    type="button"
-                    onClick={() => onNewSession(project)}
-                    aria-label={`New session in ${project.name}`}
-                    title={`New session in ${project.name}`}
-                  >
-                    <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
-                    <span>New session</span>
-                    {isActive && <kbd>⌘N</kbd>}
-                  </button>
-                </div>
-                {isExpanded && (
+              {isExpanded && (
+                <div className={`project-panel ${isActive ? "active" : ""}`} aria-label={`${project.name} session actions`}>
+                  <div className="project-panel-heading">
+                    <span className="project-panel-label">{isActive ? "Sessions" : "Workspace"}</span>
+                    <button
+                      className="project-new-session"
+                      type="button"
+                      onClick={() => onNewSession(project)}
+                      aria-label={`New session in ${project.name}`}
+                      title={`New session in ${project.name}`}
+                    >
+                      <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
+                      <span>New session</span>
+                      {isActive && <kbd>⌘N</kbd>}
+                    </button>
+                  </div>
                   <div className="session-list">
                     {isLoading && <div className="session-skeleton" aria-label="Loading sessions" />}
                     {!isLoading && sessions.length === 0 && (
@@ -106,15 +119,15 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                         className={`session-row ${activeSessionPath === session.path ? "active" : ""}`}
                         key={session.path}
                         type="button"
-                        onClick={() => onSelectSession(session)}
+                        onClick={() => onSelectSession(project, session)}
                       >
                         <span className="session-title" title={session.name || session.firstMessage}>{compactLabel(session.name || session.firstMessage || "Untitled session")}</span>
                         <span className="session-time">{formatRelative(session.updatedAt)}</span>
                       </button>
                     ))}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )
         })}

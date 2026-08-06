@@ -24,6 +24,7 @@ const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDif
 export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
   const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
+  const [sessionsByProjectId, setSessionsByProjectId] = useState<Readonly<Record<string, ReadonlyArray<SessionSummary>>>>({})
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [liveThinking, setLiveThinking] = useState<{ readonly messageId: string; readonly text: string } | null>(null)
@@ -156,7 +157,7 @@ export default function App() {
     }
   }, [])
 
-  const selectProject = useCallback((project: Project) => {
+  const selectProject = useCallback((project: Project, preferredSessionPath?: string) => {
     const selection = (async () => {
       const requestId = ++projectRequestRef.current
       ++sessionRequestRef.current
@@ -186,9 +187,12 @@ export default function App() {
       void refreshProjectGit(project)
       try {
         const nextSessions = await desktopApi.sessions.list(project.path)
+        setSessionsByProjectId((current) => ({ ...current, [project.id]: nextSessions }))
         if (requestId !== projectRequestRef.current || activeProjectIdRef.current !== project.id) return
         setSessions(nextSessions)
-        const first = nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:")) ?? nextSessions[0]
+        const first = (preferredSessionPath ? nextSessions.find((candidate) => candidate.path === preferredSessionPath) : undefined)
+          ?? nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:"))
+          ?? nextSessions[0]
         if (first) await openSession(project, first)
       } catch (cause) {
         if (requestId === projectRequestRef.current && activeProjectIdRef.current === project.id) {
@@ -273,6 +277,16 @@ export default function App() {
         event.detail.summary,
         ...current.filter((item) => item.path !== event.detail.summary.path)
       ])
+      const projectId = activeProjectIdRef.current
+      if (projectId) {
+        setSessionsByProjectId((current) => ({
+          ...current,
+          [projectId]: [
+            event.detail.summary,
+            ...(current[projectId] ?? []).filter((item) => item.path !== event.detail.summary.path)
+          ]
+        }))
+      }
       return
     }
     if (event.type === "assistant-start") {
@@ -294,6 +308,7 @@ export default function App() {
           const project = activeProjectRef.current
           if (!project) return
           void desktopApi.sessions.list(project.path).then((nextSessions) => {
+            setSessionsByProjectId((current) => ({ ...current, [project.id]: nextSessions }))
             if (activeProjectRef.current?.id === project.id) setSessions(nextSessions)
           })
         }, 1200)
@@ -355,6 +370,10 @@ export default function App() {
       setInteractionSubmitting(false)
       interactionSubmittingRef.current = false
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
+      setSessionsByProjectId((current) => ({
+        ...current,
+        [project.id]: [detail.summary, ...(current[project.id] ?? []).filter((item) => item.path !== detail.summary.path)]
+      }))
       void loadModels(detail.summary.path)
     } catch (cause) {
       if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
@@ -507,7 +526,6 @@ export default function App() {
     }
   }, [displayMessages])
   const linkedSubagents = sessions.filter((candidate) => candidate.parentSessionPath === session?.summary.path)
-  const sidebarSessions = sessions.filter((candidate) => !candidate.parentSessionPath)
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
   const runningProcesses = backgroundProcesses.length
   const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
@@ -532,12 +550,15 @@ export default function App() {
       <div className={`workspace-layout ${(gitPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""} ${gitPaneOpen ? "with-git" : ""}`}>
         <ProjectSidebar
           projects={projects}
-          sessions={sidebarSessions}
+          sessionsByProjectId={sessionsByProjectId}
           activeProject={activeProject}
           activeSessionPath={session?.summary.path ?? null}
-          isLoading={loadingSessions}
+          loadingProjectId={loadingSessions ? activeProject?.id ?? null : null}
           onSelectProject={(project) => void selectProject(project)}
-          onSelectSession={(summary) => activeProject && void openSession(activeProject, summary)}
+          onSelectSession={(project, summary) => {
+            if (activeProject?.id === project.id) void openSession(project, summary)
+            else void selectProject(project, summary.path)
+          }}
           onAddProject={() => void addProject()}
           onNewSession={(project) => void newSession(project)}
         />
