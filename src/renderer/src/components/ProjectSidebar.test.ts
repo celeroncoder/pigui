@@ -24,7 +24,7 @@ const summary: SessionSummary = {
 }
 
 describe("ProjectSidebar", () => {
-  it("renders one flat, context-labelled session list and an empty-worktree action", () => {
+  it("renders one flat, context-labelled session list without empty-worktree rows", () => {
     const markup = renderToStaticMarkup(createElement(ProjectSidebar, {
       projects: [project],
       sessionsByWorktree: {
@@ -41,13 +41,13 @@ describe("ProjectSidebar", () => {
     }))
 
     expect(markup).toContain("Issue #14 — full worktree support. local checkout, branch main, 1 changed file, path /repo/pi-gui. Session running.")
-    expect(markup).toContain("Start a session in linked worktree, branch issue-14, Git status not loaded, /repo/pi-gui-issue-14")
+    expect(markup).toContain("New session in pi-gui, local checkout pi-gui")
     expect(markup).toContain('aria-current="page"')
-    expect(markup).not.toContain("aria-expanded")
+    expect(markup).not.toContain("empty-worktree-row")
     expect(markup).not.toContain("worktree-list")
   })
 
-  it("does not present creation when Pi session discovery fails", () => {
+  it("keeps the project-scoped action available when session discovery fails", () => {
     const markup = renderToStaticMarkup(createElement(ProjectSidebar, {
       projects: [project],
       sessionsByWorktree: {
@@ -55,7 +55,7 @@ describe("ProjectSidebar", () => {
         "project:linked": { sessions: [], loading: false, unavailable: true }
       },
       activeProject: project,
-      activeWorktree: null,
+      activeWorktree: project.worktrees[1] ?? null,
       activeSessionPath: null,
       activeSessionStreaming: false,
       onSelectSession: () => undefined,
@@ -65,6 +65,6 @@ describe("ProjectSidebar", () => {
 
     expect(markup).toContain("Sessions unavailable for local checkout, branch main, /repo/pi-gui")
     expect(markup).toContain("Sessions unavailable for linked worktree, branch issue-14, /repo/pi-gui-issue-14")
-    expect(markup).not.toContain("Start a session in")
+    expect(markup).toContain("New session in pi-gui, local checkout pi-gui")
   })
 })

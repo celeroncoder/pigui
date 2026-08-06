@@ -1,16 +1,14 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
+import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
-import { ActivityGroup } from "./components/ActivityGroup"
 import { AskUserPanel } from "./components/AskUserPanel"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
 import { Composer } from "./components/Composer"
+import { ConversationTimeline } from "./components/ConversationTimeline"
 // import { Inspector } from "./components/Inspector"
-import { MessagePreviewRail } from "./components/MessagePreviewRail"
-import { MessageView } from "./components/MessageView"
 import { ProjectSidebar, type WorktreeSessionList } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
@@ -31,6 +29,10 @@ export default function App() {
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [activeWorktree, setActiveWorktree] = useState<ProjectWorktree | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
+  const [sessionDraft, setSessionDraft] = useState<SessionDraftContext | null>(null)
+  const [draftBaseBranch, setDraftBaseBranch] = useState<string | undefined>()
+  const [draftContextLoading, setDraftContextLoading] = useState(false)
+  const [draftStarting, setDraftStarting] = useState(false)
   const [liveThinking, setLiveThinking] = useState<{ readonly messageId: string; readonly text: string } | null>(null)
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
   const [backgroundPaneOpen, setBackgroundPaneOpen] = useState(false)
@@ -51,8 +53,6 @@ export default function App() {
   const attachmentRevisionRef = useRef(0)
   const composerEpochRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const messageScrollRef = useRef<HTMLDivElement>(null)
   const activeSessionPathRef = useRef<string | null>(null)
   const activeProjectRef = useRef<Project | null>(null)
   const activeWorktreeRef = useRef<ProjectWorktree | null>(null)
@@ -65,6 +65,7 @@ export default function App() {
   const subagentRequestRef = useRef(0)
   const addingProjectRef = useRef(false)
   const catalogRequestRef = useRef(0)
+  const draftContextRequestRef = useRef(0)
 
   const storeWorktreeSessions = useCallback((project: Project, worktree: ProjectWorktree, nextSessions: ReadonlyArray<SessionSummary>) => {
     const key = worktreeKey(project, worktree)
@@ -118,11 +119,16 @@ export default function App() {
     const contextKey = worktreeKey(project, worktree)
     if (activeWorktreeKeyRef.current !== contextKey) return
     const requestId = ++sessionRequestRef.current
+    ++draftContextRequestRef.current
     activeSessionPathRef.current = summary.path
     composerEpochRef.current += 1
     draftRevisionRef.current += 1
     attachmentRevisionRef.current += 1
     setSession(null)
+    setSessionDraft(null)
+    setDraftBaseBranch(undefined)
+    setDraftContextLoading(false)
+    setDraftStarting(false)
     setPendingAttachments([])
     setLightboxImage(null)
     setLiveThinking(null)
@@ -200,6 +206,7 @@ export default function App() {
   const selectWorktree = useCallback(async (project: Project, worktree: ProjectWorktree, preferredSessionPath?: string) => {
     const contextKey = worktreeKey(project, worktree)
     const requestId = ++projectRequestRef.current
+    ++draftContextRequestRef.current
     ++sessionRequestRef.current
     ++modelRequestRef.current
     activeWorktreeKeyRef.current = contextKey
@@ -216,6 +223,10 @@ export default function App() {
     setGitDiff(null)
     setGitDiffLoading(false)
     setSession(null)
+    setSessionDraft(null)
+    setDraftBaseBranch(undefined)
+    setDraftContextLoading(false)
+    setDraftStarting(false)
     setPendingAttachments([])
     setLightboxImage(null)
     setLiveThinking(null)
@@ -296,6 +307,28 @@ export default function App() {
       if (gitPaneOpen) void loadGitDiff(project, worktree)
       return
     }
+    if (event.type === "session-started") {
+      const contextKey = `${event.context.projectId}:${event.context.worktreeId}`
+      if (activeWorktreeKeyRef.current !== contextKey || activeSessionPathRef.current !== null) return
+      const project = activeProjectRef.current
+      const worktree = activeWorktreeRef.current
+      activeSessionPathRef.current = event.detail.summary.path
+      setSession(event.detail)
+      setSessionDraft(null)
+      setDraftBaseBranch(undefined)
+      setDraftContextLoading(false)
+      setDraftStarting(false)
+      setInteractionRequest(event.detail.interactionRequest ?? null)
+      setSessions((current) => [event.detail.summary, ...current.filter((item) => item.path !== event.detail.summary.path)])
+      if (project && worktree) {
+        setSessionsByWorktree((current) => {
+          const listing = current[contextKey] ?? { sessions: [], loading: false }
+          return { ...current, [contextKey]: { sessions: [event.detail.summary, ...listing.sessions.filter((item) => item.path !== event.detail.summary.path)], loading: false } }
+        })
+        void loadModels(event.context, contextKey, event.detail.summary.path)
+      }
+      return
+    }
     const activeSessionPath = activeSessionPathRef.current
     if (event.sessionPath !== activeSessionPath) return
 
@@ -364,11 +397,7 @@ export default function App() {
       if (!event.isStreaming) setLiveThinking(null)
     }
     setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
-  }), [gitPaneOpen, loadGitDiff, storeWorktreeSessions])
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: session?.isStreaming ? "instant" : "smooth", block: "end" })
-  }, [session?.messages, session?.isStreaming])
+  }), [gitPaneOpen, loadGitDiff, loadModels, storeWorktreeSessions])
 
   useEffect(() => {
     if (!lightboxImage) return
@@ -397,67 +426,64 @@ export default function App() {
 
   const newSession = useCallback(async (targetProject?: Project, targetWorktree?: ProjectWorktree) => {
     const project = targetProject ?? activeProjectRef.current
-    const worktree = targetWorktree ?? activeWorktreeRef.current
+    const worktree = targetWorktree
+      ?? (activeProjectRef.current?.id === project?.id ? activeWorktreeRef.current : null)
+      ?? project?.worktrees.find((candidate) => candidate.kind === "local")
+      ?? project?.worktrees[0]
     if (!project || !worktree) return
     const contextKey = worktreeKey(project, worktree)
-    if (activeWorktreeKeyRef.current !== contextKey) {
-      ++projectRequestRef.current
-      ++sessionRequestRef.current
-      ++modelRequestRef.current
-      activeWorktreeKeyRef.current = contextKey
-      activeSessionPathRef.current = null
-      activeProjectRef.current = project
-      activeWorktreeRef.current = worktree
-      composerEpochRef.current += 1
-      draftRevisionRef.current += 1
-      attachmentRevisionRef.current += 1
-      setActiveProject(project)
-      setActiveWorktree(worktree)
-      setSessions(sessionsByWorktree[contextKey]?.sessions ?? [])
-      setSession(null)
-      setPendingAttachments([])
-      setLightboxImage(null)
-      setLiveThinking(null)
-      setDraft("")
-      setModelOptions([])
-      setInteractionRequest(null)
-      setInteractionSubmitting(false)
-      interactionSubmittingRef.current = false
-      ++gitDiffRequestRef.current
-      setGitPaneOpen(false)
-      setGitDiff(null)
-      setGitDiffLoading(false)
-      setError(null)
+    ++projectRequestRef.current
+    ++sessionRequestRef.current
+    ++modelRequestRef.current
+    activeWorktreeKeyRef.current = contextKey
+    activeSessionPathRef.current = null
+    activeProjectRef.current = project
+    activeWorktreeRef.current = worktree
+    composerEpochRef.current += 1
+    draftRevisionRef.current += 1
+    attachmentRevisionRef.current += 1
+    setActiveProject(project)
+    setActiveWorktree(worktree)
+    setSessions(sessionsByWorktree[contextKey]?.sessions ?? [])
+    setSession(null)
+    const fallbackDraft: SessionDraftContext = {
+      path: worktree.path,
+      folderName: worktree.name,
+      worktreeKind: worktree.kind === "linked" ? "linked" : "local",
+      branch: worktree.git?.branch ?? worktree.branch,
+      baseBranches: []
     }
-    const requestId = ++sessionRequestRef.current
+    setSessionDraft(fallbackDraft)
+    setDraftBaseBranch(undefined)
+    setDraftStarting(false)
+    setPendingAttachments([])
+    setLightboxImage(null)
+    setLiveThinking(null)
+    setDraft("")
+    setModelOptions([])
+    setInteractionRequest(null)
+    setInteractionSubmitting(false)
+    interactionSubmittingRef.current = false
+    ++gitDiffRequestRef.current
+    setGitPaneOpen(false)
+    setGitDiff(null)
+    setGitDiffLoading(false)
     setError(null)
+    const requestId = ++draftContextRequestRef.current
+    setDraftContextLoading(true)
     try {
-      const detail = await desktopApi.sessions.create(worktreeContext(project, worktree))
-      if (requestId !== sessionRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
-      activeSessionPathRef.current = detail.summary.path
-      setSession(detail)
-      setInteractionRequest(detail.interactionRequest ?? null)
-      composerEpochRef.current += 1
-      draftRevisionRef.current += 1
-      attachmentRevisionRef.current += 1
-      setPendingAttachments([])
-      setLightboxImage(null)
-      setLiveThinking(null)
-      setDraft("")
-      setInteractionSubmitting(false)
-      interactionSubmittingRef.current = false
-      setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
-      setSessionsByWorktree((current) => {
-        const listing = current[contextKey] ?? { sessions: [], loading: false }
-        return { ...current, [contextKey]: { sessions: [detail.summary, ...listing.sessions.filter((item) => item.path !== detail.summary.path)], loading: false } }
-      })
-      void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
+      const described = await desktopApi.projects.sessionDraft(worktreeContext(project, worktree))
+      if (requestId !== draftContextRequestRef.current || activeWorktreeKeyRef.current !== contextKey || activeSessionPathRef.current !== null) return
+      setSessionDraft(described)
+      setDraftBaseBranch(described.defaultBaseBranch ?? described.baseBranches[0])
     } catch (cause) {
-      if (requestId === sessionRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
-        setError(cause instanceof Error ? cause.message : "Could not create session")
+      if (requestId === draftContextRequestRef.current && activeWorktreeKeyRef.current === contextKey && activeSessionPathRef.current === null) {
+        setError(cause instanceof Error ? cause.message : "Could not prepare the session draft")
       }
+    } finally {
+      if (requestId === draftContextRequestRef.current) setDraftContextLoading(false)
     }
-  }, [loadModels, sessionsByWorktree])
+  }, [sessionsByWorktree])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -494,9 +520,39 @@ export default function App() {
     const rawText = draft.trim()
     const attachmentPaths = pendingAttachments.map((attachment) => attachment.path)
     const text = normalizeImageReferences(rawText, attachmentPaths)
-    if (!text.trim() || !session || !activeProject || !activeWorktree) return
+    if (!text.trim() || !activeProject || !activeWorktree) return
     const context = worktreeContext(activeProject, activeWorktree)
     const contextKey = worktreeKey(activeProject, activeWorktree)
+    if (!session) {
+      if (!sessionDraft || draftContextLoading || draftStarting) return
+      if (sessionDraft.worktreeKind === "linked" && !draftBaseBranch) {
+        setError("Choose a base branch before starting this worktree session")
+        return
+      }
+      const previousDraft = draft
+      const previousAttachments = pendingAttachments
+      const draftRevision = ++draftRevisionRef.current
+      const attachmentRevision = ++attachmentRevisionRef.current
+      composerEpochRef.current += 1
+      setDraft("")
+      setPendingAttachments([])
+      setDraftStarting(true)
+      setError(null)
+      void desktopApi.sessions.start(context, rawText, draftBaseBranch, attachmentPaths).catch((cause: unknown) => {
+        if (activeWorktreeKeyRef.current !== contextKey) return
+        if (draftRevisionRef.current === draftRevision) {
+          draftRevisionRef.current += 1
+          setDraft(previousDraft)
+        }
+        if (attachmentRevisionRef.current === attachmentRevision) {
+          attachmentRevisionRef.current += 1
+          setPendingAttachments(previousAttachments)
+        }
+        setDraftStarting(false)
+        setError(cause instanceof Error ? cause.message : "Pi could not start the session")
+      })
+      return
+    }
     const sessionPath = session.summary.path
     const wasStreaming = session.isStreaming
     const previousDraft = draft
@@ -527,8 +583,8 @@ export default function App() {
   }
 
   const addPastedImage = async (image: File) => {
-    if (!session || !activeProject || !activeWorktree) return
-    const sessionPath = session.summary.path
+    if ((!session && !sessionDraft) || !activeProject || !activeWorktree) return
+    const sessionPath = session?.summary.path ?? null
     const contextKey = worktreeKey(activeProject, activeWorktree)
     const epoch = composerEpochRef.current
     try {
@@ -597,17 +653,22 @@ export default function App() {
     }
   }
 
-  const displayMessages: ReadonlyArray<ChatMessage> = session?.isCompacting
+  const displayMessages: ReadonlyArray<ChatMessage> = useMemo(() => session?.isCompacting
     ? [...session.messages, { id: "compaction-active", role: "system", blocks: [{ type: "compaction", status: "compacting" }], timestamp: Date.now() }]
-    : session?.messages ?? []
-  const conversationItems = buildConversationItems(displayMessages)
-  const conversationLandmarks = buildConversationPreviewLandmarks(conversationItems)
-  const allPreviewLandmarks = filterUserMessagePreviewLandmarks(conversationLandmarks)
-  const previewStride = Math.max(1, Math.ceil(allPreviewLandmarks.length / 28))
-  const previewLandmarks = allPreviewLandmarks.filter((_landmark, index) => index === 0 || index === allPreviewLandmarks.length - 1 || index % previewStride === 0)
-  const lastActivityIndex = conversationItems.findLastIndex((item) => item.type === "activity")
+    : session?.messages ?? [], [session?.isCompacting, session?.messages])
+  const { conversationItems, conversationLandmarks, allPreviewLandmarks, previewLandmarks } = useMemo(() => {
+    const items = buildConversationItems(displayMessages)
+    const landmarks = buildConversationPreviewLandmarks(items)
+    const allPreviews = filterUserMessagePreviewLandmarks(landmarks)
+    const previewStride = Math.max(1, Math.ceil(allPreviews.length / 28))
+    return {
+      conversationItems: items,
+      conversationLandmarks: landmarks,
+      allPreviewLandmarks: allPreviews,
+      previewLandmarks: allPreviews.filter((_landmark, index) => index === 0 || index === allPreviews.length - 1 || index % previewStride === 0)
+    }
+  }, [displayMessages])
   const linkedSubagents = sessions.filter((candidate) => candidate.parentSessionPath === session?.summary.path)
-  const sidebarSessions = sessions.filter((candidate) => !candidate.parentSessionPath)
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
   const runningProcesses = backgroundProcesses.length
   const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
@@ -726,28 +787,21 @@ export default function App() {
             />
           )}
 
-          <div className="message-scroll-shell">
-            {conversationItems.length > 0 && (
-              <MessagePreviewRail landmarks={previewLandmarks} totalCount={allPreviewLandmarks.length} scrollRootRef={messageScrollRef} />
-            )}
-            <div className="message-scroll" ref={messageScrollRef}>
-            {displayMessages.length ? (
-              <div className="message-list">
-                {conversationItems.map((item, index) => {
-                  const landmark = conversationLandmarks[index]
-                  return item.type === "message"
-                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={setLightboxImage} key={item.id} />
-                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} onOpenImage={setLightboxImage} key={item.id} />
-                })}
-                {session?.isStreaming && (
-                  <div className="live-status" role="status" aria-live="polite">
-                    <CircleDashed size={14} />
-                    <span>{liveStatus ?? "Thinking"}</span>
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            ) : activeProject ? (
+          {displayMessages.length ? (
+            <ConversationTimeline
+              key={`timeline-${session?.summary.path}`}
+              items={conversationItems}
+              landmarks={conversationLandmarks}
+              previewLandmarks={previewLandmarks}
+              previewTotalCount={allPreviewLandmarks.length}
+              isStreaming={session?.isStreaming ?? false}
+              liveStatus={liveStatus}
+              onOpenImage={setLightboxImage}
+            />
+          ) : (
+            <div className="message-scroll-shell">
+              <div className="message-scroll">
+              {activeProject ? (
               <div className="conversation-empty">
                 <div className="empty-mark"><BrandMark size={42} /></div>
                 <span className="empty-kicker"><Sparkles size={13} /> Project context is ready</span>
@@ -759,7 +813,7 @@ export default function App() {
                   <button type="button" onClick={() => { draftRevisionRef.current += 1; setDraft("Run the tests and explain any failures") }}>Run the test suite</button>
                 </div>
               </div>
-            ) : (
+              ) : (
               <div className="conversation-empty onboarding-empty">
                 <div className="empty-mark"><BrandMark size={42} /></div>
                 <span className="empty-kicker"><Sparkles size={13} /> Pi Desktop is ready</span>
@@ -767,25 +821,37 @@ export default function App() {
                 <p>Add a project folder to discover its existing Pi sessions and start new ones with the same config, skills, and credentials.</p>
                 <button className="onboarding-action" type="button" onClick={() => void addProject()}><FolderPlus size={15} /> Add a project folder</button>
               </div>
-            )}
+              )}
+              </div>
             </div>
-          </div>
+          )}
 
           {error && <div className="error-toast" role="alert">{error}<button type="button" onClick={() => setError(null)}>Dismiss</button></div>}
           <Composer
-            key={session?.summary.path ?? "no-session"}
+            key={session?.summary.path ?? (sessionDraft ? `draft:${activeWorktree?.id ?? "worktree"}` : "no-session")}
             value={draft}
-            disabled={!session || interactionRequest !== null}
-            disabledReason={interactionRequest ? "Answer Pi above to continue…" : undefined}
+            disabled={(!session && (!sessionDraft || draftContextLoading || draftStarting)) || interactionRequest !== null}
+            disabledReason={interactionRequest ? "Answer Pi above to continue…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
-            model={session?.model.split("/").at(-1) ?? "Choose model"}
+            model={session?.model.split("/").at(-1) ?? (sessionDraft ? "Pi default" : "Choose model")}
             modelProvider={session?.model.includes("/") ? session.model.split("/")[0] : undefined}
             modelOptions={modelOptions}
             thinkingLevel={session?.thinkingLevel ?? "off"}
             availableThinkingLevels={session?.availableThinkingLevels ?? []}
             queuedMessages={session?.queuedMessages ?? []}
             contextUsage={session?.contextUsage}
+            worktreeContext={activeWorktree ? {
+              path: activeWorktree.path,
+              folderName: activeWorktree.name,
+              worktreeKind: activeWorktree.kind === "linked" ? "linked" : "local",
+              branch: activeWorktree.git?.branch ?? activeWorktree.branch,
+              baseBranches: []
+            } : undefined}
+            draftContext={sessionDraft ?? undefined}
+            draftBaseBranch={draftBaseBranch}
+            draftContextLoading={draftContextLoading}
+            onDraftBaseBranchChange={setDraftBaseBranch}
             onModelChange={(option) => {
               if (!session || !activeProject || !activeWorktree) return
               const sessionPath = session.summary.path
