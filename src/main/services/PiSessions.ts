@@ -780,6 +780,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     active.liveDetail = snapshotFromActive(active)
 
     active.unsubscribe = runtime.session.subscribe((event) => {
+      // Runtime disposal can synchronously emit abort/settled events. Ignore
+      // teardown events even if the SDK unsubscribe callback itself failed so
+      // normal quit, signals, and crash cleanup never become recovery state.
+      if (active.disposed) return
       if (event.type === "queue_update") {
         if (active.queueUpdatesSuspended === 0 && refreshQueuedMessages(active)) {
           void Effect.runPromise(emitQueuedMessages(active))
