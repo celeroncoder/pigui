@@ -20,7 +20,7 @@ import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import { projectToolOutput } from "./PiEventProjection"
 import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
-import { interruptedTransportReason, lastUserPrompt, recoveryPrompt } from "./SessionRecovery"
+import { interruptedTransportReason, lastUserPrompt, recoveryAfterReopen, recoveryPrompt } from "./SessionRecovery"
 import {
   type NativePromptQueue,
   prioritizeQueuedMessageForSteering,
@@ -392,14 +392,16 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary, con
 }
 
 const historicalRecovery = (manager: SessionManager): SessionRecovery | undefined => {
-  const messages = manager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : [])
+  const branch = manager.getBranch()
+  const messages = branch.flatMap((entry) => entry.type === "message" ? [entry.message] : [])
   const reason = interruptedTransportReason(messages, false, false)
   if (!reason) return undefined
-  const lastEntry = manager.getBranch().findLast((entry) => entry.type === "message" && entry.message.role === "assistant")
+  const lastEntry = branch.findLast((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))
+  const prompt = lastUserPrompt(messages)
   return {
     reason,
     interruptedAt: lastEntry ? timestampValue(lastEntry.timestamp) : Date.now(),
-    ...(lastUserPrompt(messages) ? { lastPrompt: lastUserPrompt(messages) } : {})
+    ...(prompt ? { lastPrompt: prompt } : {})
   }
 }
 
@@ -1037,12 +1039,15 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           catch: toAppError("reopen Pi session")
         })
         const next = yield* attach(current.cwd, manager)
-        next.recovery = undefined
+        // Continue/restart only clears recovery once Pi accepts the prompt. If
+        // preflight fails, the renderer can reopen this same active runtime and
+        // offer the preserved choices again instead of losing the recovery path.
+        next.recovery = recoveryAfterReopen(action, recovery)
         for (const [id, images] of preservedImages) next.queuedImages.set(id, images)
         if (preservedQueue.length > 0) yield* replaceNativeQueue(next, preservedQueue)
         if (prompt) next.pendingPromptStarts += 1
         yield* emitSnapshot(next)
-        return { active: next, prompt }
+        return { active: next, prompt, recovery }
       })))
 
       if (prepared.prompt) {
@@ -1057,6 +1062,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           try: () => prepared.active.session.prompt(prompt, { preflightResult: finishPromptStart }),
           catch: toAppError("continue recovered Pi session")
         }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
+        if (prepared.active.recovery === prepared.recovery) {
+          prepared.active.recovery = undefined
+          yield* emitSnapshot(prepared.active)
+        }
       }
       return detailFromActive(prepared.active)
     }),

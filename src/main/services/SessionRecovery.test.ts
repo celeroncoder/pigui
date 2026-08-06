@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { interruptedTransportReason, lastUserPrompt, recoveryPrompt } from "./SessionRecovery"
+import { interruptedTransportReason, lastUserPrompt, recoveryAfterReopen, recoveryPrompt } from "./SessionRecovery"
 import { reconcileQueuedMessages } from "./PromptQueue"
 
 describe("Pi session transport recovery", () => {
@@ -13,9 +13,19 @@ describe("Pi session transport recovery", () => {
     expect(lastUserPrompt(interrupted)).toBe("Fix the flaky lifecycle test")
   })
 
-  it("does not interrupt for automatic retries, explicit aborts, or successful turns", () => {
+  it("detects a persisted prompt whose transport ended before an assistant message", () => {
+    const unmatched = [
+      { role: "assistant", content: [{ type: "text", text: "Previous turn complete" }], stopReason: "stop" },
+      { role: "user", content: [{ type: "text", text: "Resume after relaunch" }] }
+    ]
+    expect(interruptedTransportReason(unmatched, false, false)).toBe("Pi's response transport stopped before the turn completed.")
+    expect(lastUserPrompt(unmatched)).toBe("Resume after relaunch")
+  })
+
+  it("does not interrupt for automatic retries, explicit aborts, persisted aborts, or successful turns", () => {
     expect(interruptedTransportReason(interrupted, true, false)).toBeUndefined()
     expect(interruptedTransportReason(interrupted, false, true)).toBeUndefined()
+    expect(interruptedTransportReason([{ role: "assistant", stopReason: "aborted", errorMessage: "This operation was aborted" }], false, false)).toBeUndefined()
     expect(interruptedTransportReason([{ role: "assistant", stopReason: "stop" }], false, false)).toBeUndefined()
   })
 
@@ -24,6 +34,13 @@ describe("Pi session transport recovery", () => {
     expect(recoveryPrompt("resume", recovery)).toBeUndefined()
     expect(recoveryPrompt("continue", recovery)).toContain("last preserved session state")
     expect(recoveryPrompt("restart", recovery)).toBe("Run the tests")
+  })
+
+  it("keeps recovery available until a continued or restarted prompt actually starts", () => {
+    const recovery = { reason: "pipe reset", interruptedAt: 123, lastPrompt: "Run the tests" }
+    expect(recoveryAfterReopen("resume", recovery)).toBeUndefined()
+    expect(recoveryAfterReopen("continue", recovery)).toBe(recovery)
+    expect(recoveryAfterReopen("restart", recovery)).toBe(recovery)
   })
 
   it("retains steering and follow-up identity and order when a runtime queue is rebuilt", () => {
