@@ -421,8 +421,6 @@
   .composer-tools { position: relative; display: flex; align-items: center; gap: 2px; }
   .composer-tools > button { height: 30px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: transparent; color: var(--text-3); }
   .composer-tools > button:hover { background: #1e1f20; color: var(--text-2); }
-  .composer-tools .composer-command-button { gap: 5px; padding: 0 8px; border: 1px solid #3e3934; border-radius: 8px; background: linear-gradient(180deg, #24211e, #1a1b1c); color: #d3ac82; font: 7.5px var(--display); letter-spacing: .03em; }
-  .composer-tools .composer-command-button:hover:not(:disabled) { border-color: #6d513b; background: #2b2621; color: #f0c79d; }
   .composer-tools .context-pill { height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 8px; color: #8b9c8e; font-size: 10px; }
   .composer-tools .composer-model-selector { max-width: 180px; gap: 7px; padding: 0 9px; border: 0; border-radius: 10px; background: linear-gradient(180deg, #222324, #18191a); color: var(--text-2); font: 9px var(--mono); box-shadow: 0 1px 2px rgba(0,0,0,.34), inset 0 0 0 1px rgba(255,255,255,.085), inset 0 1px rgba(255,255,255,.045); }
   .composer-model-selector > span:nth-child(2) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

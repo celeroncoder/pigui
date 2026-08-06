@@ -310,8 +310,8 @@ export const createE2eApi = (): PiDesktopApi => {
       steerQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
       abort: async () => undefined,
       models: async () => ({ models: (await loadFixture()).models, status: "ready" }),
-      setModel: async (_context, sessionPath, provider, modelId) => {
       commands: async () => (await loadFixture()).commands,
+      setModel: async (_context, sessionPath, provider, modelId) => {
         const data = await loadFixture()
         const current = data.details.find((item) => item.summary.path === sessionPath)
         if (!current) throw new Error("The generated Pi session snapshot is unavailable")
