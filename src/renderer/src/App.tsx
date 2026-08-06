@@ -494,10 +494,13 @@ export default function App() {
         }
         return
       }
+      // Avoid queueing irrelevant or stale events; the batch reducer also
+      // checks the active path after the next animation frame.
+      if (!("sessionPath" in event) || event.sessionPath !== activeSessionPathRef.current) return
       batcher.enqueue(event)
     })
     return () => {
-      batcher.flush()
+      batcher.cancel()
       unsubscribe()
     }
   }, [loadGitDiff])

@@ -65,6 +65,27 @@ describe("session event batching", () => {
     expect(reduceSessionEventBatch(detail(), sessionPath, coalesceSessionEvents(events))).toEqual(reduceSessionEventBatch(detail(), sessionPath, events))
   })
 
+  it("drops queued work when the renderer subscription is disposed", () => {
+    const flushed: SessionEvent[][] = []
+    const cancelled: number[] = []
+    let scheduled: FrameRequestCallback | undefined
+    const batcher = createSessionEventBatcher(
+      (events) => flushed.push([...events]),
+      (callback) => {
+        scheduled = callback
+        return 7
+      },
+      (handle) => cancelled.push(handle)
+    )
+
+    batcher.enqueue({ type: "text-delta", sessionPath, messageId: "assistant", delta: "discard me" })
+    batcher.cancel()
+    scheduled?.(0)
+
+    expect(cancelled).toEqual([7])
+    expect(flushed).toEqual([])
+  })
+
   it("reconciles thinking, interaction, and snapshots in their original order", () => {
     const request: AskUserInteractionRequest = {
       requestId: "request",
