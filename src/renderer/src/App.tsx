@@ -431,28 +431,30 @@ export default function App() {
   const recoverSession = (action: SessionRecoveryAction) => {
     if (!session || recoverySubmitting) return
     const sessionPath = session.summary.path
+    const requestId = sessionRequestRef.current
+    const isCurrentRecovery = () => activeSessionPathRef.current === sessionPath && sessionRequestRef.current === requestId
     setRecoverySubmitting(true)
     setError(null)
     if (action !== "resume") setSession((current) => current ? { ...current, recovery: undefined, isStreaming: true } : current)
     void desktopApi.sessions.recover(sessionPath, action).then((detail) => {
-      if (activeSessionPathRef.current !== sessionPath) return
+      if (!isCurrentRecovery()) return
       setSession(detail)
       setInteractionRequest(detail.interactionRequest ?? null)
     }).catch(async (cause: unknown) => {
-      if (activeSessionPathRef.current !== sessionPath) return
+      if (!isCurrentRecovery()) return
       setError(cause instanceof Error ? cause.message : "Pi could not recover this session")
       const project = activeProjectRef.current
       if (action !== "resume" && project) {
         try {
           const detail = await desktopApi.sessions.open(project.path, sessionPath)
-          if (activeSessionPathRef.current === sessionPath) setSession(detail)
+          if (isCurrentRecovery()) setSession(detail)
         } catch {
           // Keep the original recovery failure visible; a later explicit reopen
           // can retry loading the preserved Pi state.
         }
       }
     }).finally(() => {
-      if (activeSessionPathRef.current === sessionPath) setRecoverySubmitting(false)
+      if (isCurrentRecovery()) setRecoverySubmitting(false)
     })
   }
 
