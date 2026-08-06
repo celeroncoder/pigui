@@ -11,6 +11,14 @@ const statusLabel: Record<BackgroundProcess["status"], string> = {
   stopped: "Historical"
 }
 
+const statusClass: Record<BackgroundProcess["status"], string> = {
+  running: styles.running,
+  done: styles.done,
+  failed: styles.failed,
+  killed: "",
+  stopped: ""
+}
+
 const formatElapsed = (process: BackgroundProcess) => {
   const elapsed = Math.max(0, (process.status === "running" ? Date.now() : process.updatedAt) - process.startedAt)
   const seconds = Math.round(elapsed / 1000)
@@ -45,12 +53,13 @@ export function BackgroundProcessesPane({ processes, onClose }: {
         {processes.map((process) => {
           const expanded = expandedId === process.id
           const copyText = process.output || process.command || ""
+          const processStatusClass = statusClass[process.status]
           return (
-            <article className={`${styles.process} ${styles[process.status]}`} key={process.id}>
+            <article className={`${styles.process} ${processStatusClass}`} key={process.id}>
               <button type="button" className={styles.trigger} aria-expanded={expanded} onClick={() => setExpandedId(expanded ? null : process.id)}>
                 <span className={styles.icon}><SquareTerminal size={14} /></span>
                 <span className={styles.title}><strong>{process.title}</strong><small>{process.id}{process.pid ? ` · pid ${process.pid}` : ""}</small></span>
-                <span className={`${styles.status} ${styles[process.status]}`}>{process.status === "running" ? <span className={styles.activeStatusPulse} /> : process.status === "failed" ? <CircleStop size={10} /> : <Check size={10} />}{statusLabel[process.status]}</span>
+                <span className={`${styles.status} ${processStatusClass}`}>{process.status === "running" ? <span className={styles.activeStatusPulse} /> : process.status === "failed" ? <CircleStop size={10} /> : <Check size={10} />}{statusLabel[process.status]}</span>
                 <span className={styles.elapsed}>{formatElapsed(process)}</span>
                 <ChevronDown className={expanded ? styles.open : undefined} size={13} />
               </button>
@@ -58,7 +67,7 @@ export function BackgroundProcessesPane({ processes, onClose }: {
                 <div className={styles.detail}>
                   {process.command && <div><span>Command</span><code>{process.command}</code></div>}
                   {process.cwd && <div><span>Working directory</span><code>{process.cwd}</code></div>}
-                  {(process.exitCode !== undefined || process.signal) && <div className={styles.exit}><span>Exit</span><code>{process.signal ?? process.exitCode}</code></div>}
+                  {(process.exitCode !== undefined || process.signal) && <div><span>Exit</span><code>{process.signal ?? process.exitCode}</code></div>}
                   {process.output && <pre>{process.output}</pre>}
                   {copyText && (
                     <button type="button" className={styles.copy} onClick={() => {
