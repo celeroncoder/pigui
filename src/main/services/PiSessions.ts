@@ -438,15 +438,15 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly create: (cwd: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
-  readonly prompt: (sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
-  readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
-  readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
-  readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
-  readonly abort: (sessionPath: string) => Effect.Effect<void, AppError>
-  readonly models: (sessionPath: string) => Effect.Effect<ReadonlyArray<ModelOption>, AppError>
-  readonly setModel: (sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
-  readonly setThinkingLevel: (sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
-  readonly answerInteraction: (sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
+  readonly prompt: (cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
+  readonly editQueuedMessage: (cwd: string, sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
+  readonly removeQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
+  readonly steerQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
+  readonly abort: (cwd: string, sessionPath: string) => Effect.Effect<void, AppError>
+  readonly models: (cwd: string, sessionPath: string) => Effect.Effect<ReadonlyArray<ModelOption>, AppError>
+  readonly setModel: (cwd: string, sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
+  readonly setThinkingLevel: (cwd: string, sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
+  readonly answerInteraction: (cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
   readonly dispose: () => Effect.Effect<void>
 }>()("PiSessions") {}
 
@@ -536,7 +536,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             || active.gitRefreshGeneration !== generation
             || activeSessions.get(sessionKey) !== active
             ? Effect.void
-            : bus.emit({ type: "project-git", projectPath: active.cwd, ...(status ? { git: status } : {}) })
+            : bus.emit({ type: "project-git", worktreePath: active.cwd, ...(status ? { git: status } : {}) })
         ),
         Effect.catchTag("GitContextError", () => Effect.void)
       )).finally(() => {
@@ -851,6 +851,14 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     return yield* attach(projectCwd, manager)
   })
 
+  const activeForWorktree = Effect.fn("PiSessions.activeForWorktree")(function*(cwd: string, sessionPath: string, operation: string) {
+    const active = activeSessions.get(canonicalPath(sessionPath))
+    if (!active || canonicalPath(active.cwd) !== canonicalPath(cwd)) {
+      return yield* Effect.fail(AppError.make({ operation, message: "The session is not open in the selected worktree" }))
+    }
+    return active
+  })
+
   return {
     list: Effect.fn("PiSessions.list")(function*(cwd: string) {
       const projectCwd = canonicalPath(cwd)
@@ -895,10 +903,9 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* Effect.promise(() => runtime.dispose())
       }
     }),
-    prompt: Effect.fn("PiSessions.prompt")(function*(sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
+    prompt: Effect.fn("PiSessions.prompt")(function*(cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
       const requestedPath = canonicalPath(sessionPath)
-      const active = activeSessions.get(requestedPath)
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Open the session before sending a message" }))
+      const active = yield* activeForWorktree(cwd, sessionPath, "prompt Pi")
 
       const inferredPaths = parseImagePathReferences(text).map((reference) => reference.path)
       const paths = [...new Set([...inferredPaths, ...attachmentPaths])]
@@ -953,11 +960,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* Effect.tryPromise({ try: () => operation.run, catch: toAppError("prompt Pi") })
       }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
     }),
-    editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(sessionPath: string, messageId: string, text: string) {
+    editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(cwd: string, sessionPath: string, messageId: string, text: string) {
       const requestedPath = canonicalPath(sessionPath)
       yield* queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = activeSessions.get(requestedPath)
-        if (!active) return yield* Effect.fail(AppError.make({ operation: "edit queued Pi message", message: "Open the session before editing its queue" }))
+        const active = yield* activeForWorktree(cwd, requestedPath, "edit queued Pi message")
         if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
         if (!active.session.isStreaming) {
           return yield* Effect.fail(AppError.make({ operation: "edit queued Pi message", message: "Pi already settled before this queued message could be edited" }))
@@ -972,11 +978,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* replaceNativeQueue(active, updateQueuedMessageText(active.queuedMessages, message.id, text))
       }))
     }),
-    removeQueuedMessage: Effect.fn("PiSessions.removeQueuedMessage")(function*(sessionPath: string, messageId: string) {
+    removeQueuedMessage: Effect.fn("PiSessions.removeQueuedMessage")(function*(cwd: string, sessionPath: string, messageId: string) {
       const requestedPath = canonicalPath(sessionPath)
       yield* queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = activeSessions.get(requestedPath)
-        if (!active) return yield* Effect.fail(AppError.make({ operation: "remove queued Pi message", message: "Open the session before changing its queue" }))
+        const active = yield* activeForWorktree(cwd, requestedPath, "remove queued Pi message")
         if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
         if (!active.session.isStreaming) {
           return yield* Effect.fail(AppError.make({ operation: "remove queued Pi message", message: "Pi already settled before this queued message could be removed" }))
@@ -986,11 +991,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* replaceNativeQueue(active, removeQueuedMessage(active.queuedMessages, message.id))
       }))
     }),
-    steerQueuedMessage: Effect.fn("PiSessions.steerQueuedMessage")(function*(sessionPath: string, messageId: string) {
+    steerQueuedMessage: Effect.fn("PiSessions.steerQueuedMessage")(function*(cwd: string, sessionPath: string, messageId: string) {
       const requestedPath = canonicalPath(sessionPath)
       yield* queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = activeSessions.get(requestedPath)
-        if (!active) return yield* Effect.fail(AppError.make({ operation: "steer queued Pi message", message: "Open the session before changing its queue" }))
+        const active = yield* activeForWorktree(cwd, requestedPath, "steer queued Pi message")
         if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
         if (!active.session.isStreaming) {
           return yield* Effect.fail(AppError.make({ operation: "steer queued Pi message", message: "Pi already settled before this message could be steered" }))
@@ -1000,21 +1004,18 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* replaceNativeQueue(active, prioritizeQueuedMessageForSteering(active.queuedMessages, message.id))
       }))
     }),
-    abort: Effect.fn("PiSessions.abort")(function*(sessionPath: string) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return
+    abort: Effect.fn("PiSessions.abort")(function*(cwd: string, sessionPath: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "abort Pi")
       active.interaction.cancelPending()
       yield* Effect.tryPromise({ try: () => active.session.abort(), catch: toAppError("abort Pi") })
     }),
-    models: Effect.fn("PiSessions.models")(function*(sessionPath: string) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "list models", message: "Open the session before choosing a model" }))
+    models: Effect.fn("PiSessions.models")(function*(cwd: string, sessionPath: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "list models")
       const models = yield* Effect.tryPromise({ try: () => active.session.modelRuntime.getAvailable(), catch: toAppError("list models") })
       return models.map((model) => ({ provider: model.provider, id: model.id, name: model.name }))
     }),
-    setModel: Effect.fn("PiSessions.setModel")(function*(sessionPath: string, provider: string, modelId: string) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "set model", message: "Open the session before choosing a model" }))
+    setModel: Effect.fn("PiSessions.setModel")(function*(cwd: string, sessionPath: string, provider: string, modelId: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "set model")
       const available = yield* Effect.tryPromise({ try: () => active.session.modelRuntime.getAvailable(), catch: toAppError("list models") })
       const model = available.find((candidate) => candidate.provider === provider && candidate.id === modelId)
       if (!model) return yield* Effect.fail(AppError.make({ operation: "set model", message: "The selected model is unavailable" }))
@@ -1022,9 +1023,8 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       yield* emitSnapshot(active)
       return detailFromActive(active)
     }),
-    setThinkingLevel: Effect.fn("PiSessions.setThinkingLevel")(function*(sessionPath: string, level: ThinkingLevel) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "set effort", message: "Open the session before choosing an effort" }))
+    setThinkingLevel: Effect.fn("PiSessions.setThinkingLevel")(function*(cwd: string, sessionPath: string, level: ThinkingLevel) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "set effort")
       const supported: ReadonlyArray<string> = active.session.getAvailableThinkingLevels()
       if (!supported.includes(level)) {
         return yield* Effect.fail(AppError.make({ operation: "set effort", message: `Effort ${level} is unavailable for this model` }))
@@ -1033,9 +1033,8 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       yield* emitSnapshot(active)
       return detailFromActive(active)
     }),
-    answerInteraction: Effect.fn("PiSessions.answerInteraction")(function*(sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "answer Pi interaction", message: "Open the session before answering" }))
+    answerInteraction: Effect.fn("PiSessions.answerInteraction")(function*(cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "answer Pi interaction")
       yield* Effect.try({
         try: () => active.interaction.answer(requestId, answer),
         catch: toAppError("answer Pi interaction")

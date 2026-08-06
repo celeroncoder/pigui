@@ -1,14 +1,16 @@
-import { ChevronDown, Folder, FolderPlus, GitBranch, MoreHorizontal, Plus } from "lucide-react"
-import type { Project, SessionSummary } from "../../../shared/contracts"
+import { ChevronDown, FolderGit2, FolderPlus, GitBranch, Plus } from "lucide-react"
+import { useState } from "react"
+import type { Project, ProjectWorktree, SessionSummary } from "../../../shared/contracts"
 import { compactLabel } from "../lib/text"
 
 interface ProjectSidebarProps {
   readonly projects: ReadonlyArray<Project>
   readonly sessions: ReadonlyArray<SessionSummary>
   readonly activeProject: Project | null
+  readonly activeWorktree: ProjectWorktree | null
   readonly activeSessionPath: string | null
   readonly isLoading: boolean
-  readonly onSelectProject: (project: Project) => void
+  readonly onSelectWorktree: (project: Project, worktree: ProjectWorktree) => void
   readonly onSelectSession: (session: SessionSummary) => void
   readonly onAddProject: () => void
   readonly onNewSession: () => void
@@ -27,18 +29,20 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     projects,
     sessions,
     activeProject,
+    activeWorktree,
     activeSessionPath,
     isLoading,
-    onSelectProject,
+    onSelectWorktree,
     onSelectSession,
     onAddProject,
     onNewSession
   } = props
+  const [projectExpansion, setProjectExpansion] = useState<ReadonlyMap<string, boolean>>(() => new Map())
 
   return (
-    <aside className="project-sidebar" aria-label="Projects and sessions">
+    <aside className="project-sidebar" aria-label="Projects, worktrees, and sessions">
       <div className="sidebar-actions">
-        <button className="primary-action" type="button" onClick={onNewSession} disabled={!activeProject}>
+        <button className="primary-action" type="button" onClick={onNewSession} disabled={!activeWorktree}>
           <Plus size={16} strokeWidth={2.2} />
           <span>New session</span>
           <kbd>⌘N</kbd>
@@ -46,56 +50,86 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
       </div>
 
       <div className="section-label-row">
-        <span className="section-label">Workspaces</span>
-        <button className="mini-button" type="button" onClick={onAddProject} aria-label="Add project folder">
+        <span className="section-label">Repositories</span>
+        <button className="mini-button" type="button" onClick={onAddProject} aria-label="Add Git worktree">
           <FolderPlus size={15} />
         </button>
       </div>
 
       <nav className="project-list">
         {projects.map((project) => {
-          const isActive = activeProject?.id === project.id
+          const projectActive = activeProject?.id === project.id
+          const projectExpanded = projectExpansion.get(project.id) ?? projectActive
+          const firstWorktree = project.worktrees[0]
           return (
-            <div className="project-group" key={project.id}>
+            <div className={`project-group ${projectActive ? "active" : ""}`} key={project.id}>
               <button
-                className={`project-row ${isActive ? "active" : ""}`}
+                className={`project-row ${projectActive ? "active" : ""}`}
                 type="button"
-                onClick={() => onSelectProject(project)}
-                aria-expanded={isActive}
+                disabled={!firstWorktree}
+                onClick={() => {
+                  setProjectExpansion((current) => {
+                    const next = new Map(current)
+                    next.set(project.id, !projectExpanded)
+                    return next
+                  })
+                  if (!projectActive && firstWorktree) onSelectWorktree(project, firstWorktree)
+                }}
+                aria-expanded={projectExpanded}
               >
-                <ChevronDown className={isActive ? "" : "collapsed"} size={14} />
-                <Folder size={15} />
+                <ChevronDown className={projectExpanded ? "" : "collapsed"} size={14} />
+                <FolderGit2 size={15} />
                 <span>{project.name}</span>
-                <MoreHorizontal className="row-more" size={15} />
+                <small>{project.worktrees.length}</small>
               </button>
 
-              {isActive && project.git && (
-                <div className="sidebar-git-context" title={`Current branch: ${project.git.branch}`}>
-                  <GitBranch size={11} aria-hidden="true" />
-                  <span>{compactLabel(project.git.branch, 29)}</span>
-                  {(project.git.additions > 0 || project.git.deletions > 0) && <small>+{project.git.additions}/-{project.git.deletions}</small>}
-                </div>
-              )}
+              {projectExpanded && (
+                <div className="worktree-list" aria-label={`${project.name} worktrees`}>
+                  {project.worktrees.map((worktree) => {
+                    const worktreeActive = activeWorktree?.id === worktree.id
+                    const git = worktree.git
+                    return (
+                      <div className="worktree-group" key={worktree.id}>
+                        <button
+                          className={`worktree-row ${worktreeActive ? "active" : ""}`}
+                          type="button"
+                          onClick={() => onSelectWorktree(project, worktree)}
+                          aria-current={worktreeActive ? "location" : undefined}
+                          aria-label={`Worktree ${git?.branch ?? worktree.branch}, ${worktree.path}`}
+                          title={`${worktree.path}\nBranch: ${git?.branch ?? worktree.branch}`}
+                        >
+                          <GitBranch size={12} aria-hidden="true" />
+                          <span className="worktree-copy">
+                            <strong>{compactLabel(git?.branch ?? worktree.branch, 25)}</strong>
+                            <small>{compactLabel(worktree.name, 28)}</small>
+                          </span>
+                          {git && (git.additions > 0 || git.deletions > 0) && <em>+{git.additions}/-{git.deletions}</em>}
+                        </button>
 
-              {isActive && (
-                <div className="session-list">
-                  {isLoading && <div className="session-skeleton" aria-label="Loading sessions" />}
-                  {!isLoading && sessions.length === 0 && (
-                    <button className="empty-session" type="button" onClick={onNewSession}>
-                      No sessions yet. Start one.
-                    </button>
-                  )}
-                  {!isLoading && sessions.map((session) => (
-                    <button
-                      className={`session-row ${activeSessionPath === session.path ? "active" : ""}`}
-                      key={session.path}
-                      type="button"
-                      onClick={() => onSelectSession(session)}
-                    >
-                      <span className="session-title" title={session.name || session.firstMessage}>{compactLabel(session.name || session.firstMessage || "Untitled session")}</span>
-                      <span className="session-time">{formatRelative(session.updatedAt)}</span>
-                    </button>
-                  ))}
+                        {worktreeActive && (
+                          <div className="session-list">
+                            {isLoading && <div className="session-skeleton" aria-label="Loading sessions" />}
+                            {!isLoading && sessions.length === 0 && (
+                              <button className="empty-session" type="button" onClick={onNewSession}>
+                                No sessions yet. Start one.
+                              </button>
+                            )}
+                            {!isLoading && sessions.map((session) => (
+                              <button
+                                className={`session-row ${activeSessionPath === session.path ? "active" : ""}`}
+                                key={session.path}
+                                type="button"
+                                onClick={() => onSelectSession(session)}
+                              >
+                                <span className="session-title" title={session.name || session.firstMessage}>{compactLabel(session.name || session.firstMessage || "Untitled session")}</span>
+                                <span className="session-time">{formatRelative(session.updatedAt)}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
               )}
             </div>
@@ -105,7 +139,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
       <button className="add-project" type="button" onClick={onAddProject}>
         <FolderPlus size={15} />
-        <span>Add project folder</span>
+        <span>Add project or worktree</span>
       </button>
     </aside>
   )

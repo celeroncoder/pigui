@@ -3,12 +3,19 @@ import { AskUserInteractionRequestSchema } from "../../../shared/interaction"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, GitDiff, PiDesktopApi, SessionDetail, SessionEvent } from "../../../shared/contracts"
 
 const GitStatusSchema = Schema.Struct({ branch: Schema.String, additions: Schema.Number, deletions: Schema.Number, changedFiles: Schema.Number })
-const ProjectSchema = Schema.Struct({
+const ProjectWorktreeSchema = Schema.Struct({
   id: Schema.String,
   path: Schema.String,
   name: Schema.String,
+  branch: Schema.String,
   addedAt: Schema.Number,
   git: Schema.optionalKey(GitStatusSchema)
+})
+const ProjectSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  addedAt: Schema.Number,
+  worktrees: Schema.Array(ProjectWorktreeSchema)
 })
 const SessionSummarySchema = Schema.Struct({
   id: Schema.String,
@@ -71,6 +78,7 @@ const SessionDetailSchema = Schema.Struct({
 const ModelOptionSchema = Schema.Struct({ provider: Schema.String, id: Schema.String, name: Schema.String })
 const FixtureSchema = Schema.Struct({
   generatedAt: Schema.Number,
+  activeWorktreeId: Schema.String,
   projects: Schema.Array(ProjectSchema),
   sessions: Schema.Array(SessionSummarySchema),
   details: Schema.Array(SessionDetailSchema),
@@ -101,6 +109,8 @@ export const createE2eApi = (): PiDesktopApi => {
   let interactionSeeded = false
   let interactionAnnouncedPath: string | undefined
   let interactionDispatchPending = false
+  const isActiveFixtureContext = (data: E2eFixture, context: { readonly projectId: string; readonly worktreeId: string }) =>
+    data.projects.some((project) => project.id === context.projectId) && context.worktreeId === data.activeWorktreeId
 
   const interactionEvent = (): SessionEvent | undefined => interaction
     ? { type: "interaction-request", sessionPath: interaction.sessionPath, request: interaction.request }
@@ -128,7 +138,7 @@ export const createE2eApi = (): PiDesktopApi => {
     }, 250)
   }
 
-  const answerInteraction = async (sessionPath: string, requestId: string, answer: AskUserInteractionAnswer): Promise<void> => {
+  const answerInteraction = async (_context: unknown, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer): Promise<void> => {
     await seedInteraction()
     const current = interaction
     if (!current || current.sessionPath !== sessionPath || current.request.requestId !== requestId) {
@@ -152,26 +162,35 @@ export const createE2eApi = (): PiDesktopApi => {
     },
     projects: {
       list: async () => (await loadFixture()).projects,
-      add: async () => (await loadFixture()).projects[0] ?? null,
+      add: async () => {
+        const project = (await loadFixture()).projects[0]
+        const worktree = project?.worktrees[0]
+        return project && worktree ? { project, worktree } : null
+      },
       remove: async () => undefined,
-      refreshGit: async (projectPath) => (await loadFixture()).projects.find((project) => project.path === projectPath)?.git,
-      diff: async (projectPath): Promise<GitDiff | undefined> => {
+      refreshGit: async (context) => (await loadFixture()).projects.find((project) => project.id === context.projectId)?.worktrees.find((worktree) => worktree.id === context.worktreeId)?.git,
+      diff: async (context): Promise<GitDiff | undefined> => {
         const data = await loadFixture()
-        return data.projects.find((project) => project.path === projectPath)?.git ? { files: [], truncated: false, omittedFiles: 0 } : undefined
+        return data.projects.find((project) => project.id === context.projectId)?.worktrees.find((worktree) => worktree.id === context.worktreeId)?.git ? { files: [], truncated: false, omittedFiles: 0 } : undefined
       }
     },
     sessions: {
-      list: async () => (await loadFixture()).sessions,
+      list: async (context) => {
+        const data = await loadFixture()
+        return isActiveFixtureContext(data, context) ? data.sessions : []
+      },
       create: async () => Promise.reject(new Error("Session creation is tested in Electron, not the browser review harness")),
-      open: async (_projectPath, sessionPath) => {
-        const detail = (await loadFixture()).details.find((item) => item.summary.path === sessionPath)
+      open: async (context, sessionPath) => {
+        const data = await loadFixture()
+        const detail = isActiveFixtureContext(data, context) ? data.details.find((item) => item.summary.path === sessionPath) : undefined
         if (!detail) throw new Error("The generated Pi session snapshot is unavailable")
         await seedInteraction()
         announceInteraction(sessionPath)
         return detail
       },
-      inspect: async (_projectPath, parentSessionPath, sessionPath) => {
-        const detail = (await loadFixture()).details.find((item) => item.summary.path === sessionPath && item.summary.parentSessionPath === parentSessionPath)
+      inspect: async (context, parentSessionPath, sessionPath) => {
+        const data = await loadFixture()
+        const detail = isActiveFixtureContext(data, context) ? data.details.find((item) => item.summary.path === sessionPath && item.summary.parentSessionPath === parentSessionPath) : undefined
         if (!detail) throw new Error("The generated linked Pi session snapshot is unavailable")
         return detail
       },
@@ -181,14 +200,14 @@ export const createE2eApi = (): PiDesktopApi => {
       steerQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
       abort: async () => undefined,
       models: async () => (await loadFixture()).models,
-      setModel: async (sessionPath, provider, modelId) => {
+      setModel: async (_context, sessionPath, provider, modelId) => {
         const data = await loadFixture()
         const current = data.details.find((item) => item.summary.path === sessionPath)
         if (!current) throw new Error("The generated Pi session snapshot is unavailable")
         const detail: SessionDetail = { ...current, model: `${provider}/${modelId}` }
         return detail
       },
-      setThinkingLevel: async (sessionPath, level) => {
+      setThinkingLevel: async (_context, sessionPath, level) => {
         const data = await loadFixture()
         const current = data.details.find((item) => item.summary.path === sessionPath)
         if (!current) throw new Error("The generated Pi session snapshot is unavailable")

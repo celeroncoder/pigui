@@ -1,6 +1,6 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { ActivityGroup } from "./components/ActivityGroup"
@@ -21,11 +21,14 @@ import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMe
 import { compactLabel } from "./lib/text"
 
 const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
+const worktreeContext = (project: Project, worktree: ProjectWorktree): WorktreeContext => ({ projectId: project.id, worktreeId: worktree.id })
+const worktreeKey = (project: Project, worktree: ProjectWorktree) => `${project.id}:${worktree.id}`
 
 export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
   const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
   const [activeProject, setActiveProject] = useState<Project | null>(null)
+  const [activeWorktree, setActiveWorktree] = useState<ProjectWorktree | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
   const [liveThinking, setLiveThinking] = useState<{ readonly messageId: string; readonly text: string } | null>(null)
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
@@ -52,7 +55,8 @@ export default function App() {
   const messageScrollRef = useRef<HTMLDivElement>(null)
   const activeSessionPathRef = useRef<string | null>(null)
   const activeProjectRef = useRef<Project | null>(null)
-  const activeProjectIdRef = useRef<string | null>(null)
+  const activeWorktreeRef = useRef<ProjectWorktree | null>(null)
+  const activeWorktreeKeyRef = useRef<string | null>(null)
   const projectRequestRef = useRef(0)
   const gitRequestRef = useRef(0)
   const gitDiffRequestRef = useRef(0)
@@ -69,19 +73,24 @@ export default function App() {
     activeProjectRef.current = activeProject
   }, [activeProject])
 
-  const loadModels = useCallback(async (sessionPath: string) => {
+  useEffect(() => {
+    activeWorktreeRef.current = activeWorktree
+  }, [activeWorktree])
+
+  const loadModels = useCallback(async (context: WorktreeContext, contextKey: string, sessionPath: string) => {
     const requestId = ++modelRequestRef.current
     setModelOptions([])
     try {
-      const options = await desktopApi.sessions.models(sessionPath)
-      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath) setModelOptions(options)
+      const options = await desktopApi.sessions.models(context, sessionPath)
+      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setModelOptions(options)
     } catch {
       if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath) setModelOptions([])
     }
   }, [])
 
-  const openSession = useCallback(async (project: Project, summary: SessionSummary) => {
-    if (activeProjectIdRef.current !== project.id) return
+  const openSession = useCallback(async (project: Project, worktree: ProjectWorktree, summary: SessionSummary) => {
+    const contextKey = worktreeKey(project, worktree)
+    if (activeWorktreeKeyRef.current !== contextKey) return
     const requestId = ++sessionRequestRef.current
     activeSessionPathRef.current = summary.path
     composerEpochRef.current += 1
@@ -98,20 +107,20 @@ export default function App() {
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
     try {
-      const detail = await desktopApi.sessions.open(project.path, summary.path)
-      if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
+      const detail = await desktopApi.sessions.open(worktreeContext(project, worktree), summary.path)
+      if (requestId !== sessionRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
       setInteractionRequest(detail.interactionRequest ?? null)
-      void loadModels(detail.summary.path)
+      void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
     } catch (cause) {
-      if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
+      if (requestId === sessionRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not open this session")
       }
     }
   }, [loadModels])
 
-  const inspectSubagent = useCallback(async (project: Project, summary: SessionSummary, showLoading = true) => {
+  const inspectSubagent = useCallback(async (project: Project, worktree: ProjectWorktree, summary: SessionSummary, showLoading = true) => {
     const parentSessionPath = activeSessionPathRef.current
     if (!parentSessionPath) return
     const requestId = ++subagentRequestRef.current
@@ -121,8 +130,8 @@ export default function App() {
       setSubagentDetail(null)
     }
     try {
-      const detail = await desktopApi.sessions.inspect(project.path, parentSessionPath, summary.path)
-      if (requestId === subagentRequestRef.current && activeSessionPathRef.current === parentSessionPath) setSubagentDetail(detail)
+      const detail = await desktopApi.sessions.inspect(worktreeContext(project, worktree), parentSessionPath, summary.path)
+      if (requestId === subagentRequestRef.current && activeSessionPathRef.current === parentSessionPath && activeWorktreeKeyRef.current === worktreeKey(project, worktree)) setSubagentDetail(detail)
     } catch (cause) {
       if (requestId === subagentRequestRef.current) setError(cause instanceof Error ? cause.message : "Could not inspect subagent")
     } finally {
@@ -130,44 +139,50 @@ export default function App() {
     }
   }, [])
 
-  const refreshProjectGit = useCallback(async (project: Project) => {
+  const refreshProjectGit = useCallback(async (project: Project, worktree: ProjectWorktree) => {
+    const contextKey = worktreeKey(project, worktree)
     const requestId = ++gitRequestRef.current
     try {
-      const git = await desktopApi.projects.refreshGit(project.path)
-      if (requestId !== gitRequestRef.current || activeProjectIdRef.current !== project.id) return
-      const updateProject = (current: Project) => current.id === project.id
-        ? git ? { ...current, git } : { id: current.id, path: current.path, name: current.name, addedAt: current.addedAt }
+      const git = await desktopApi.projects.refreshGit(worktreeContext(project, worktree))
+      if (requestId !== gitRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
+      const updateWorktree = (current: ProjectWorktree) => current.id === worktree.id
+        ? git ? { ...current, branch: git.branch, git } : { id: current.id, path: current.path, name: current.name, branch: current.branch, addedAt: current.addedAt }
         : current
+      const updateProject = (current: Project) => current.id === project.id ? { ...current, worktrees: current.worktrees.map(updateWorktree) } : current
       setProjects((current) => current.map(updateProject))
       setActiveProject((current) => current ? updateProject(current) : current)
+      setActiveWorktree((current) => current ? updateWorktree(current) : current)
     } catch {
       // Git context is auxiliary; a project remains usable if Git is unavailable.
     }
   }, [])
 
-  const loadGitDiff = useCallback(async (project: Project) => {
+  const loadGitDiff = useCallback(async (project: Project, worktree: ProjectWorktree) => {
+    const contextKey = worktreeKey(project, worktree)
     const requestId = ++gitDiffRequestRef.current
     setGitDiffLoading(true)
     try {
-      const diff = await desktopApi.projects.diff(project.path)
-      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setGitDiff(diff ?? { files: [], truncated: false, omittedFiles: 0 })
+      const diff = await desktopApi.projects.diff(worktreeContext(project, worktree))
+      if (requestId === gitDiffRequestRef.current && activeWorktreeKeyRef.current === contextKey) setGitDiff(diff ?? { files: [], truncated: false, omittedFiles: 0 })
     } catch (cause) {
-      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setError(cause instanceof Error ? cause.message : "Could not load Git changes")
+      if (requestId === gitDiffRequestRef.current && activeWorktreeKeyRef.current === contextKey) setError(cause instanceof Error ? cause.message : "Could not load Git changes")
     } finally {
       if (requestId === gitDiffRequestRef.current) setGitDiffLoading(false)
     }
   }, [])
 
-  const selectProject = useCallback(async (project: Project) => {
+  const selectWorktree = useCallback(async (project: Project, worktree: ProjectWorktree) => {
+    const contextKey = worktreeKey(project, worktree)
     const requestId = ++projectRequestRef.current
     ++sessionRequestRef.current
     ++modelRequestRef.current
-    activeProjectIdRef.current = project.id
+    activeWorktreeKeyRef.current = contextKey
     activeSessionPathRef.current = null
     composerEpochRef.current += 1
     draftRevisionRef.current += 1
     attachmentRevisionRef.current += 1
     setActiveProject(project)
+    setActiveWorktree(worktree)
     ++gitDiffRequestRef.current
     setGitPaneOpen(false)
     setGitDiff(null)
@@ -184,15 +199,15 @@ export default function App() {
     interactionSubmittingRef.current = false
     setLoadingSessions(true)
     setError(null)
-    void refreshProjectGit(project)
+    void refreshProjectGit(project, worktree)
     try {
-      const nextSessions = await desktopApi.sessions.list(project.path)
-      if (requestId !== projectRequestRef.current || activeProjectIdRef.current !== project.id) return
+      const nextSessions = await desktopApi.sessions.list(worktreeContext(project, worktree))
+      if (requestId !== projectRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
       setSessions(nextSessions)
       const first = nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:")) ?? nextSessions[0]
-      if (first) await openSession(project, first)
+      if (first) await openSession(project, worktree, first)
     } catch (cause) {
-      if (requestId === projectRequestRef.current && activeProjectIdRef.current === project.id) {
+      if (requestId === projectRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not load project sessions")
       }
     } finally {
@@ -204,11 +219,12 @@ export default function App() {
     void desktopApi.projects.list().then((items) => {
       setProjects(items)
       const first = items[0]
-      if (first) void selectProject(first)
+      const worktree = first?.worktrees[0]
+      if (first && worktree) void selectWorktree(first, worktree)
     }).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Could not load projects")
     })
-  }, [selectProject])
+  }, [selectWorktree])
 
   useEffect(() => {
     ++subagentRequestRef.current
@@ -223,12 +239,12 @@ export default function App() {
   }, [session?.summary.path])
 
   useEffect(() => {
-    if (!subagentPaneOpen || !selectedSubagent || !activeProject) return
+    if (!subagentPaneOpen || !selectedSubagent || !activeProject || !activeWorktree) return
     const interval = window.setInterval(() => {
-      void inspectSubagent(activeProject, selectedSubagent, false)
+      void inspectSubagent(activeProject, activeWorktree, selectedSubagent, false)
     }, 2500)
     return () => window.clearInterval(interval)
-  }, [activeProject, inspectSubagent, selectedSubagent, subagentPaneOpen])
+  }, [activeProject, activeWorktree, inspectSubagent, selectedSubagent, subagentPaneOpen])
 
   useEffect(() => desktopApi.onSessionEvent((event: SessionEvent) => {
     if (event.type === "error") {
@@ -239,13 +255,16 @@ export default function App() {
     if (event.type === "project-git") {
       gitRequestRef.current += 1
       const project = activeProjectRef.current
-      if (!project || project.path !== event.projectPath) return
-      const updateProject = (current: Project) => current.path === event.projectPath
-        ? event.git ? { ...current, git: event.git } : { id: current.id, path: current.path, name: current.name, addedAt: current.addedAt }
+      const worktree = activeWorktreeRef.current
+      if (!project || !worktree || worktree.path !== event.worktreePath) return
+      const updateWorktree = (current: ProjectWorktree) => current.path === event.worktreePath
+        ? event.git ? { ...current, branch: event.git.branch, git: event.git } : { id: current.id, path: current.path, name: current.name, branch: current.branch, addedAt: current.addedAt }
         : current
+      const updateProject = (current: Project) => current.id === project.id ? { ...current, worktrees: current.worktrees.map(updateWorktree) } : current
       setProjects((current) => current.map(updateProject))
       setActiveProject((current) => current ? updateProject(current) : current)
-      if (gitPaneOpen) void loadGitDiff(project)
+      setActiveWorktree((current) => current ? updateWorktree(current) : current)
+      if (gitPaneOpen) void loadGitDiff(project, worktree)
       return
     }
     const activeSessionPath = activeSessionPathRef.current
@@ -291,9 +310,11 @@ export default function App() {
       if (event.tool.name === "subagent_spawn") {
         window.setTimeout(() => {
           const project = activeProjectRef.current
-          if (!project) return
-          void desktopApi.sessions.list(project.path).then((nextSessions) => {
-            if (activeProjectRef.current?.id === project.id) setSessions(nextSessions)
+          const worktree = activeWorktreeRef.current
+          if (!project || !worktree) return
+          const contextKey = worktreeKey(project, worktree)
+          void desktopApi.sessions.list(worktreeContext(project, worktree)).then((nextSessions) => {
+            if (activeWorktreeKeyRef.current === contextKey) setSessions(nextSessions)
           })
         }, 1200)
       }
@@ -321,10 +342,10 @@ export default function App() {
     if (addingProjectRef.current) return
     addingProjectRef.current = true
     try {
-      const project = await desktopApi.projects.add()
-      if (!project) return
-      setProjects((current) => current.some((item) => item.id === project.id) ? current : [...current, project])
-      await selectProject(project)
+      const selection = await desktopApi.projects.add()
+      if (!selection) return
+      setProjects((current) => [...current.filter((item) => item.id !== selection.project.id), selection.project])
+      await selectWorktree(selection.project, selection.worktree)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not add project")
     } finally {
@@ -333,13 +354,15 @@ export default function App() {
   }
 
   const newSession = useCallback(async () => {
-    if (!activeProject) return
+    if (!activeProject || !activeWorktree) return
     const project = activeProject
+    const worktree = activeWorktree
+    const contextKey = worktreeKey(project, worktree)
     const requestId = ++sessionRequestRef.current
     setError(null)
     try {
-      const detail = await desktopApi.sessions.create(project.path)
-      if (requestId !== sessionRequestRef.current || activeProjectIdRef.current !== project.id) return
+      const detail = await desktopApi.sessions.create(worktreeContext(project, worktree))
+      if (requestId !== sessionRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
       setInteractionRequest(detail.interactionRequest ?? null)
@@ -353,13 +376,13 @@ export default function App() {
       setInteractionSubmitting(false)
       interactionSubmittingRef.current = false
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
-      void loadModels(detail.summary.path)
+      void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
     } catch (cause) {
-      if (requestId === sessionRequestRef.current && activeProjectIdRef.current === project.id) {
+      if (requestId === sessionRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not create session")
       }
     }
-  }, [activeProject, loadModels])
+  }, [activeProject, activeWorktree, loadModels])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -375,17 +398,20 @@ export default function App() {
   const answerInteraction = (answer: AskUserInteractionAnswer) => {
     const request = interactionRequest
     const sessionPath = activeSessionPathRef.current
-    if (!request || !sessionPath || interactionSubmittingRef.current) return
+    const project = activeProjectRef.current
+    const worktree = activeWorktreeRef.current
+    if (!request || !sessionPath || !project || !worktree || interactionSubmittingRef.current) return
+    const contextKey = worktreeKey(project, worktree)
     interactionSubmittingRef.current = true
     setInteractionSubmitting(true)
-    void desktopApi.sessions.answerInteraction(sessionPath, request.requestId, answer).then(() => {
+    void desktopApi.sessions.answerInteraction(worktreeContext(project, worktree), sessionPath, request.requestId, answer).then(() => {
       setInteractionRequest((current) => current?.requestId === request.requestId ? null : current)
     }).catch((cause: unknown) => {
-      if (activeSessionPathRef.current !== sessionPath) return
+      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
       setError(cause instanceof Error ? cause.message : "Could not deliver the answer to Pi")
     }).finally(() => {
       interactionSubmittingRef.current = false
-      if (activeSessionPathRef.current === sessionPath) setInteractionSubmitting(false)
+      if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setInteractionSubmitting(false)
     })
   }
 
@@ -393,7 +419,9 @@ export default function App() {
     const rawText = draft.trim()
     const attachmentPaths = pendingAttachments.map((attachment) => attachment.path)
     const text = normalizeImageReferences(rawText, attachmentPaths)
-    if (!text.trim() || !session) return
+    if (!text.trim() || !session || !activeProject || !activeWorktree) return
+    const context = worktreeContext(activeProject, activeWorktree)
+    const contextKey = worktreeKey(activeProject, activeWorktree)
     const sessionPath = session.summary.path
     const wasStreaming = session.isStreaming
     const previousDraft = draft
@@ -408,8 +436,8 @@ export default function App() {
       setSession((current) => current ? { ...current, isStreaming: true } : current)
     }
     setError(null)
-    void desktopApi.sessions.prompt(sessionPath, rawText, delivery, attachmentPaths).catch((cause: unknown) => {
-      if (activeSessionPathRef.current !== sessionPath) return
+    void desktopApi.sessions.prompt(context, sessionPath, rawText, delivery, attachmentPaths).catch((cause: unknown) => {
+      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
       if (draftRevisionRef.current === draftRevision) {
         draftRevisionRef.current += 1
         setDraft(previousDraft)
@@ -424,39 +452,42 @@ export default function App() {
   }
 
   const addPastedImage = async (image: File) => {
-    if (!session) return
+    if (!session || !activeProject || !activeWorktree) return
     const sessionPath = session.summary.path
+    const contextKey = worktreeKey(activeProject, activeWorktree)
     const epoch = composerEpochRef.current
     try {
       const bytes = new Uint8Array(await image.arrayBuffer())
       const attachment = await desktopApi.attachments.save(bytes, image.name, image.type)
-      if (activeSessionPathRef.current !== sessionPath || composerEpochRef.current !== epoch) return
+      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey || composerEpochRef.current !== epoch) return
       attachmentRevisionRef.current += 1
       setPendingAttachments((current) => [...current, attachment])
       setError(null)
     } catch (cause) {
-      if (activeSessionPathRef.current === sessionPath && composerEpochRef.current === epoch) {
+      if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey && composerEpochRef.current === epoch) {
         setError(cause instanceof Error ? cause.message : "Could not save the pasted image")
       }
     }
   }
 
   const abort = () => {
-    if (!session) return
+    if (!session || !activeProject || !activeWorktree) return
     const sessionPath = session.summary.path
-    void desktopApi.sessions.abort(sessionPath).catch((cause: unknown) => {
-      if (activeSessionPathRef.current !== sessionPath) return
+    const contextKey = worktreeKey(activeProject, activeWorktree)
+    void desktopApi.sessions.abort(worktreeContext(activeProject, activeWorktree), sessionPath).catch((cause: unknown) => {
+      if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
       setError(cause instanceof Error ? cause.message : "Could not stop Pi")
     })
   }
 
   const editQueuedMessage = async (message: QueuedMessage, text: string) => {
-    if (!session) return
+    if (!session || !activeProject || !activeWorktree) return
     const sessionPath = session.summary.path
+    const contextKey = worktreeKey(activeProject, activeWorktree)
     try {
-      await desktopApi.sessions.editQueuedMessage(sessionPath, message.id, text)
+      await desktopApi.sessions.editQueuedMessage(worktreeContext(activeProject, activeWorktree), sessionPath, message.id, text)
     } catch (cause) {
-      if (activeSessionPathRef.current === sessionPath) {
+      if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not edit the queued message")
       }
       throw cause
@@ -464,12 +495,13 @@ export default function App() {
   }
 
   const removeQueuedMessage = async (message: QueuedMessage) => {
-    if (!session) return
+    if (!session || !activeProject || !activeWorktree) return
     const sessionPath = session.summary.path
+    const contextKey = worktreeKey(activeProject, activeWorktree)
     try {
-      await desktopApi.sessions.removeQueuedMessage(sessionPath, message.id)
+      await desktopApi.sessions.removeQueuedMessage(worktreeContext(activeProject, activeWorktree), sessionPath, message.id)
     } catch (cause) {
-      if (activeSessionPathRef.current === sessionPath) {
+      if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not remove the queued message")
       }
       throw cause
@@ -477,12 +509,13 @@ export default function App() {
   }
 
   const steerQueuedMessage = async (message: QueuedMessage) => {
-    if (!session) return
+    if (!session || !activeProject || !activeWorktree) return
     const sessionPath = session.summary.path
+    const contextKey = worktreeKey(activeProject, activeWorktree)
     try {
-      await desktopApi.sessions.steerQueuedMessage(sessionPath, message.id)
+      await desktopApi.sessions.steerQueuedMessage(worktreeContext(activeProject, activeWorktree), sessionPath, message.id)
     } catch (cause) {
-      if (activeSessionPathRef.current === sessionPath) {
+      if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not steer the queued message")
       }
       throw cause
@@ -503,7 +536,7 @@ export default function App() {
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
   const runningProcesses = backgroundProcesses.length
   const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
-  const git: GitStatus | undefined = activeProject?.git
+  const git: GitStatus | undefined = activeWorktree?.git
   const gitLineTotalsVisible = !!git && (git.additions > 0 || git.deletions > 0)
   const gitChangedFiles = git?.changedFiles ?? 0
   const gitChangesVisible = gitLineTotalsVisible || gitChangedFiles > 0
@@ -517,7 +550,7 @@ export default function App() {
         <div className="titlebar-leading" aria-hidden="true" />
         <div className="titlebar-dither" aria-hidden="true" />
         <div className="titlebar-brand"><BrandMark size={20} /><span>Pi</span></div>
-        <div className="titlebar-center">{activeProject?.name ?? "Desktop"}</div>
+        <div className="titlebar-center">{activeProject && activeWorktree ? `${activeProject.name} · ${activeWorktree.branch}` : "Desktop"}</div>
         <div className="titlebar-actions" />
       </header>
 
@@ -526,10 +559,11 @@ export default function App() {
           projects={projects}
           sessions={sidebarSessions}
           activeProject={activeProject}
+          activeWorktree={activeWorktree}
           activeSessionPath={session?.summary.path ?? null}
           isLoading={loadingSessions}
-          onSelectProject={(project) => void selectProject(project)}
-          onSelectSession={(summary) => activeProject && void openSession(activeProject, summary)}
+          onSelectWorktree={(project, worktree) => void selectWorktree(project, worktree)}
+          onSelectSession={(summary) => activeProject && activeWorktree && void openSession(activeProject, activeWorktree, summary)}
           onAddProject={() => void addProject()}
           onNewSession={() => void newSession()}
         />
@@ -537,7 +571,7 @@ export default function App() {
         <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
-              <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
+              <span className="eyebrow">{activeProject && activeWorktree ? `${activeProject.name} / ${activeWorktree.name}` : "Workspace"}</span>
               <div className="session-heading">
                 <h1 title={session?.summary.name}>{compactLabel(session?.summary.name ?? "New Pi session", 72)}</h1>
                 {git && gitChangesVisible && (
@@ -552,11 +586,11 @@ export default function App() {
                         setGitPaneOpen(false)
                         return
                       }
-                      if (!activeProject) return
+                      if (!activeProject || !activeWorktree) return
                       setSubagentPaneOpen(false)
                       setBackgroundPaneOpen(false)
                       setGitPaneOpen(true)
-                      void loadGitDiff(activeProject)
+                      void loadGitDiff(activeProject, activeWorktree)
                     }}
                   >
                     <span>{gitLineTotalsVisible ? `+${git.additions}/-${git.deletions}` : `${gitChangedFiles} ${gitChangedFiles === 1 ? "file" : "files"}`}</span>
@@ -585,7 +619,7 @@ export default function App() {
                   <PanelRightOpen size={14} />
                 </button>
               )}
-              {linkedSubagents.length > 0 && activeProject && (
+              {linkedSubagents.length > 0 && activeProject && activeWorktree && (
                 <button
                   type="button"
                   className={`${styles.headerControl} subagent-toggle ${subagentPaneOpen ? styles.active : ""}`}
@@ -599,7 +633,7 @@ export default function App() {
                     setBackgroundPaneOpen(false)
                     setGitPaneOpen(false)
                     setSubagentPaneOpen(true)
-                    if (first) void inspectSubagent(activeProject, first)
+                    if (first) void inspectSubagent(activeProject, activeWorktree, first)
                   }}
                 >
                   <SubagentAvatarGroup sessions={linkedSubagents} />
@@ -679,11 +713,12 @@ export default function App() {
             queuedMessages={session?.queuedMessages ?? []}
             contextUsage={session?.contextUsage}
             onModelChange={(option) => {
-              if (!session) return
+              if (!session || !activeProject || !activeWorktree) return
               const sessionPath = session.summary.path
-              void desktopApi.sessions.setModel(sessionPath, option.provider, option.id)
+              const contextKey = worktreeKey(activeProject, activeWorktree)
+              void desktopApi.sessions.setModel(worktreeContext(activeProject, activeWorktree), sessionPath, option.provider, option.id)
                 .then((detail) => {
-                  if (activeSessionPathRef.current === sessionPath) {
+                  if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
                     setSession((current) => current ? {
                       ...current,
                       model: detail.model,
@@ -694,17 +729,18 @@ export default function App() {
                   }
                 })
                 .catch((cause: unknown) => {
-                  if (activeSessionPathRef.current === sessionPath) {
+                  if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
                     setError(cause instanceof Error ? cause.message : "Could not change model")
                   }
                 })
             }}
             onThinkingLevelChange={(level: ThinkingLevel) => {
-              if (!session) return
+              if (!session || !activeProject || !activeWorktree) return
               const sessionPath = session.summary.path
-              void desktopApi.sessions.setThinkingLevel(sessionPath, level)
+              const contextKey = worktreeKey(activeProject, activeWorktree)
+              void desktopApi.sessions.setThinkingLevel(worktreeContext(activeProject, activeWorktree), sessionPath, level)
                 .then((detail) => {
-                  if (activeSessionPathRef.current === sessionPath) {
+                  if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
                     setSession((current) => current ? {
                       ...current,
                       thinkingLevel: detail.thinkingLevel,
@@ -714,7 +750,7 @@ export default function App() {
                   }
                 })
                 .catch((cause: unknown) => {
-                  if (activeSessionPathRef.current === sessionPath) setError(cause instanceof Error ? cause.message : "Could not change effort")
+                  if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setError(cause instanceof Error ? cause.message : "Could not change effort")
                 })
             }}
             onChange={(value) => { draftRevisionRef.current += 1; setDraft(value) }}
@@ -732,14 +768,14 @@ export default function App() {
           />
         </main>
 
-        {subagentPaneOpen && !backgroundPaneOpen && linkedSubagents.length > 0 && activeProject && (
+        {subagentPaneOpen && !backgroundPaneOpen && linkedSubagents.length > 0 && activeProject && activeWorktree && (
           <SubagentPane
             sessions={linkedSubagents}
             selectedPath={selectedSubagent?.path ?? null}
             detail={subagentDetail}
             loading={subagentLoading}
-            onSelect={(summary) => void inspectSubagent(activeProject, summary)}
-            onRefresh={() => selectedSubagent && void inspectSubagent(activeProject, selectedSubagent, false)}
+            onSelect={(summary) => void inspectSubagent(activeProject, activeWorktree, summary)}
+            onRefresh={() => selectedSubagent && void inspectSubagent(activeProject, activeWorktree, selectedSubagent, false)}
             onClose={() => setSubagentPaneOpen(false)}
             onOpenImage={setLightboxImage}
           />
@@ -747,13 +783,13 @@ export default function App() {
         {backgroundPaneOpen && backgroundProcesses.length > 0 && (
           <BackgroundProcessesPane processes={backgroundProcesses} onClose={() => setBackgroundPaneOpen(false)} />
         )}
-        {gitPaneOpen && activeProject && (
+        {gitPaneOpen && activeProject && activeWorktree && (
           <Suspense fallback={<aside className={gitDiffStyles.root} aria-label="Git changes"><div className={gitDiffStyles.loading}><RefreshCw size={16} /> Preparing diff…</div></aside>}>
             <GitDiffPane
               diff={gitDiff}
               loading={gitDiffLoading}
               onClose={() => setGitPaneOpen(false)}
-              onRefresh={() => void loadGitDiff(activeProject)}
+              onRefresh={() => void loadGitDiff(activeProject, activeWorktree)}
             />
           </Suspense>
         )}

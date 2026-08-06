@@ -1,7 +1,7 @@
 import { join } from "node:path"
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from "electron"
 import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect"
-import { IpcChannels, type Project } from "../shared/contracts"
+import { IpcChannels, type Project, type ProjectWorktree } from "../shared/contracts"
 import { AskUserInteractionAnswerSchema } from "../shared/interaction"
 import { AppError, toAppError } from "./services/AppError"
 import { AttachmentStore, AttachmentStoreLive } from "./services/AttachmentStore"
@@ -19,6 +19,10 @@ const AttachmentSaveSchema = Schema.Struct({
 })
 const AttachmentPathsSchema = Schema.Array(NonEmptyString)
 const QueueDeliverySchema = Schema.Literals(["follow-up", "steer"])
+const WorktreeContextSchema = Schema.Struct({
+  projectId: NonEmptyString,
+  worktreeId: NonEmptyString
+})
 
 const invalidIpcInput = (error: { readonly message: string }) => AppError.make({ operation: "validate IPC input", message: error.message })
 const decodeString = (input: unknown) => Schema.decodeUnknownEffect(NonEmptyString)(input).pipe(Effect.mapError(invalidIpcInput))
@@ -49,21 +53,23 @@ const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions |
   throw Cause.squash(exit.cause)
 }
 
-const resolveKnownProject = Effect.fn("resolveKnownProject")(function*(input: unknown) {
-  const requestedPath = yield* decodeString(input)
+const resolveKnownWorktree = Effect.fn("resolveKnownWorktree")(function*(input: unknown) {
+  const context = yield* Schema.decodeUnknownEffect(WorktreeContextSchema)(input).pipe(Effect.mapError(invalidIpcInput))
   const store = yield* ProjectStore
-  const projects = yield* store.list()
-  const project = projects.find((candidate) => candidate.path === requestedPath)
-  if (!project) return yield* Effect.fail(AppError.make({ operation: "resolve project", message: "Unknown project folder" }))
-  return project.path
+  return yield* store.resolve(context.projectId, context.worktreeId)
+})
+
+const enrichWorktree = Effect.fn("enrichWorktree")(function*(worktree: ProjectWorktree) {
+  const git = yield* GitContext
+  const status = yield* git.inspect(worktree.path).pipe(
+    Effect.catchTag("GitContextError", () => Effect.succeed(undefined))
+  )
+  return status ? { ...worktree, branch: status.branch, git: status } : worktree
 })
 
 const enrichProject = Effect.fn("enrichProject")(function*(project: Project) {
-  const git = yield* GitContext
-  const status = yield* git.inspect(project.path).pipe(
-    Effect.catchTag("GitContextError", () => Effect.succeed(undefined))
-  )
-  return status ? { ...project, git: status } : project
+  const worktrees = yield* Effect.forEach(project.worktrees, enrichWorktree, { concurrency: 4 })
+  return { ...project, worktrees }
 })
 
 const listProjectsWithGit = Effect.fn("listProjectsWithGit")(function*() {
@@ -120,14 +126,17 @@ const registerIpc = () => {
 
   ipcMain.handle(IpcChannels.addProject, () => run(Effect.gen(function*() {
     const result = yield* Effect.tryPromise({
-      try: () => dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"], title: "Add a project folder" }),
+      try: () => dialog.showOpenDialog({ properties: ["openDirectory", "createDirectory"], title: "Add a project or Git worktree" }),
       catch: toAppError("choose project folder")
     })
     const folderPath = result.filePaths[0]
     if (result.canceled || !folderPath) return null
     const store = yield* ProjectStore
-    const project = yield* store.add(folderPath)
-    return yield* enrichProject(project)
+    const selection = yield* store.add(folderPath)
+    const project = yield* enrichProject(selection.project)
+    const worktree = project.worktrees.find((candidate) => candidate.id === selection.worktree.id)
+    if (!worktree) return yield* Effect.fail(AppError.make({ operation: "add project worktree", message: "The selected worktree was not persisted" }))
+    return { project, worktree }
   })))
 
   ipcMain.handle(IpcChannels.removeProject, (_event, projectId: unknown) => run(Effect.gen(function*() {
@@ -136,74 +145,78 @@ const registerIpc = () => {
     yield* store.remove(id)
   })))
 
-  ipcMain.handle(IpcChannels.refreshProjectGit, (_event, projectPath: unknown) => run(Effect.gen(function*() {
-    const cwd = yield* resolveKnownProject(projectPath)
+  ipcMain.handle(IpcChannels.refreshProjectGit, (_event, context: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const git = yield* GitContext
-    return yield* git.inspect(cwd)
+    return yield* git.inspect(worktree.path)
   })))
 
-  ipcMain.handle(IpcChannels.gitDiff, (_event, projectPath: unknown) => run(Effect.gen(function*() {
-    const cwd = yield* resolveKnownProject(projectPath)
+  ipcMain.handle(IpcChannels.gitDiff, (_event, context: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const git = yield* GitContext
-    return yield* git.diff(cwd)
+    return yield* git.diff(worktree.path)
   })))
 
-  ipcMain.handle(IpcChannels.listSessions, (_event, projectPath: unknown) => run(Effect.gen(function*() {
-    const cwd = yield* resolveKnownProject(projectPath)
+  ipcMain.handle(IpcChannels.listSessions, (_event, context: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const sessions = yield* PiSessions
-    return yield* sessions.list(cwd)
+    return yield* sessions.list(worktree.path)
   })))
 
-  ipcMain.handle(IpcChannels.createSession, (_event, projectPath: unknown) => run(Effect.gen(function*() {
-    const cwd = yield* resolveKnownProject(projectPath)
+  ipcMain.handle(IpcChannels.createSession, (_event, context: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const sessions = yield* PiSessions
-    return yield* sessions.create(cwd)
+    return yield* sessions.create(worktree.path)
   })))
 
-  ipcMain.handle(IpcChannels.openSession, (_event, projectPath: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
-    const cwd = yield* resolveKnownProject(projectPath)
+  ipcMain.handle(IpcChannels.openSession, (_event, context: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const sessions = yield* PiSessions
-    return yield* sessions.open(cwd, path)
+    return yield* sessions.open(worktree.path, path)
   })))
 
-  ipcMain.handle(IpcChannels.inspectSession, (_event, projectPath: unknown, parentSessionPath: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
-    const cwd = yield* resolveKnownProject(projectPath)
+  ipcMain.handle(IpcChannels.inspectSession, (_event, context: unknown, parentSessionPath: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const parentPath = yield* decodeString(parentSessionPath)
     const path = yield* decodeString(sessionPath)
     const sessions = yield* PiSessions
-    return yield* sessions.inspect(cwd, parentPath, path)
+    return yield* sessions.inspect(worktree.path, parentPath, path)
   })))
 
-  ipcMain.handle(IpcChannels.promptSession, (_event, sessionPath: unknown, text: unknown, delivery: unknown, attachmentPaths: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.promptSession, (_event, context: unknown, sessionPath: unknown, text: unknown, delivery: unknown, attachmentPaths: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const prompt = yield* decodePromptText(text)
     const queueDelivery = yield* decodeQueueDelivery(delivery === undefined ? "follow-up" : delivery)
     const paths = yield* decodeAttachmentPaths(attachmentPaths)
     const sessions = yield* PiSessions
-    yield* sessions.prompt(path, prompt, queueDelivery, paths ?? [])
+    yield* sessions.prompt(worktree.path, path, prompt, queueDelivery, paths ?? [])
   })))
 
-  ipcMain.handle(IpcChannels.editQueuedMessage, (_event, sessionPath: unknown, messageId: unknown, text: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.editQueuedMessage, (_event, context: unknown, sessionPath: unknown, messageId: unknown, text: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const id = yield* decodeString(messageId)
     const message = yield* decodeMessageText(text)
     const sessions = yield* PiSessions
-    yield* sessions.editQueuedMessage(path, id, message)
+    yield* sessions.editQueuedMessage(worktree.path, path, id, message)
   })))
 
-  ipcMain.handle(IpcChannels.removeQueuedMessage, (_event, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.removeQueuedMessage, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const id = yield* decodeString(messageId)
     const sessions = yield* PiSessions
-    yield* sessions.removeQueuedMessage(path, id)
+    yield* sessions.removeQueuedMessage(worktree.path, path, id)
   })))
 
-  ipcMain.handle(IpcChannels.steerQueuedMessage, (_event, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.steerQueuedMessage, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const id = yield* decodeString(messageId)
     const sessions = yield* PiSessions
-    yield* sessions.steerQueuedMessage(path, id)
+    yield* sessions.steerQueuedMessage(worktree.path, path, id)
   })))
 
   ipcMain.handle(IpcChannels.saveAttachment, (_event, input: unknown) => run(Effect.gen(function*() {
@@ -218,41 +231,46 @@ const registerIpc = () => {
     return yield* attachments.preview(requestedPath)
   })))
 
-  ipcMain.handle(IpcChannels.abortSession, (_event, sessionPath: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.abortSession, (_event, context: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const sessions = yield* PiSessions
-    yield* sessions.abort(path)
+    yield* sessions.abort(worktree.path, path)
   })))
 
-  ipcMain.handle(IpcChannels.listModels, (_event, sessionPath: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.listModels, (_event, context: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const sessions = yield* PiSessions
-    return yield* sessions.models(path)
+    return yield* sessions.models(worktree.path, path)
   })))
 
-  ipcMain.handle(IpcChannels.setModel, (_event, sessionPath: unknown, provider: unknown, modelId: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.setModel, (_event, context: unknown, sessionPath: unknown, provider: unknown, modelId: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const selectedProvider = yield* decodeString(provider)
     const selectedModel = yield* decodeString(modelId)
     const sessions = yield* PiSessions
-    return yield* sessions.setModel(path, selectedProvider, selectedModel)
+    return yield* sessions.setModel(worktree.path, path, selectedProvider, selectedModel)
   })))
 
-  ipcMain.handle(IpcChannels.setThinkingLevel, (_event, sessionPath: unknown, level: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.setThinkingLevel, (_event, context: unknown, sessionPath: unknown, level: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const selectedLevel = yield* decodeThinkingLevel(level)
     const sessions = yield* PiSessions
-    return yield* sessions.setThinkingLevel(path, selectedLevel)
+    return yield* sessions.setThinkingLevel(worktree.path, path, selectedLevel)
   })))
 
-  ipcMain.handle(IpcChannels.answerInteraction, (_event, sessionPath: unknown, requestId: unknown, answer: unknown) => run(Effect.gen(function*() {
+  ipcMain.handle(IpcChannels.answerInteraction, (_event, context: unknown, sessionPath: unknown, requestId: unknown, answer: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
     const id = yield* decodeString(requestId)
     const selectedAnswer = yield* Schema.decodeUnknownEffect(AskUserInteractionAnswerSchema)(answer).pipe(
       Effect.mapError(toAppError("validate Pi interaction answer"))
     )
     const sessions = yield* PiSessions
-    yield* sessions.answerInteraction(path, id, selectedAnswer)
+    yield* sessions.answerInteraction(worktree.path, path, id, selectedAnswer)
   })))
 }
 

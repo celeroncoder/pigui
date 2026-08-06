@@ -25,12 +25,30 @@ export interface GitDiff {
   readonly omittedFiles: number
 }
 
-export interface Project {
+export interface ProjectWorktree {
   readonly id: string
   readonly path: string
   readonly name: string
+  readonly branch: string
   readonly addedAt: number
   readonly git?: GitStatus
+}
+
+export interface Project {
+  readonly id: string
+  readonly name: string
+  readonly addedAt: number
+  readonly worktrees: ReadonlyArray<ProjectWorktree>
+}
+
+export interface WorktreeContext {
+  readonly projectId: string
+  readonly worktreeId: string
+}
+
+export interface ProjectSelection {
+  readonly project: Project
+  readonly worktree: ProjectWorktree
 }
 
 export interface SessionSummary {
@@ -182,7 +200,7 @@ export type SessionEvent =
   | { readonly type: "compaction-status"; readonly sessionPath: string; readonly isCompacting: boolean }
   | { readonly type: "context-usage"; readonly sessionPath: string; readonly contextUsage?: ContextUsage }
   | { readonly type: "background-processes"; readonly sessionPath: string; readonly processes: ReadonlyArray<BackgroundProcess> }
-  | { readonly type: "project-git"; readonly projectPath: string; readonly git?: GitStatus }
+  | { readonly type: "project-git"; readonly worktreePath: string; readonly git?: GitStatus }
   | { readonly type: "interaction-request"; readonly sessionPath: string; readonly request: AskUserInteractionRequest }
   | { readonly type: "interaction-cleared"; readonly sessionPath: string; readonly requestId: string }
   | { readonly type: "error"; readonly sessionPath?: string; readonly message: string }
@@ -190,29 +208,29 @@ export type SessionEvent =
 export interface PiDesktopApi {
   readonly projects: {
     readonly list: () => Promise<ReadonlyArray<Project>>
-    readonly add: () => Promise<Project | null>
+    readonly add: () => Promise<ProjectSelection | null>
     readonly remove: (projectId: string) => Promise<void>
-    readonly refreshGit: (projectPath: string) => Promise<GitStatus | undefined>
-    readonly diff: (projectPath: string) => Promise<GitDiff | undefined>
+    readonly refreshGit: (context: WorktreeContext) => Promise<GitStatus | undefined>
+    readonly diff: (context: WorktreeContext) => Promise<GitDiff | undefined>
   }
   readonly attachments: {
     readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
     readonly preview: (path: string) => Promise<AttachmentPreview>
   }
   readonly sessions: {
-    readonly list: (projectPath: string) => Promise<ReadonlyArray<SessionSummary>>
-    readonly create: (projectPath: string) => Promise<SessionDetail>
-    readonly open: (projectPath: string, sessionPath: string) => Promise<SessionDetail>
-    readonly inspect: (projectPath: string, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
-    readonly prompt: (sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
-    readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Promise<void>
-    readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
-    readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
-    readonly abort: (sessionPath: string) => Promise<void>
-    readonly models: (sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
-    readonly setModel: (sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
-    readonly setThinkingLevel: (sessionPath: string, level: ThinkingLevel) => Promise<SessionDetail>
-    readonly answerInteraction: (sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Promise<void>
+    readonly list: (context: WorktreeContext) => Promise<ReadonlyArray<SessionSummary>>
+    readonly create: (context: WorktreeContext) => Promise<SessionDetail>
+    readonly open: (context: WorktreeContext, sessionPath: string) => Promise<SessionDetail>
+    readonly inspect: (context: WorktreeContext, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
+    readonly prompt: (context: WorktreeContext, sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
+    readonly editQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string, text: string) => Promise<void>
+    readonly removeQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<void>
+    readonly steerQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<void>
+    readonly abort: (context: WorktreeContext, sessionPath: string) => Promise<void>
+    readonly models: (context: WorktreeContext, sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
+    readonly setModel: (context: WorktreeContext, sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
+    readonly setThinkingLevel: (context: WorktreeContext, sessionPath: string, level: ThinkingLevel) => Promise<SessionDetail>
+    readonly answerInteraction: (context: WorktreeContext, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Promise<void>
   }
   readonly onSessionEvent: (listener: (event: SessionEvent) => void) => () => void
 }
