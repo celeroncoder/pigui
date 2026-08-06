@@ -17,6 +17,7 @@ A focused Electron workspace for browsing projects and working with existing or 
 - Inspect only currently running Pi-managed background terminals in a parallel read-only process pane
 - Send while Pi works, then edit, delete, or prioritize Pi-native queued follow-ups and steering prompts
 - Show each workspace’s current Git branch and working-tree `+/-` line totals in the header and sidebar
+- Open tracked and untracked working-tree changes in a read-only Git diff pane
 - Abort active prompts safely
 - Pick from the models currently authenticated and available in Pi, with provider marks loaded from Logo.dev
 - Choose the active model’s Pi-supported reasoning effort for the next prompt

@@ -1,6 +1,6 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, Sparkles, SquareTerminal, X } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
+import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { ActivityGroup } from "./components/ActivityGroup"
@@ -18,6 +18,8 @@ import { desktopApi } from "./lib/api"
 import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
 import { compactLabel } from "./lib/text"
 
+const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
+
 export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
   const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
@@ -26,6 +28,9 @@ export default function App() {
   const [liveThinking, setLiveThinking] = useState<{ readonly messageId: string; readonly text: string } | null>(null)
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
   const [backgroundPaneOpen, setBackgroundPaneOpen] = useState(false)
+  const [gitPaneOpen, setGitPaneOpen] = useState(false)
+  const [gitDiff, setGitDiff] = useState<GitDiff | null>(null)
+  const [gitDiffLoading, setGitDiffLoading] = useState(false)
   const [selectedSubagent, setSelectedSubagent] = useState<SessionSummary | null>(null)
   const [subagentDetail, setSubagentDetail] = useState<SessionDetail | null>(null)
   const [subagentLoading, setSubagentLoading] = useState(false)
@@ -48,6 +53,7 @@ export default function App() {
   const activeProjectIdRef = useRef<string | null>(null)
   const projectRequestRef = useRef(0)
   const gitRequestRef = useRef(0)
+  const gitDiffRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const modelRequestRef = useRef(0)
   const subagentRequestRef = useRef(0)
@@ -137,6 +143,19 @@ export default function App() {
     }
   }, [])
 
+  const loadGitDiff = useCallback(async (project: Project) => {
+    const requestId = ++gitDiffRequestRef.current
+    setGitDiffLoading(true)
+    try {
+      const diff = await desktopApi.projects.diff(project.path)
+      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setGitDiff(diff ?? { files: [], truncated: false, omittedFiles: 0 })
+    } catch (cause) {
+      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setError(cause instanceof Error ? cause.message : "Could not load Git changes")
+    } finally {
+      if (requestId === gitDiffRequestRef.current) setGitDiffLoading(false)
+    }
+  }, [])
+
   const selectProject = useCallback(async (project: Project) => {
     const requestId = ++projectRequestRef.current
     ++sessionRequestRef.current
@@ -147,6 +166,10 @@ export default function App() {
     draftRevisionRef.current += 1
     attachmentRevisionRef.current += 1
     setActiveProject(project)
+    ++gitDiffRequestRef.current
+    setGitPaneOpen(false)
+    setGitDiff(null)
+    setGitDiffLoading(false)
     setSession(null)
     setPendingAttachments([])
     setLightboxImage(null)
@@ -189,6 +212,9 @@ export default function App() {
     ++subagentRequestRef.current
     setSubagentPaneOpen(false)
     setBackgroundPaneOpen(false)
+    setGitPaneOpen(false)
+    setGitDiff(null)
+    setGitDiffLoading(false)
     setSelectedSubagent(null)
     setSubagentDetail(null)
     setSubagentLoading(false)
@@ -217,6 +243,7 @@ export default function App() {
         : current
       setProjects((current) => current.map(updateProject))
       setActiveProject((current) => current ? updateProject(current) : current)
+      if (gitPaneOpen) void loadGitDiff(project)
       return
     }
     const activeSessionPath = activeSessionPathRef.current
@@ -273,7 +300,7 @@ export default function App() {
       if (!event.isStreaming) setLiveThinking(null)
     }
     setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
-  }), [])
+  }), [gitPaneOpen, loadGitDiff])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: session?.isStreaming ? "instant" : "smooth", block: "end" })
@@ -475,6 +502,12 @@ export default function App() {
   const runningProcesses = backgroundProcesses.length
   const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
   const git: GitStatus | undefined = activeProject?.git
+  const gitLineTotalsVisible = !!git && (git.additions > 0 || git.deletions > 0)
+  const gitChangedFiles = git?.changedFiles ?? 0
+  const gitChangesVisible = gitLineTotalsVisible || gitChangedFiles > 0
+  const gitChangeLabel = gitLineTotalsVisible
+    ? `${git?.additions ?? 0} lines added, ${git?.deletions ?? 0} lines deleted`
+    : `${gitChangedFiles} changed ${gitChangedFiles === 1 ? "file" : "files"}`
 
   return (
     <div className="app-shell">
@@ -486,7 +519,7 @@ export default function App() {
         <div className="titlebar-actions" />
       </header>
 
-      <div className={`workspace-layout ${(subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0) ? "with-subagents" : ""}`}>
+      <div className={`workspace-layout ${(gitPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""} ${gitPaneOpen ? "with-git" : ""}`}>
         <ProjectSidebar
           projects={projects}
           sessions={sidebarSessions}
@@ -505,7 +538,29 @@ export default function App() {
               <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
               <div className="session-heading">
                 <h1 title={session?.summary.name}>{compactLabel(session?.summary.name ?? "New Pi session", 72)}</h1>
-                {git && <span className="git-totals" title={`${git.additions} lines added, ${git.deletions} lines deleted`} aria-label={`${git.additions} lines added, ${git.deletions} lines deleted`}>+{git.additions}/-{git.deletions}</span>}
+                {git && gitChangesVisible && (
+                  <button
+                    type="button"
+                    className={`header-control git-totals ${gitPaneOpen ? "active" : ""}`}
+                    aria-expanded={gitPaneOpen}
+                    title={gitChangeLabel}
+                    aria-label={gitChangeLabel}
+                    onClick={() => {
+                      if (gitPaneOpen) {
+                        setGitPaneOpen(false)
+                        return
+                      }
+                      if (!activeProject) return
+                      setSubagentPaneOpen(false)
+                      setBackgroundPaneOpen(false)
+                      setGitPaneOpen(true)
+                      void loadGitDiff(activeProject)
+                    }}
+                  >
+                    <span>{gitLineTotalsVisible ? `+${git.additions}/-${git.deletions}` : `${gitChangedFiles} ${gitChangedFiles === 1 ? "file" : "files"}`}</span>
+                    <PanelRightOpen size={14} aria-hidden="true" />
+                  </button>
+                )}
               </div>
               {git && <span className="git-branch" title={`Current branch: ${git.branch}`}><GitBranch size={11} aria-hidden="true" /><span>{git.branch}</span></span>}
             </div>
@@ -513,12 +568,13 @@ export default function App() {
               {backgroundProcesses.length > 0 && (
                 <button
                   type="button"
-                  className={`background-toggle ${backgroundPaneOpen ? "active" : ""}`}
+                  className={`header-control background-toggle ${backgroundPaneOpen ? "active" : ""}`}
                   aria-expanded={backgroundPaneOpen}
                   aria-label={`${backgroundProcesses.length} background processes, ${runningProcesses} running`}
                   title={runningProcesses > 0 ? `${runningProcesses} running background ${runningProcesses === 1 ? "process" : "processes"}` : `${backgroundProcesses.length} background processes in this session`}
                   onClick={() => {
                     setSubagentPaneOpen(false)
+                    setGitPaneOpen(false)
                     setBackgroundPaneOpen((open) => !open)
                   }}
                 >
@@ -530,7 +586,7 @@ export default function App() {
               {linkedSubagents.length > 0 && activeProject && (
                 <button
                   type="button"
-                  className={`subagent-toggle ${subagentPaneOpen ? "active" : ""}`}
+                  className={`header-control subagent-toggle ${subagentPaneOpen ? "active" : ""}`}
                   aria-expanded={subagentPaneOpen}
                   onClick={() => {
                     if (subagentPaneOpen) {
@@ -539,6 +595,7 @@ export default function App() {
                     }
                     const first = linkedSubagents[0]
                     setBackgroundPaneOpen(false)
+                    setGitPaneOpen(false)
                     setSubagentPaneOpen(true)
                     if (first) void inspectSubagent(activeProject, first)
                   }}
@@ -687,6 +744,16 @@ export default function App() {
         )}
         {backgroundPaneOpen && backgroundProcesses.length > 0 && (
           <BackgroundProcessesPane processes={backgroundProcesses} onClose={() => setBackgroundPaneOpen(false)} />
+        )}
+        {gitPaneOpen && activeProject && (
+          <Suspense fallback={<aside className="git-pane" aria-label="Git changes"><div className="git-diff-loading"><RefreshCw size={16} /> Preparing diff…</div></aside>}>
+            <GitDiffPane
+              diff={gitDiff}
+              loading={gitDiffLoading}
+              onClose={() => setGitPaneOpen(false)}
+              onRefresh={() => void loadGitDiff(activeProject)}
+            />
+          </Suspense>
         )}
       </div>
       {lightboxImage && (
