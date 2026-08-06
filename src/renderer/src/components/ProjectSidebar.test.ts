@@ -63,6 +63,7 @@ const renderSidebar = (
   activeWorktree: activeProject.worktrees.find((worktree) => worktree.kind === "local") ?? null,
   activeSessionPath: options.unavailable ? null : summary.path,
   onSelectProject: () => undefined,
+  onOpenHome: () => undefined,
   onSelectSession: () => undefined,
   onAddProject: () => undefined,
   onNewSession: () => undefined

@@ -64,6 +64,9 @@
   .workspace-layout.with-git { grid-template-columns: 260px minmax(420px, 1fr) minmax(520px, 680px); }
   .workspace-layout.with-subagents .composer-caption span:last-child { display: none; }
   .project-sidebar { min-width: 0; border-right: 1px solid var(--line); background: #0e0f10; display: flex; flex-direction: column; padding: 12px 10px 10px; overflow: hidden; }
+  .home-row { min-height: 34px; display: flex; align-items: center; gap: 9px; margin: 3px 0 14px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #98938e; font-size: 10px; text-align: left; }
+  .home-row:hover { background: #18191a; color: #d7d2cd; }
+  .home-row.active { border-color: #4f3c2e; background: linear-gradient(180deg, #251d17, #191613); color: #efbd8d; box-shadow: inset 0 1px rgba(255,255,255,.025); }
   .conversation { min-width: 0; min-height: 0; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 61px minmax(0, 1fr) auto; overflow: hidden; background: radial-gradient(circle at 50% -20%, #181512 0, transparent 34%), var(--bg); }
   .conversation.has-interaction { grid-template-rows: 61px auto minmax(0, 1fr) auto; }
   .inspector { min-width: 0; overflow-y: auto; border-left: 1px solid var(--line); background: #0e0f10; }
