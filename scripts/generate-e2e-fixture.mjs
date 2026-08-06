@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process"
+import { createHash } from "node:crypto"
 import { copyFile, mkdir, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -29,6 +30,17 @@ const gitTotals = (await gitOutput(["diff", "--numstat", "--no-ext-diff", "--no-
 const gitTrackedFiles = (await gitOutput(["diff", "--name-only", "-z", "--no-ext-diff", "--no-renames", "HEAD", "--"])).split("\0").filter(Boolean)
 const gitUntrackedFiles = (await gitOutput(["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)
 const gitChangedFiles = gitTrackedFiles.length + gitUntrackedFiles.length
+const gitCommonDir = (await gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim()
+const linkedWorktreeOutput = await gitOutput(["worktree", "list", "--porcelain"])
+const linkedWorktrees = linkedWorktreeOutput.split("\n\n").flatMap((block) => {
+  const fields = Object.fromEntries(block.split("\n").flatMap((line) => {
+    const separator = line.indexOf(" ")
+    return separator > 0 ? [[line.slice(0, separator), line.slice(separator + 1)]] : []
+  }))
+  if (!fields.worktree) return []
+  const branch = fields.branch?.replace(/^refs\/heads\//, "") ?? (fields.HEAD ? `detached @ ${fields.HEAD.slice(0, 7)}` : "detached HEAD")
+  return [{ path: resolve(fields.worktree), branch }]
+})
 const infos = await SessionManager.list(cwd)
 const preferred = infos.find((info) => !info.name?.startsWith("subagent:")) ?? infos[0]
 const orderedInfos = preferred ? [preferred, ...infos.filter((info) => info.path !== preferred.path)] : infos
@@ -58,12 +70,35 @@ const thinkingLevelsForModel = (model) => {
   })
 }
 
-const project = {
-  id: `e2e-${Buffer.from(cwd).toString("base64url").slice(0, 12)}`,
+const stableId = (value) => createHash("sha1").update(value).digest("hex").slice(0, 12)
+const worktreeId = (path) => `e2e-worktree-${stableId(path)}`
+const primaryWorktreePath = linkedWorktrees[0]?.path
+const worktrees = linkedWorktrees
+  .sort((left, right) => Number(right.path === cwd) - Number(left.path === cwd))
+  .map((entry) => ({
+    id: worktreeId(entry.path),
+    path: entry.path,
+    name: basename(entry.path),
+    branch: entry.branch,
+    addedAt: Date.now(),
+    kind: entry.path === primaryWorktreePath ? "local" : "linked",
+    ...(entry.path === cwd && gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
+  }))
+const worktree = worktrees.find((entry) => entry.path === cwd) ?? {
+  id: worktreeId(cwd),
   path: cwd,
   name: basename(cwd),
+  branch: gitBranch || "detached HEAD",
   addedAt: Date.now(),
+  kind: linkedWorktrees.length === 0 ? "local" : "linked",
   ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
+}
+if (!worktrees.some((entry) => entry.id === worktree.id)) worktrees.unshift(worktree)
+const project = {
+  id: `e2e-project-${stableId(gitCommonDir || cwd)}`,
+  name: basename(gitCommonDir ? dirname(gitCommonDir) : cwd),
+  addedAt: worktree.addedAt,
+  worktrees
 }
 
 const parentCandidates = new Map()
@@ -269,6 +304,7 @@ for (const [index, info] of orderedInfos.entries()) {
     backgroundProcesses: projectBackgroundProcesses(manager.getBranch()),
     queuedMessages: [],
     ...(contextUsage ? { contextUsage } : {}),
+    runtimeStatus: interaction?.sessionPath === summary.path ? "input-required" : "done",
     isStreaming: false,
     isCompacting: false
   })
@@ -276,6 +312,7 @@ for (const [index, info] of orderedInfos.entries()) {
 
 const fixture = {
   generatedAt: Date.now(),
+  activeWorktreeId: worktree.id,
   projects: [project],
   sessions: summaries,
   details,

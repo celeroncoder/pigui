@@ -1,7 +1,7 @@
-import { ArrowUp, Check, ChevronDown, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
+import { ArrowUp, Check, ChevronDown, Folder, GitBranch, GitFork, HardDrive, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseImagePathReferences } from "../../../shared/attachments"
-import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelOption, QueueDelivery, QueuedMessage, ThinkingLevel } from "../../../shared/contracts"
+import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelOption, QueueDelivery, QueuedMessage, SessionDraftContext, ThinkingLevel } from "../../../shared/contracts"
 import { ContextUsageDonut } from "./ContextUsageDonut"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
@@ -160,6 +160,11 @@ interface ComposerProps {
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
   readonly contextUsage?: ContextUsage
+  readonly worktreeContext?: SessionDraftContext
+  readonly draftContext?: SessionDraftContext
+  readonly draftBaseBranch?: string
+  readonly draftContextLoading?: boolean
+  readonly onDraftBaseBranchChange: (branch: string) => void
   readonly onModelChange: (option: ModelOption) => void
   readonly onThinkingLevelChange: (level: ThinkingLevel) => void
   readonly onChange: (value: string) => void
@@ -186,6 +191,11 @@ export function Composer({
   availableThinkingLevels,
   queuedMessages,
   contextUsage,
+  worktreeContext,
+  draftContext,
+  draftBaseBranch,
+  draftContextLoading = false,
+  onDraftBaseBranchChange,
   onModelChange,
   onThinkingLevelChange,
   onChange,
@@ -202,6 +212,7 @@ export function Composer({
   const pickerRef = useRef<HTMLDivElement>(null)
   const [openPicker, setOpenPicker] = useState<"model" | "effort" | null>(null)
   const currentProvider = modelProvider ?? modelOptions.find((option) => option.id === model)?.provider
+  const displayedContext = draftContext ?? worktreeContext
 
   useLayoutEffect(() => {
     const input = inputRef.current
@@ -241,6 +252,42 @@ export function Composer({
 
   return (
     <div className="composer-shell">
+      {displayedContext && (
+        <section className="composer-worktree-context" aria-label={draftContext ? "New session worktree context" : "Selected worktree context"}>
+          <span className="composer-context-folder" title={displayedContext.path}>
+            <Folder size={13} aria-hidden="true" />
+            <strong>{displayedContext.folderName}</strong>
+            <small>{displayedContext.path}</small>
+          </span>
+          <span className="composer-context-kind" title={`${displayedContext.worktreeKind === "linked" ? "Linked worktree" : "Local checkout"}: ${displayedContext.path}`}>
+            {displayedContext.worktreeKind === "linked" ? <GitFork size={13} aria-hidden="true" /> : <HardDrive size={13} aria-hidden="true" />}
+            {displayedContext.worktreeKind === "linked" ? "Linked worktree" : "Local checkout"}
+          </span>
+          <span className="composer-context-branch" title={`Current branch: ${displayedContext.branch}`}>
+            <GitBranch size={13} aria-hidden="true" />
+            <span>{displayedContext.branch}</span>
+          </span>
+          {draftContext?.worktreeKind === "linked" && (
+            <label className="composer-base-branch">
+              <span>Base branch</span>
+              <select
+                aria-label="Base branch for new worktree session"
+                value={draftBaseBranch ?? ""}
+                disabled={disabled || draftContextLoading || draftContext.baseBranches.length === 0}
+                onChange={(event) => onDraftBaseBranchChange(event.target.value)}
+              >
+                {draftContext.baseBranches.length === 0 && <option value="">{draftContextLoading ? "Loading branches…" : "No base branches found"}</option>}
+                {draftContext.baseBranches.map((branch) => <option value={branch} key={branch}>{branch}</option>)}
+              </select>
+            </label>
+          )}
+          {draftContext?.setupEnvironment && (
+            <span className="composer-setup-environment" title={`Runs ${draftContext.setupEnvironment.configPath} before the first Pi session is created`}>
+              Setup: {draftContext.setupEnvironment.name}
+            </span>
+          )}
+        </section>
+      )}
       <PromptQueue
         messages={queuedMessages}
         disabled={disabled}
@@ -288,6 +335,8 @@ export function Composer({
               className="composer-model-selector"
               aria-label={`Current model: ${model}`}
               aria-expanded={openPicker === "model"}
+              disabled={!!draftContext}
+              title={draftContext ? "Pi model choices become available after the first message starts the session" : undefined}
               onClick={() => setOpenPicker((open) => open === "model" ? null : "model")}
             >
               {currentProvider ? <ProviderLogo provider={currentProvider} size={15} /> : <span className={`live-dot ${isStreaming ? "active" : ""}`} />}

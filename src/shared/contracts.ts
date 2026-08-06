@@ -25,12 +25,72 @@ export interface GitDiff {
   readonly omittedFiles: number
 }
 
-export interface Project {
+export type GitHubPullRequestState = "mergeable" | "conflict" | "pending" | "merged"
+
+export interface GitHubBranchPullRequest {
+  readonly number: number
+  readonly title: string
+  readonly url: string
+  readonly branch: string
+  readonly state: GitHubPullRequestState
+}
+
+export interface GitHubWorktreeContext {
+  readonly repository: string
+  readonly repositoryUrl: string
+  readonly branch: string
+  readonly path: string
+  readonly worktreeKind: "local" | "linked"
+  readonly changes: GitStatus
+  readonly hasUpstream: boolean
+  readonly ahead: number
+  readonly pullRequest?: GitHubBranchPullRequest
+}
+
+export interface GitHubSyncResult {
+  readonly action: "committed-and-pushed" | "pushed"
+  readonly commit?: string
+}
+
+export interface ProjectWorktree {
   readonly id: string
   readonly path: string
   readonly name: string
+  readonly branch: string
   readonly addedAt: number
+  /** Explicit Git ownership; optional only for persisted projects created before worktree support. */
+  readonly kind?: "local" | "linked"
   readonly git?: GitStatus
+}
+
+export interface Project {
+  readonly id: string
+  readonly name: string
+  readonly addedAt: number
+  readonly worktrees: ReadonlyArray<ProjectWorktree>
+}
+
+export interface WorktreeContext {
+  readonly projectId: string
+  readonly worktreeId: string
+}
+
+export interface ProjectSelection {
+  readonly project: Project
+  readonly worktree: ProjectWorktree
+}
+
+export interface SessionDraftContext {
+  readonly path: string
+  readonly folderName: string
+  readonly worktreeKind: "local" | "linked"
+  readonly branch: string
+  readonly baseBranches: ReadonlyArray<string>
+  readonly defaultBaseBranch?: string
+  readonly setupEnvironment?: {
+    readonly name: string
+    readonly configPath: string
+  }
 }
 
 export interface SessionSummary {
@@ -42,6 +102,9 @@ export interface SessionSummary {
   readonly messageCount: number
   readonly parentSessionPath?: string
 }
+
+/** A concise, renderer-safe projection of Pi's current session lifecycle. */
+export type SessionRuntimeStatus = "running" | "input-required" | "waiting" | "done" | "failed"
 
 export type MessageRole = "user" | "assistant" | "tool" | "system"
 
@@ -155,6 +218,7 @@ export interface SessionDetail {
   /** Omitted when no model with a context window is selected. */
   readonly contextUsage?: ContextUsage
   readonly interactionRequest?: AskUserInteractionRequest
+  readonly runtimeStatus: SessionRuntimeStatus
   readonly isStreaming: boolean
   readonly isCompacting: boolean
 }
@@ -169,7 +233,9 @@ export interface ToolActivity {
 }
 
 export type SessionEvent =
+  | { readonly type: "session-started"; readonly requestId: string; readonly context: WorktreeContext; readonly detail: SessionDetail }
   | { readonly type: "session-state"; readonly sessionPath: string; readonly detail: SessionDetail }
+  | { readonly type: "runtime-status"; readonly sessionPath: string; readonly status: SessionRuntimeStatus }
   | { readonly type: "assistant-start"; readonly sessionPath: string; readonly messageId: string; readonly timestamp: number }
   | { readonly type: "user-message"; readonly sessionPath: string; readonly message: ChatMessage }
   | { readonly type: "queue-update"; readonly sessionPath: string; readonly messages: ReadonlyArray<QueuedMessage> }
@@ -182,7 +248,7 @@ export type SessionEvent =
   | { readonly type: "compaction-status"; readonly sessionPath: string; readonly isCompacting: boolean }
   | { readonly type: "context-usage"; readonly sessionPath: string; readonly contextUsage?: ContextUsage }
   | { readonly type: "background-processes"; readonly sessionPath: string; readonly processes: ReadonlyArray<BackgroundProcess> }
-  | { readonly type: "project-git"; readonly projectPath: string; readonly git?: GitStatus }
+  | { readonly type: "project-git"; readonly worktreePath: string; readonly git?: GitStatus }
   | { readonly type: "interaction-request"; readonly sessionPath: string; readonly request: AskUserInteractionRequest }
   | { readonly type: "interaction-cleared"; readonly sessionPath: string; readonly requestId: string }
   | { readonly type: "error"; readonly sessionPath?: string; readonly message: string }
@@ -190,29 +256,35 @@ export type SessionEvent =
 export interface PiDesktopApi {
   readonly projects: {
     readonly list: () => Promise<ReadonlyArray<Project>>
-    readonly add: () => Promise<Project | null>
+    readonly add: () => Promise<ProjectSelection | null>
     readonly remove: (projectId: string) => Promise<void>
-    readonly refreshGit: (projectPath: string) => Promise<GitStatus | undefined>
-    readonly diff: (projectPath: string) => Promise<GitDiff | undefined>
+    readonly refreshGit: (context: WorktreeContext) => Promise<GitStatus | undefined>
+    readonly diff: (context: WorktreeContext) => Promise<GitDiff | undefined>
+    readonly sessionDraft: (context: WorktreeContext) => Promise<SessionDraftContext>
   }
   readonly attachments: {
     readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
     readonly preview: (path: string) => Promise<AttachmentPreview>
   }
+  readonly github: {
+    readonly branchPullRequest: (context: WorktreeContext) => Promise<GitHubBranchPullRequest | null>
+    readonly worktree: (context: WorktreeContext) => Promise<GitHubWorktreeContext>
+    readonly commitOrPush: (context: WorktreeContext, message: string) => Promise<GitHubSyncResult>
+  }
   readonly sessions: {
-    readonly list: (projectPath: string) => Promise<ReadonlyArray<SessionSummary>>
-    readonly create: (projectPath: string) => Promise<SessionDetail>
-    readonly open: (projectPath: string, sessionPath: string) => Promise<SessionDetail>
-    readonly inspect: (projectPath: string, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
-    readonly prompt: (sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
-    readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Promise<void>
-    readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
-    readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
-    readonly abort: (sessionPath: string) => Promise<void>
-    readonly models: (sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
-    readonly setModel: (sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
-    readonly setThinkingLevel: (sessionPath: string, level: ThinkingLevel) => Promise<SessionDetail>
-    readonly answerInteraction: (sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Promise<void>
+    readonly list: (context: WorktreeContext) => Promise<ReadonlyArray<SessionSummary>>
+    readonly start: (context: WorktreeContext, requestId: string, text: string, baseBranch?: string, attachmentPaths?: ReadonlyArray<string>) => Promise<SessionDetail>
+    readonly open: (context: WorktreeContext, sessionPath: string) => Promise<SessionDetail>
+    readonly inspect: (context: WorktreeContext, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
+    readonly prompt: (context: WorktreeContext, sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
+    readonly editQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string, text: string) => Promise<void>
+    readonly removeQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<void>
+    readonly steerQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<void>
+    readonly abort: (context: WorktreeContext, sessionPath: string) => Promise<void>
+    readonly models: (context: WorktreeContext, sessionPath: string) => Promise<ReadonlyArray<ModelOption>>
+    readonly setModel: (context: WorktreeContext, sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
+    readonly setThinkingLevel: (context: WorktreeContext, sessionPath: string, level: ThinkingLevel) => Promise<SessionDetail>
+    readonly answerInteraction: (context: WorktreeContext, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Promise<void>
   }
   readonly onSessionEvent: (listener: (event: SessionEvent) => void) => () => void
 }
@@ -223,8 +295,9 @@ export const IpcChannels = {
   removeProject: "projects:remove",
   refreshProjectGit: "projects:refresh-git",
   gitDiff: "projects:git-diff",
+  sessionDraft: "projects:session-draft",
   listSessions: "sessions:list",
-  createSession: "sessions:create",
+  startSession: "sessions:start",
   openSession: "sessions:open",
   inspectSession: "sessions:inspect",
   promptSession: "sessions:prompt",
@@ -238,5 +311,8 @@ export const IpcChannels = {
   answerInteraction: "sessions:answer-interaction",
   saveAttachment: "attachments:save",
   previewAttachment: "attachments:preview",
+  inspectGitHubBranchPullRequest: "github:inspect-branch-pull-request",
+  inspectGitHubWorktree: "github:inspect-worktree",
+  commitOrPushGitHubWorktree: "github:commit-or-push-worktree",
   sessionEvent: "sessions:event"
 } as const
