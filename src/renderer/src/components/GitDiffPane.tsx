@@ -7,6 +7,7 @@ import type { GitDiff, GitDiffFile } from "../../../shared/contracts"
 
 const statusLabel: Record<GitDiffFile["status"], string> = {
   added: "Added",
+  untracked: "Untracked",
   modified: "Modified",
   deleted: "Deleted"
 }
@@ -53,7 +54,8 @@ const buildFileTree = (files: ReadonlyArray<GitDiffFile>) => {
 const folderPaths = (nodes: ReadonlyArray<GitFileTreeNode>): ReadonlyArray<string> => nodes.flatMap((node) => node.kind === "folder" ? [node.path, ...folderPaths(node.children)] : [])
 
 const statusMark: Record<GitDiffFile["status"], string> = {
-  added: "U",
+  added: "A",
+  untracked: "U",
   modified: "M",
   deleted: "D"
 }
@@ -154,7 +156,14 @@ export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
         </div>
       </header>
       <div className="git-pane-summary">
-        {loading ? "Reading working tree…" : diff?.files.length ? `${diff.files.length} changed ${diff.files.length === 1 ? "file" : "files"}` : "Working tree clean"}
+        {loading
+          ? "Reading working tree…"
+          : diff?.truncated
+            ? `Showing ${diff.files.length} of ${diff.files.length + diff.omittedFiles} changed files`
+            : diff?.files.length
+              ? `${diff.files.length} changed ${diff.files.length === 1 ? "file" : "files"}`
+              : "Working tree clean"}
+        {!loading && diff?.truncated && <small className="git-pane-truncated" role="status">Some files were omitted to keep the diff responsive.</small>}
       </div>
       {loading && <div className="git-diff-loading"><RefreshCw size={16} /> Loading diff…</div>}
       {!loading && diff && diff.files.length > 0 && (
@@ -183,7 +192,8 @@ export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
           </aside>
         </div>
       )}
-      {!loading && (!diff || diff.files.length === 0) && <div className="git-diff-empty"><GitBranch size={22} /><span>No changed files in this working tree.</span></div>}
+      {!loading && diff?.truncated && diff.files.length === 0 && <div className="git-diff-empty"><GitBranch size={22} /><span>Diff preview was truncated before any files could be loaded.</span></div>}
+      {!loading && (!diff || (diff.files.length === 0 && !diff.truncated)) && <div className="git-diff-empty"><GitBranch size={22} /><span>No changed files in this working tree.</span></div>}
     </aside>
   )
 }

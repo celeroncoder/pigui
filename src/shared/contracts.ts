@@ -6,9 +6,10 @@ export interface GitStatus {
   readonly branch: string
   readonly additions: number
   readonly deletions: number
+  readonly changedFiles: number
 }
 
-export type GitDiffStatus = "added" | "modified" | "deleted"
+export type GitDiffStatus = "added" | "untracked" | "modified" | "deleted"
 
 export interface GitDiffFile {
   readonly path: string
@@ -20,6 +21,8 @@ export interface GitDiffFile {
 
 export interface GitDiff {
   readonly files: ReadonlyArray<GitDiffFile>
+  readonly truncated: boolean
+  readonly omittedFiles: number
 }
 
 export interface Project {

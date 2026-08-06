@@ -26,6 +26,9 @@ const gitTotals = (await gitOutput(["diff", "--numstat", "--no-ext-diff", "--no-
     const [added, deleted] = line.split("\t")
     return { additions: totals.additions + numericStat(added), deletions: totals.deletions + numericStat(deleted) }
   }, { additions: 0, deletions: 0 })
+const gitTrackedFiles = (await gitOutput(["diff", "--name-only", "-z", "--no-ext-diff", "--no-renames", "HEAD", "--"])).split("\0").filter(Boolean)
+const gitUntrackedFiles = (await gitOutput(["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)
+const gitChangedFiles = gitTrackedFiles.length + gitUntrackedFiles.length
 const infos = await SessionManager.list(cwd)
 const preferred = infos.find((info) => !info.name?.startsWith("subagent:")) ?? infos[0]
 const orderedInfos = preferred ? [preferred, ...infos.filter((info) => info.path !== preferred.path)] : infos
@@ -60,7 +63,7 @@ const project = {
   path: cwd,
   name: basename(cwd),
   addedAt: Date.now(),
-  ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals } } : {})
+  ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
 }
 
 const parentCandidates = new Map()

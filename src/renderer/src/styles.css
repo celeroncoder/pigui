@@ -454,7 +454,8 @@
   .git-pane-actions button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; background: transparent; color: #9a9691; }
   .git-pane-actions button:hover:not(:disabled) { background: #1a1b1c; color: #e0dcd8; }
   .git-pane-actions button:disabled { opacity: .45; }
-  .git-pane-summary { display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid var(--line-soft); color: #aaa6a1; font-size: 11px; }
+  .git-pane-summary { display: flex; align-items: center; gap: 9px; padding: 0 14px; border-bottom: 1px solid var(--line-soft); color: #aaa6a1; font-size: 11px; }
+  .git-pane-truncated { color: #8e8a86; font-size: 9px; }
   .git-pane-content { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 34%); overflow: hidden; }
   .git-diff-main { min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); overflow: hidden; border-right: 1px solid var(--line-soft); }
   .git-diff-file-header { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); background: #111213; color: var(--text-3); font-size: 10.5px; }
@@ -462,7 +463,7 @@
   .git-diff-file-header > div > svg { flex: 0 0 auto; color: #a77e5b; }
   .git-diff-file-header strong { min-width: 0; overflow: hidden; color: var(--text-2); font: 9.5px var(--mono); font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
   .git-diff-file-header > small { flex: 0 0 auto; font: 8px var(--mono); text-transform: uppercase; }
-  .git-diff-file-header > small.added, .git-tree-file small.added { color: var(--success); }
+  .git-diff-file-header > small.added, .git-tree-file small.added, .git-diff-file-header > small.untracked, .git-tree-file small.untracked { color: var(--success); }
   .git-diff-file-header > small.modified, .git-tree-file small.modified { color: var(--accent); }
   .git-diff-file-header > small.deleted, .git-tree-file small.deleted { color: var(--danger); }
   .git-diff-scroll { min-height: 0; overflow: auto; padding: 8px; }

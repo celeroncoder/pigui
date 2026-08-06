@@ -169,7 +169,7 @@ export default function App() {
     setGitDiffLoading(true)
     try {
       const diff = await desktopApi.projects.diff(project.path)
-      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setGitDiff(diff ?? { files: [] })
+      if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setGitDiff(diff ?? { files: [], truncated: false, omittedFiles: 0 })
     } catch (cause) {
       if (requestId === gitDiffRequestRef.current && activeProjectIdRef.current === project.id) setError(cause instanceof Error ? cause.message : "Could not load Git changes")
     } finally {
@@ -597,6 +597,12 @@ export default function App() {
   const runningProcesses = backgroundProcesses.length
   const liveStatus = liveThinking ? latestTransientStatus(liveThinking.text) : undefined
   const git: GitStatus | undefined = activeProject?.git
+  const gitLineTotalsVisible = !!git && (git.additions > 0 || git.deletions > 0)
+  const gitChangedFiles = git?.changedFiles ?? 0
+  const gitChangesVisible = gitLineTotalsVisible || gitChangedFiles > 0
+  const gitChangeLabel = gitLineTotalsVisible
+    ? `${git?.additions ?? 0} lines added, ${git?.deletions ?? 0} lines deleted`
+    : `${gitChangedFiles} changed ${gitChangedFiles === 1 ? "file" : "files"}`
 
   return (
     <div className="app-shell">
@@ -627,13 +633,13 @@ export default function App() {
               <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
               <div className="session-heading">
                 <h1 title={session?.summary.name}>{compactLabel(session?.summary.name ?? "New Pi session", 72)}</h1>
-                {git && (git.additions > 0 || git.deletions > 0) && (
+                {git && gitChangesVisible && (
                   <button
                     type="button"
                     className={`header-control git-totals ${gitPaneOpen ? "active" : ""}`}
                     aria-expanded={gitPaneOpen}
-                    title={`${git.additions} lines added, ${git.deletions} lines deleted`}
-                    aria-label={`${git.additions} lines added, ${git.deletions} lines deleted`}
+                    title={gitChangeLabel}
+                    aria-label={gitChangeLabel}
                     onClick={() => {
                       if (gitPaneOpen) {
                         setGitPaneOpen(false)
@@ -646,7 +652,7 @@ export default function App() {
                       void loadGitDiff(activeProject)
                     }}
                   >
-                    <span>+{git.additions}/-{git.deletions}</span>
+                    <span>{gitLineTotalsVisible ? `+${git.additions}/-${git.deletions}` : `${gitChangedFiles} ${gitChangedFiles === 1 ? "file" : "files"}`}</span>
                     <PanelRightOpen size={14} aria-hidden="true" />
                   </button>
                 )}

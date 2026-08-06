@@ -7,11 +7,14 @@ import type { GitDiff, GitDiffFile, GitDiffStatus } from "../../shared/contracts
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_OUTPUT_BYTES = 512 * 1024
 const MAX_GIT_FILE_BYTES = 512 * 1024
+const MAX_GIT_DIFF_FILES = 200
+const MAX_GIT_DIFF_BYTES = 8 * 1024 * 1024
 
 export class GitStatus extends Schema.Class<GitStatus>("GitStatus")({
   branch: Schema.String,
   additions: Schema.Number,
-  deletions: Schema.Number
+  deletions: Schema.Number,
+  changedFiles: Schema.Number
 }) {}
 
 export class GitContextError extends Schema.TaggedErrorClass<GitContextError>()("GitContextError", {
@@ -140,6 +143,9 @@ const parseChangedPaths = (stdout: string): ReadonlyArray<{ readonly path: strin
   return changes
 }
 
+const parseUntrackedPaths = (stdout: string): ReadonlyArray<{ readonly path: string; readonly status: GitDiffStatus }> =>
+  parseNulSeparated(stdout).map((path) => ({ path, status: "untracked" as const }))
+
 const safeProjectFile = (cwd: string, candidate: string) => {
   const absolute = resolve(cwd, candidate)
   const fromProject = relative(cwd, absolute)
@@ -180,11 +186,12 @@ const countFilesAsAdditions = Effect.fn("GitContext.countFilesAsAdditions")(func
 interface ReadGitFile {
   readonly contents: string | null
   readonly binary: boolean
+  readonly bytes: number
 }
 
 const readWorkingTreeFile = Effect.fn("GitContext.readWorkingTreeFile")(function*(cwd: string, candidate: string) {
   const file = safeProjectFile(cwd, candidate)
-  if (!file) return { contents: null, binary: true } satisfies ReadGitFile
+  if (!file) return { contents: null, binary: true, bytes: 0 } satisfies ReadGitFile
   const content = yield* Effect.tryPromise({
     try: () => readFile(file),
     catch: () => undefined
@@ -192,8 +199,9 @@ const readWorkingTreeFile = Effect.fn("GitContext.readWorkingTreeFile")(function
     onFailure: () => undefined,
     onSuccess: (value) => value
   }))
-  if (!content || content.length > MAX_GIT_FILE_BYTES || content.includes(0)) return { contents: null, binary: true } satisfies ReadGitFile
-  return { contents: content.toString("utf8"), binary: false } satisfies ReadGitFile
+  if (!content) return { contents: null, binary: true, bytes: 0 } satisfies ReadGitFile
+  if (content.length > MAX_GIT_FILE_BYTES || content.includes(0)) return { contents: null, binary: true, bytes: content.length } satisfies ReadGitFile
+  return { contents: content.toString("utf8"), binary: false, bytes: content.length } satisfies ReadGitFile
 })
 
 const readHeadFile = Effect.fn("GitContext.readHeadFile")(function*(cwd: string, candidate: string) {
@@ -201,9 +209,10 @@ const readHeadFile = Effect.fn("GitContext.readHeadFile")(function*(cwd: string,
     onFailure: () => undefined,
     onSuccess: (value) => value
   }))
-  if (!result || result.exitCode !== 0) return { contents: null, binary: true } satisfies ReadGitFile
-  if (result.stdout.length > MAX_GIT_FILE_BYTES || result.stdout.includes("\0")) return { contents: null, binary: true } satisfies ReadGitFile
-  return { contents: result.stdout, binary: false } satisfies ReadGitFile
+  if (!result || result.exitCode !== 0) return { contents: null, binary: true, bytes: 0 } satisfies ReadGitFile
+  const bytes = Buffer.byteLength(result.stdout, "utf8")
+  if (bytes > MAX_GIT_FILE_BYTES || result.stdout.includes("\0")) return { contents: null, binary: true, bytes } satisfies ReadGitFile
+  return { contents: result.stdout, binary: false, bytes } satisfies ReadGitFile
 })
 
 const detectBranch = Effect.fn("GitContext.detectBranch")(function*(cwd: string) {
@@ -222,27 +231,31 @@ const inspectGit = Effect.fn("GitContext.inspect")(function*(cwd: string) {
 
   const branch = yield* detectBranch(cwd)
   const head = yield* runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"])
+  const trackedPaths = head.exitCode === 0
+    ? parseNulSeparated(yield* runGit(cwd, ["diff", "--name-only", "-z", "--no-ext-diff", "--no-renames", "HEAD", "--"]).pipe(
+      Effect.flatMap((result) => requireSuccess("list working-tree changes", result))
+    ))
+    : parseNulSeparated(yield* runGit(cwd, ["ls-files", "--cached", "-z"]).pipe(
+      Effect.flatMap((result) => requireSuccess("list tracked files", result))
+    ))
   const trackedChanges = head.exitCode === 0
     ? yield* runGit(cwd, ["diff", "--numstat", "--no-ext-diff", "--no-renames", "HEAD", "--"]).pipe(
       Effect.flatMap((result) => requireSuccess("read working-tree diff", result)),
       Effect.map(parseNumstat)
     )
-    : { additions: yield* countFilesAsAdditions(
-      cwd,
-      parseNulSeparated(yield* runGit(cwd, ["ls-files", "--cached", "-z"]).pipe(
-        Effect.flatMap((result) => requireSuccess("list tracked files", result))
-      ))
-    ), deletions: 0 }
+    : { additions: yield* countFilesAsAdditions(cwd, trackedPaths), deletions: 0 }
 
   const untracked = yield* runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]).pipe(
     Effect.flatMap((result) => requireSuccess("list untracked files", result))
   )
-  const untrackedAdditions = yield* countFilesAsAdditions(cwd, parseNulSeparated(untracked))
+  const untrackedPaths = parseNulSeparated(untracked)
+  const untrackedAdditions = yield* countFilesAsAdditions(cwd, untrackedPaths)
 
   return GitStatus.make({
     branch,
     additions: trackedChanges.additions + untrackedAdditions,
-    deletions: trackedChanges.deletions
+    deletions: trackedChanges.deletions,
+    changedFiles: trackedPaths.length + untrackedPaths.length
   })
 })
 
@@ -259,15 +272,26 @@ const inspectGitDiff = Effect.fn("GitContext.diff")(function*(cwd: string) {
     : parseNulSeparated(yield* runGit(cwd, ["ls-files", "--cached", "-z"]).pipe(
       Effect.flatMap((result) => requireSuccess("list tracked files", result))
     )).map((path) => ({ path, status: "added" as const }))
-  const untracked = parseNulSeparated(yield* runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]).pipe(
+  const untracked = parseUntrackedPaths(yield* runGit(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]).pipe(
     Effect.flatMap((result) => requireSuccess("list untracked files", result))
-  )).map((path) => ({ path, status: "added" as const }))
+  ))
   const changes = new Map<string, GitDiffStatus>()
   for (const change of [...tracked, ...untracked]) changes.set(change.path, change.status)
 
-  const files = yield* Effect.forEach([...changes.entries()], ([path, status]) => Effect.gen(function*() {
-    const oldFile = status === "added" ? { contents: null, binary: false } satisfies ReadGitFile : yield* readHeadFile(cwd, path)
-    const newFile = status === "deleted" ? { contents: null, binary: false } satisfies ReadGitFile : yield* readWorkingTreeFile(cwd, path)
+  const entries = [...changes.entries()]
+  const visibleEntries = entries.slice(0, MAX_GIT_DIFF_FILES)
+  let consumedBytes = 0
+  let byteBudgetExhausted = false
+  const loadedFiles = yield* Effect.forEach(visibleEntries, ([path, status]) => Effect.gen(function*() {
+    if (byteBudgetExhausted) return undefined
+    const oldFile = status === "added" || status === "untracked" ? { contents: null, binary: false, bytes: 0 } satisfies ReadGitFile : yield* readHeadFile(cwd, path)
+    const newFile = status === "deleted" ? { contents: null, binary: false, bytes: 0 } satisfies ReadGitFile : yield* readWorkingTreeFile(cwd, path)
+    const fileBytes = oldFile.bytes + newFile.bytes
+    if (consumedBytes + fileBytes > MAX_GIT_DIFF_BYTES) {
+      byteBudgetExhausted = true
+      return undefined
+    }
+    consumedBytes += fileBytes
     return {
       path,
       status,
@@ -275,9 +299,11 @@ const inspectGitDiff = Effect.fn("GitContext.diff")(function*(cwd: string) {
       newContents: newFile.contents,
       binary: oldFile.binary || newFile.binary
     } satisfies GitDiffFile
-  }), { concurrency: 8 })
+  }), { concurrency: 1 })
+  const files = loadedFiles.filter((file): file is GitDiffFile => file !== undefined)
+  const omittedFiles = entries.length - files.length
 
-  return { files } satisfies GitDiff
+  return { files, truncated: omittedFiles > 0, omittedFiles } satisfies GitDiff
 })
 
 export class GitContext extends Context.Service<GitContext, {
