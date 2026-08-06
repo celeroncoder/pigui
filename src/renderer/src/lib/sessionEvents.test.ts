@@ -94,7 +94,7 @@ describe("live session event reconciliation", () => {
     current = apply(current, { type: "assistant-start", sessionPath, messageId: "assistant-live-tools", timestamp: 1 })
 
     expect(current.messages).toHaveLength(1)
-    expect(current.messages[0]).toMatchObject({ id: "assistant-live-tools", role: "assistant" })
+    expect(current.messages[0]).toMatchObject({ id: "assistant-live-tools", role: "assistant", timestamp: 1 })
     expect(current.messages[0]?.blocks).toEqual([
       { type: "tool-call", id: "call-early", name: "read", input: "{\"path\":\"README.md\"}" },
       { type: "tool-result", id: "call-early", name: "read", output: "", isError: false, status: "running" }

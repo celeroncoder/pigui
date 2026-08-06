@@ -21,6 +21,13 @@ const updateAssistantMessage = (
   }
 }
 
+const startAssistantMessage = (detail: SessionDetail, messageId: string, timestamp: number): SessionDetail => {
+  const withMessage = ensureAssistantMessage(detail, messageId, timestamp)
+  return updateAssistantMessage(withMessage, messageId, (message) =>
+    message.timestamp === timestamp ? message : { ...message, timestamp }
+  )
+}
+
 const appendTextDelta = (detail: SessionDetail, messageId: string, delta: string): SessionDetail => {
   const withMessage = ensureAssistantMessage(detail, messageId, Date.now())
   return updateAssistantMessage(withMessage, messageId, (message) => {
@@ -113,7 +120,7 @@ export const reduceSessionEvent = (
       ? current
       : { ...current, messages: [...current.messages, event.message] }
   }
-  if (event.type === "assistant-start") return ensureAssistantMessage(current, event.messageId, event.timestamp)
+  if (event.type === "assistant-start") return startAssistantMessage(current, event.messageId, event.timestamp)
   if (event.type === "text-delta") return appendTextDelta(current, event.messageId, event.delta)
   if (event.type === "tool-start") return addToolCall(current, event)
   if (event.type === "tool-update") return upsertToolResult(current, event.toolId, event.output, "running", false)
