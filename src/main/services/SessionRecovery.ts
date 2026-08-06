@@ -33,15 +33,25 @@ export const interruptedTransportReason = (
   if (willRetry || abortRequested) return undefined
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
+    if (message?.role === "user") {
+      return "Pi's response transport stopped before the turn completed."
+    }
     if (message?.role !== "assistant") continue
-    if (message.stopReason !== "error" && message.stopReason !== "aborted") return undefined
+    // Pi uses `aborted` for an intentional AbortSignal cancellation. That state
+    // persists in JSONL, where the in-memory abortRequested flag is unavailable,
+    // so treating it as a dead transport would resurrect recovery UI after a
+    // normal user abort or app restart.
+    if (message.stopReason !== "error") return undefined
     if (typeof message.errorMessage === "string" && message.errorMessage.trim()) return message.errorMessage.trim()
-    return message.stopReason === "aborted"
-      ? "Pi's response transport stopped before the turn completed."
-      : "Pi's response transport ended with an error."
+    return "Pi's response transport ended with an error."
   }
   return undefined
 }
+
+export const recoveryAfterReopen = (
+  action: SessionRecoveryAction,
+  recovery: SessionRecovery
+): SessionRecovery | undefined => action === "resume" ? undefined : recovery
 
 export const recoveryPrompt = (action: SessionRecoveryAction, recovery: SessionRecovery): string | undefined => {
   if (action === "resume") return undefined

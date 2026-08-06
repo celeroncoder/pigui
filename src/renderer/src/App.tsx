@@ -710,13 +710,17 @@ export default function App() {
       if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
       setSession(detail)
       setInteractionRequest(detail.interactionRequest ?? null)
-    }).catch((cause: unknown) => {
+    }).catch(async (cause: unknown) => {
       if (activeSessionPathRef.current !== sessionPath || activeWorktreeKeyRef.current !== contextKey) return
       setError(cause instanceof Error ? cause.message : "Pi could not recover this session")
       if (action !== "resume") {
-        void desktopApi.sessions.open(context, sessionPath).then((detail) => {
+        try {
+          const detail = await desktopApi.sessions.open(context, sessionPath)
           if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setSession(detail)
-        }).catch(() => undefined)
+        } catch {
+          // Keep the original recovery failure visible; a later explicit reopen
+          // can retry loading the preserved Pi state.
+        }
       }
     }).finally(() => {
       if (activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setRecoverySubmitting(false)

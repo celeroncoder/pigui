@@ -14,12 +14,13 @@ export function TransportRecoveryPanel({
   readonly onRecover: (action: SessionRecoveryAction) => void
 }) {
   return (
-    <section className={styles.root} role="status" aria-live="polite" aria-label="Pi connection interrupted">
+    <section className={styles.root} aria-labelledby="transport-recovery-title" aria-busy={busy}>
       <AlertTriangle className={styles.icon} size={17} aria-hidden="true" />
-      <div className={styles.copy}>
-        <strong>Pi connection interrupted</strong>
+      <div className={styles.copy} role="status" aria-live="polite">
+        <strong id="transport-recovery-title">Pi response interrupted</strong>
         <span>{recovery.reason}</span>
         {queuedCount > 0 && <small>{queuedCount} queued {queuedCount === 1 ? "message is" : "messages are"} preserved in order.</small>}
+        {busy && <small>Recovering Pi session…</small>}
       </div>
       <div className={styles.actions} aria-label="Session recovery options">
         <button type="button" disabled={busy} title="Reconnect to the preserved session without sending a message" onClick={() => onRecover("resume")}>
