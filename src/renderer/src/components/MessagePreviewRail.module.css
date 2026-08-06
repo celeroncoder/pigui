@@ -1,0 +1,4 @@
+@layer components {
+  .card { position: fixed; z-index: 30; width: 226px; min-height: 64px; display: grid; align-content: center; padding: 10px 11px; border: 1px solid #3b3d3f; border-radius: 9px; background: linear-gradient(180deg, #1a1b1c, #121314); box-shadow: 0 14px 36px rgba(0,0,0,.5), inset 0 1px rgba(255,255,255,.035); transform: translateY(-50%); animation: global(preview-card-in) .14s ease-out both; pointer-events: none; user-select: none; }
+  .label { display: -webkit-box; min-width: 0; overflow: hidden; color: #dedad6; font-size: 12px; line-height: 1.35; font-weight: 620; white-space: normal; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+}

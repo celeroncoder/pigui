@@ -14,6 +14,8 @@ import { MessageView } from "./components/MessageView"
 import { ProjectSidebar } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
+import styles from "./App.module.css"
+import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
 import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
 import { compactLabel } from "./lib/text"
@@ -541,7 +543,7 @@ export default function App() {
                 {git && gitChangesVisible && (
                   <button
                     type="button"
-                    className={`header-control git-totals ${gitPaneOpen ? "active" : ""}`}
+                    className={`${styles.headerControl} ${styles.gitTotals} ${gitPaneOpen ? styles.active : ""}`}
                     aria-expanded={gitPaneOpen}
                     title={gitChangeLabel}
                     aria-label={gitChangeLabel}
@@ -568,7 +570,7 @@ export default function App() {
               {backgroundProcesses.length > 0 && (
                 <button
                   type="button"
-                  className={`header-control background-toggle ${backgroundPaneOpen ? "active" : ""}`}
+                  className={`${styles.headerControl} background-toggle ${backgroundPaneOpen ? styles.active : ""}`}
                   aria-expanded={backgroundPaneOpen}
                   aria-label={`${backgroundProcesses.length} background processes, ${runningProcesses} running`}
                   title={runningProcesses > 0 ? `${runningProcesses} running background ${runningProcesses === 1 ? "process" : "processes"}` : `${backgroundProcesses.length} background processes in this session`}
@@ -586,7 +588,7 @@ export default function App() {
               {linkedSubagents.length > 0 && activeProject && (
                 <button
                   type="button"
-                  className={`header-control subagent-toggle ${subagentPaneOpen ? "active" : ""}`}
+                  className={`${styles.headerControl} subagent-toggle ${subagentPaneOpen ? styles.active : ""}`}
                   aria-expanded={subagentPaneOpen}
                   onClick={() => {
                     if (subagentPaneOpen) {
@@ -746,7 +748,7 @@ export default function App() {
           <BackgroundProcessesPane processes={backgroundProcesses} onClose={() => setBackgroundPaneOpen(false)} />
         )}
         {gitPaneOpen && activeProject && (
-          <Suspense fallback={<aside className="git-pane" aria-label="Git changes"><div className="git-diff-loading"><RefreshCw size={16} /> Preparing diff…</div></aside>}>
+          <Suspense fallback={<aside className={gitDiffStyles.root} aria-label="Git changes"><div className={gitDiffStyles.loading}><RefreshCw size={16} /> Preparing diff…</div></aside>}>
             <GitDiffPane
               diff={gitDiff}
               loading={gitDiffLoading}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react"
 import { createPortal } from "react-dom"
 import type { MessagePreviewLandmark } from "../lib/conversation"
+import styles from "./MessagePreviewRail.module.css"
 export type { MessagePreviewLandmark } from "../lib/conversation"
 
 type MessagePreviewRailProps = {
@@ -136,11 +137,11 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
       </div>
       {preview && createPortal(
         <div
-          className="preview-rail-card"
+          className={styles.card}
           style={{ top: preview.top, left: preview.left }}
           aria-hidden="true"
         >
-          <span className="preview-rail-label">{preview.landmark.label}</span>
+          <span className={styles.label}>{preview.landmark.label}</span>
         </div>,
         document.body
       )}

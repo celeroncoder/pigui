@@ -4,6 +4,7 @@ import { ChevronDown, FileCode2, Folder, FolderOpen, GitBranch, RefreshCw, Searc
 import { useEffect, useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import type { GitDiff, GitDiffFile } from "../../../shared/contracts"
+import styles from "./GitDiffPane.module.css"
 
 const statusLabel: Record<GitDiffFile["status"], string> = {
   added: "Added",
@@ -90,12 +91,12 @@ export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
   }, [tree])
 
   const renderDiff = (file: GitDiffFile) => {
-    if (file.binary) return <div className="git-diff-empty"><FileCode2 size={22} /><span>Binary or unreadable file</span><code>{file.path}</code></div>
+    if (file.binary) return <div className={styles.empty}><FileCode2 size={22} /><span>Binary or unreadable file</span><code>{file.path}</code></div>
     const oldFile: FileContents | null = file.oldContents === null ? null : { name: file.path, contents: file.oldContents }
     const newFile: FileContents | null = file.newContents === null ? null : { name: file.path, contents: file.newContents }
-    if (!oldFile && !newFile) return <div className="git-diff-empty"><span>File changed before it could be read.</span><code>{file.path}</code></div>
+    if (!oldFile && !newFile) return <div className={styles.empty}><span>File changed before it could be read.</span><code>{file.path}</code></div>
     return (
-      <div className="git-diff-render">
+      <div className={styles.render}>
         {oldFile === null
           ? <MultiFileDiff oldFile={null} newFile={newFile!} options={diffOptions} />
           : newFile === null
@@ -112,7 +113,7 @@ export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
         <div key={node.path}>
           <button
             type="button"
-            className="git-tree-folder"
+            className={styles.treeFolder}
             style={{ paddingLeft: `${8 + depth * 14}px` }}
             aria-expanded={expanded}
             onClick={() => setExpandedFolders((current) => {
@@ -122,7 +123,7 @@ export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
               return next
             })}
           >
-            <ChevronDown className={expanded ? "open" : ""} size={14} aria-hidden="true" />
+            <ChevronDown className={expanded ? styles.open : undefined} size={14} aria-hidden="true" />
             {expanded ? <FolderOpen size={14} aria-hidden="true" /> : <Folder size={14} aria-hidden="true" />}
             <span title={node.path}>{node.name}</span>
           </button>
@@ -133,29 +134,29 @@ export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
     return (
       <button
         type="button"
-        className={`git-tree-file ${selectedFile?.path === node.path ? "active" : ""}`}
+        className={`${styles.treeFile} ${selectedFile?.path === node.path ? styles.active : ""}`}
         style={{ paddingLeft: `${9 + depth * 14}px` }}
         key={node.path}
         title={`${node.path} · ${statusLabel[node.file.status]}`}
         onClick={() => setSelectedPath(node.path)}
       >
-        <span className="git-tree-file-icon"><FileCode2 size={12} aria-hidden="true" /></span>
+        <span className={styles.treeFileIcon}><FileCode2 size={12} aria-hidden="true" /></span>
         <span title={node.path}>{node.name}</span>
-        <small className={node.file.status}>{statusMark[node.file.status]}</small>
+        <small className={styles[node.file.status]}>{statusMark[node.file.status]}</small>
       </button>
     )
   })
 
   return (
-    <aside className="git-pane" aria-label="Git changes">
-      <header className="git-pane-header">
+    <aside className={styles.root} aria-label="Git changes">
+      <header className={styles.header}>
         <div><GitBranch size={15} /><span>Git changes</span><small>{diff?.files.length ?? "…"}</small></div>
-        <div className="git-pane-actions">
+        <div className={styles.actions}>
           <button type="button" aria-label="Refresh Git changes" onClick={onRefresh} disabled={loading}><RefreshCw size={14} /></button>
           <button type="button" aria-label="Close Git changes" onClick={onClose}><X size={15} /></button>
         </div>
       </header>
-      <div className="git-pane-summary">
+      <div className={styles.summary}>
         {loading
           ? "Reading working tree…"
           : diff?.truncated
@@ -163,37 +164,37 @@ export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
             : diff?.files.length
               ? `${diff.files.length} changed ${diff.files.length === 1 ? "file" : "files"}`
               : "Working tree clean"}
-        {!loading && diff?.truncated && <small className="git-pane-truncated" role="status">Some files were omitted to keep the diff responsive.</small>}
+        {!loading && diff?.truncated && <small className={styles.truncated} role="status">Some files were omitted to keep the diff responsive.</small>}
       </div>
-      {loading && <div className="git-diff-loading"><RefreshCw size={16} /> Loading diff…</div>}
+      {loading && <div className={styles.loading}><RefreshCw size={16} /> Loading diff…</div>}
       {!loading && diff && diff.files.length > 0 && (
-        <div className="git-pane-content">
-          <section className="git-diff-main" aria-label={selectedFile ? `Diff for ${selectedFile.path}` : "File diff"}>
-            <header className="git-diff-file-header">
+        <div className={styles.content}>
+          <section className={styles.diffMain} aria-label={selectedFile ? `Diff for ${selectedFile.path}` : "File diff"}>
+            <header className={styles.fileHeader}>
               {selectedFile ? (
                 <>
                   <div><FileCode2 size={14} aria-hidden="true" /><strong title={selectedFile.path}>{selectedFile.path}</strong></div>
-                  <small className={selectedFile.status}>{statusLabel[selectedFile.status]}</small>
+                  <small className={styles[selectedFile.status]}>{statusLabel[selectedFile.status]}</small>
                 </>
               ) : <span>Select a file to review its changes.</span>}
             </header>
-            <div className="git-diff-scroll">
-              {selectedFile ? renderDiff(selectedFile) : <div className="git-diff-empty">Select a file to review its changes.</div>}
+            <div className={styles.diffScroll}>
+              {selectedFile ? renderDiff(selectedFile) : <div className={styles.empty}>Select a file to review its changes.</div>}
             </div>
           </section>
-          <aside className="git-file-tree" aria-label="Changed files">
-            <label className="git-file-filter">
+          <aside className={styles.fileTree} aria-label="Changed files">
+            <label className={styles.fileFilter}>
               <Search size={13} aria-hidden="true" />
               <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter files…" aria-label="Filter changed files" />
             </label>
-            <div className="git-tree-scroll">
-              {tree.length ? renderTree(tree) : <div className="git-tree-empty">No matching files.</div>}
+            <div className={styles.treeScroll}>
+              {tree.length ? renderTree(tree) : <div className={styles.treeEmpty}>No matching files.</div>}
             </div>
           </aside>
         </div>
       )}
-      {!loading && diff?.truncated && diff.files.length === 0 && <div className="git-diff-empty"><GitBranch size={22} /><span>Diff preview was truncated before any files could be loaded.</span></div>}
-      {!loading && (!diff || (diff.files.length === 0 && !diff.truncated)) && <div className="git-diff-empty"><GitBranch size={22} /><span>No changed files in this working tree.</span></div>}
+      {!loading && diff?.truncated && diff.files.length === 0 && <div className={styles.empty}><GitBranch size={22} /><span>Diff preview was truncated before any files could be loaded.</span></div>}
+      {!loading && (!diff || (diff.files.length === 0 && !diff.truncated)) && <div className={styles.empty}><GitBranch size={22} /><span>No changed files in this working tree.</span></div>}
     </aside>
   )
 }

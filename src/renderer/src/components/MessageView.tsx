@@ -7,6 +7,7 @@ import { splitTextByImageReferences } from "../../../shared/attachments"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
 import { ToolGlyph } from "./ToolGlyph"
+import styles from "./MessageView.module.css"
 
 const ToolOutputView = lazy(() => import("./ToolOutputView"))
 
@@ -49,7 +50,7 @@ function ToolBlock({ block, result }: { readonly block: ToolCallBlock; readonly 
         <span className="tool-name">{block.name}</span>
         <code className="tool-description">{compactInput}</code>
         {isRunning
-          ? <CircleDashed className="tool-state running" size={14} />
+          ? <CircleDashed className={`tool-state ${styles.running}`} size={14} />
           : hasError
             ? <CircleAlert className="tool-state error" size={14} />
             : <Check className="tool-state" size={14} />}

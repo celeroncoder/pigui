@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react"
 import { BAYER4 } from "./dither-kit/pixel"
 import { rgb, type Rgb } from "./dither-kit/palette"
 import type { ContextUsageTone } from "./contextUsage"
+import styles from "./DitherProgressBar.module.css"
 
 interface DitherProgressBarProps {
   readonly value: number
@@ -56,7 +57,7 @@ export function DitherProgressBar({ value, tone }: DitherProgressBarProps) {
   }, [tone, value])
 
   return (
-    <span className="context-usage-dither-progress" aria-hidden="true">
+    <span className={styles.root} aria-hidden="true">
       <canvas ref={canvasRef} />
     </span>
   )

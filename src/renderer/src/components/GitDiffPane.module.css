@@ -1,0 +1,52 @@
+@layer layout {
+  .root { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px 42px minmax(0, 1fr); border-left: 1px solid var(--line); background: #0e0f10; overflow: hidden; }
+}
+
+@layer components {
+  .header { display: flex; align-items: center; justify-content: space-between; padding: 0 11px 0 14px; border-bottom: 1px solid var(--line-soft); }
+  .header > div:first-child { min-width: 0; display: flex; align-items: center; gap: 7px; color: #c3bfba; font: 9.5px var(--display); letter-spacing: .015em; }
+  .header > div:first-child > svg { color: #b98559; }
+  .header small { min-width: 19px; height: 19px; display: grid; place-items: center; border-radius: 10px; background: #202122; color: #aaa6a1; font: 8.5px var(--mono); }
+  .actions { display: flex; align-items: center; gap: 3px; }
+  .actions button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; background: transparent; color: #9a9691; }
+  .actions button:hover:not(:disabled) { background: #1a1b1c; color: #e0dcd8; }
+  .actions button:disabled { opacity: .45; }
+  .summary { display: flex; align-items: center; gap: 9px; padding: 0 14px; border-bottom: 1px solid var(--line-soft); color: #aaa6a1; font-size: 11px; }
+  .truncated { color: #8e8a86; font-size: 9px; }
+  .content { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 34%); overflow: hidden; }
+  .diffMain { min-width: 0; min-height: 0; display: grid; grid-template-rows: 42px minmax(0, 1fr); overflow: hidden; border-right: 1px solid var(--line-soft); }
+  .fileHeader { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); background: #111213; color: var(--text-3); font-size: 10.5px; }
+  .fileHeader > div { min-width: 0; display: flex; align-items: center; gap: 7px; }
+  .fileHeader > div > svg { flex: 0 0 auto; color: #a77e5b; }
+  .fileHeader strong { min-width: 0; overflow: hidden; color: var(--text-2); font: 9.5px var(--mono); font-weight: 500; white-space: nowrap; text-overflow: ellipsis; }
+  .fileHeader > small { flex: 0 0 auto; font: 8px var(--mono); text-transform: uppercase; }
+  .fileHeader > small.added, .treeFile small.added, .fileHeader > small.untracked, .treeFile small.untracked { color: var(--success); }
+  .fileHeader > small.modified, .treeFile small.modified { color: var(--accent); }
+  .fileHeader > small.deleted, .treeFile small.deleted { color: var(--danger); }
+  .diffScroll { min-height: 0; overflow: auto; padding: 8px; }
+  .render { min-width: 0; overflow: hidden; border: 1px solid #343638; border-radius: 8px; background: #111213; }
+  .render > * { display: block; min-width: 0; }
+  .render diffs-container { --diffs-font-size: 14px; --diffs-line-height: 22px; }
+  .fileTree { min-width: 0; min-height: 0; display: grid; grid-template-rows: 46px minmax(0, 1fr); overflow: hidden; background: #111213; }
+  .fileFilter { min-width: 0; height: 36px; display: flex; align-items: center; gap: 8px; margin: 5px 8px 5px; padding: 0 10px; border: 1px solid #343638; border-radius: 9px; background: #191a1b; color: #8e8a86; }
+  .fileFilter:focus-within { border-color: #6b513d; box-shadow: 0 0 0 2px rgba(233,168,104,.08); color: #bda083; }
+  .fileFilter input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text-2); font-size: 10.5px; user-select: text; }
+  .fileFilter input::placeholder { color: #77736f; }
+  .treeScroll { min-height: 0; overflow: auto; padding: 5px 5px 14px; }
+  .treeFolder, .treeFile { width: 100%; min-width: 0; height: 35px; display: flex; align-items: center; gap: 8px; border-radius: 7px; background: transparent; color: var(--text-3); text-align: left; font-size: 10.5px; }
+  .treeFolder:hover, .treeFile:hover { background: #191a1b; color: var(--text-2); }
+  .treeFolder { padding-right: 8px; }
+  .treeFolder > svg:first-child { flex: 0 0 auto; color: #88837d; transition: transform .14s ease; }
+  .treeFolder > svg:first-child.open { transform: rotate(0deg); }
+  .treeFolder > svg:first-child:not(.open) { transform: rotate(-90deg); }
+  .treeFolder > svg:nth-child(2) { flex: 0 0 auto; color: #a77e5b; }
+  .treeFolder > span, .treeFile > span:nth-child(2) { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .treeFile { padding-right: 8px; }
+  .treeFile.active { background: linear-gradient(180deg, #292a2b, #202122); color: var(--text); box-shadow: inset 0 0 0 1px rgba(255,255,255,.075), inset 0 1px rgba(255,255,255,.035); }
+  .treeFileIcon { width: 20px; height: 20px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 5px; background: #1b2933; color: #70a2c7; }
+  .treeFile small { margin-left: auto; flex: 0 0 auto; font: 8.5px var(--mono); font-weight: 700; }
+  .treeEmpty { min-height: 120px; display: grid; place-items: center; padding: 16px; color: #77736f; text-align: center; font-size: 10.5px; }
+  .loading, .empty { min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px; color: #8e8a86; text-align: center; font-size: 11px; }
+  .loading svg { animation: global(spin) 1s linear infinite; }
+  .empty code { max-width: 100%; overflow: hidden; color: #77736f; white-space: nowrap; text-overflow: ellipsis; font: 8px var(--mono); }
+}
