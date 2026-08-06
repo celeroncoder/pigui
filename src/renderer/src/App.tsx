@@ -8,20 +8,16 @@ import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
 import { Composer } from "./components/Composer"
 // import { Inspector } from "./components/Inspector"
-import { MessagePreviewRail, type MessagePreviewLandmark } from "./components/MessagePreviewRail"
+import { MessagePreviewRail } from "./components/MessagePreviewRail"
 import { MessageView } from "./components/MessageView"
 import { ProjectSidebar } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
 import { desktopApi } from "./lib/api"
-import { buildConversationItems, latestTransientStatus } from "./lib/conversation"
+import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
+import { compactLabel } from "./lib/text"
 
 const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
-
-const compactLabel = (value: string, maxLength: number) => {
-  const normalized = value.replace(/\s+/g, " ").trim()
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized
-}
 
 const appendTextDelta = (detail: SessionDetail, messageId: string, delta: string): SessionDetail => {
   const found = detail.messages.some((message) => message.id === messageId)
@@ -590,49 +586,8 @@ export default function App() {
     ? [...session.messages, { id: "compaction-active", role: "system", blocks: [{ type: "compaction", status: "compacting" }], timestamp: Date.now() }]
     : session?.messages ?? []
   const conversationItems = buildConversationItems(displayMessages)
-  const allPreviewLandmarks: ReadonlyArray<MessagePreviewLandmark> = conversationItems.map((item) => {
-    const targetId = `conversation-landmark-${item.id}`
-    if (item.type === "activity") {
-      const toolNames = [...new Set(item.messages.flatMap((message) => message.blocks.flatMap((block) => block.type === "tool-call" ? [block.name] : [])))]
-      const toolCount = item.messages.reduce((total, message) => total + message.blocks.filter((block) => block.type === "tool-call").length, 0)
-      const thinkingCount = item.messages.reduce((total, message) => total + message.blocks.filter((block) => block.type === "thinking").length, 0)
-      const activityLabel = toolCount > 0
-        ? `${toolCount} tool ${toolCount === 1 ? "call" : "calls"}`
-        : `${thinkingCount} thinking ${thinkingCount === 1 ? "step" : "steps"}`
-      return {
-        id: `preview-${item.id}`,
-        targetId,
-        kind: "activity",
-        label: activityLabel,
-        detail: toolNames.slice(0, 2).join(" · ") || "Agent trace"
-      }
-    }
-
-    const compaction = item.message.blocks.find((block) => block.type === "compaction")
-    if (compaction?.type === "compaction") {
-      return {
-        id: `preview-${item.id}`,
-        targetId,
-        kind: "compaction",
-        label: compaction.status === "compacting" ? "Compacting context…" : "Context compacted",
-        detail: "Full history remains visible"
-      }
-    }
-
-    const text = item.message.blocks
-      .flatMap((block) => block.type === "text" ? [block.text] : [])
-      .join(" ")
-      .replace(/[#*_`~>\[\]]/g, "")
-      .replace(/\s+/g, " ")
-      .trim()
-    return {
-      id: `preview-${item.id}`,
-      targetId,
-      kind: item.message.role === "user" ? "user" : "assistant",
-      label: compactLabel(text || (item.message.role === "user" ? "New prompt" : "Pi response"), 43),
-      detail: item.message.role === "user" ? "Your message" : "Assistant response"
-    }
-  })
+  const conversationLandmarks = buildConversationPreviewLandmarks(conversationItems)
+  const allPreviewLandmarks = filterUserMessagePreviewLandmarks(conversationLandmarks)
   const previewStride = Math.max(1, Math.ceil(allPreviewLandmarks.length / 28))
   const previewLandmarks = allPreviewLandmarks.filter((_landmark, index) => index === 0 || index === allPreviewLandmarks.length - 1 || index % previewStride === 0)
   const lastActivityIndex = conversationItems.findLastIndex((item) => item.type === "activity")
@@ -758,7 +713,7 @@ export default function App() {
             {displayMessages.length ? (
               <div className="message-list">
                 {conversationItems.map((item, index) => {
-                  const landmark = allPreviewLandmarks[index]
+                  const landmark = conversationLandmarks[index]
                   return item.type === "message"
                     ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={setLightboxImage} key={item.id} />
                     : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} onOpenImage={setLightboxImage} key={item.id} />
