@@ -1,16 +1,14 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
-import { ActivityGroup } from "./components/ActivityGroup"
 import { AskUserPanel } from "./components/AskUserPanel"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
 import { Composer } from "./components/Composer"
+import { ConversationTimeline } from "./components/ConversationTimeline"
 // import { Inspector } from "./components/Inspector"
-import { MessagePreviewRail } from "./components/MessagePreviewRail"
-import { MessageView } from "./components/MessageView"
 import { ProjectSidebar } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
@@ -48,8 +46,6 @@ export default function App() {
   const attachmentRevisionRef = useRef(0)
   const composerEpochRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const messageScrollRef = useRef<HTMLDivElement>(null)
   const activeSessionPathRef = useRef<string | null>(null)
   const activeProjectRef = useRef<Project | null>(null)
   const activeProjectIdRef = useRef<string | null>(null)
@@ -305,10 +301,6 @@ export default function App() {
   }), [gitPaneOpen, loadGitDiff])
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: session?.isStreaming ? "instant" : "smooth", block: "end" })
-  }, [session?.messages, session?.isStreaming])
-
-  useEffect(() => {
     if (!lightboxImage) return
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setLightboxImage(null)
@@ -497,7 +489,6 @@ export default function App() {
   const allPreviewLandmarks = filterUserMessagePreviewLandmarks(conversationLandmarks)
   const previewStride = Math.max(1, Math.ceil(allPreviewLandmarks.length / 28))
   const previewLandmarks = allPreviewLandmarks.filter((_landmark, index) => index === 0 || index === allPreviewLandmarks.length - 1 || index % previewStride === 0)
-  const lastActivityIndex = conversationItems.findLastIndex((item) => item.type === "activity")
   const linkedSubagents = sessions.filter((candidate) => candidate.parentSessionPath === session?.summary.path)
   const sidebarSessions = sessions.filter((candidate) => !candidate.parentSessionPath)
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
@@ -618,28 +609,21 @@ export default function App() {
             />
           )}
 
-          <div className="message-scroll-shell">
-            {conversationItems.length > 0 && (
-              <MessagePreviewRail landmarks={previewLandmarks} totalCount={allPreviewLandmarks.length} scrollRootRef={messageScrollRef} />
-            )}
-            <div className="message-scroll" ref={messageScrollRef}>
-            {displayMessages.length ? (
-              <div className="message-list">
-                {conversationItems.map((item, index) => {
-                  const landmark = conversationLandmarks[index]
-                  return item.type === "message"
-                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={setLightboxImage} key={item.id} />
-                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={(session?.isStreaming ?? false) && index === lastActivityIndex} onOpenImage={setLightboxImage} key={item.id} />
-                })}
-                {session?.isStreaming && (
-                  <div className="live-status" role="status" aria-live="polite">
-                    <CircleDashed size={14} />
-                    <span>{liveStatus ?? "Thinking"}</span>
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            ) : activeProject ? (
+          {displayMessages.length ? (
+            <ConversationTimeline
+              key={`timeline-${session?.summary.path}`}
+              items={conversationItems}
+              landmarks={conversationLandmarks}
+              previewLandmarks={previewLandmarks}
+              previewTotalCount={allPreviewLandmarks.length}
+              isStreaming={session?.isStreaming ?? false}
+              liveStatus={liveStatus}
+              onOpenImage={setLightboxImage}
+            />
+          ) : (
+            <div className="message-scroll-shell">
+              <div className="message-scroll">
+              {activeProject ? (
               <div className="conversation-empty">
                 <div className="empty-mark"><BrandMark size={42} /></div>
                 <span className="empty-kicker"><Sparkles size={13} /> Project context is ready</span>
@@ -651,7 +635,7 @@ export default function App() {
                   <button type="button" onClick={() => { draftRevisionRef.current += 1; setDraft("Run the tests and explain any failures") }}>Run the test suite</button>
                 </div>
               </div>
-            ) : (
+              ) : (
               <div className="conversation-empty onboarding-empty">
                 <div className="empty-mark"><BrandMark size={42} /></div>
                 <span className="empty-kicker"><Sparkles size={13} /> Pi Desktop is ready</span>
@@ -659,9 +643,10 @@ export default function App() {
                 <p>Add a project folder to discover its existing Pi sessions and start new ones with the same config, skills, and credentials.</p>
                 <button className="onboarding-action" type="button" onClick={() => void addProject()}><FolderPlus size={15} /> Add a project folder</button>
               </div>
-            )}
+              )}
+              </div>
             </div>
-          </div>
+          )}
 
           {error && <div className="error-toast" role="alert">{error}<button type="button" onClick={() => setError(null)}>Dismiss</button></div>}
           <Composer

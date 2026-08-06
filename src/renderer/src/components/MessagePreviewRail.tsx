@@ -8,6 +8,8 @@ type MessagePreviewRailProps = {
   readonly landmarks: ReadonlyArray<MessagePreviewLandmark>
   readonly totalCount?: number
   readonly scrollRootRef: RefObject<HTMLDivElement | null>
+  readonly onNavigate?: (landmark: MessagePreviewLandmark) => void
+  readonly activeLandmarkId?: string | null
 }
 
 const kindLabel: Record<MessagePreviewLandmark["kind"], string> = {
@@ -17,7 +19,7 @@ const kindLabel: Record<MessagePreviewLandmark["kind"], string> = {
   compaction: "Context"
 }
 
-export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: MessagePreviewRailProps) {
+export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef, onNavigate, activeLandmarkId }: MessagePreviewRailProps) {
   const [activeId, setActiveId] = useState(landmarks[0]?.id ?? null)
   const [preview, setPreview] = useState<{
     readonly landmark: MessagePreviewLandmark
@@ -35,7 +37,7 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
   useEffect(() => {
     let frame = 0
     const root = scrollRootRef.current
-    if (!root || landmarks.length === 0) return
+    if (!root || landmarks.length === 0 || activeLandmarkId !== undefined) return
 
     const updateActive = () => {
       frame = 0
@@ -60,15 +62,17 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
       window.removeEventListener("resize", onScroll)
       if (frame) window.cancelAnimationFrame(frame)
     }
-  }, [landmarkKey, scrollRootRef])
+  }, [activeLandmarkId, landmarkKey, landmarks, scrollRootRef])
+
+  const resolvedActiveId = activeLandmarkId === undefined ? activeId : activeLandmarkId
 
   useEffect(() => {
     const track = trackRef.current
     const list = listRef.current
-    if (!track || !list || !activeId) return
+    if (!track || !list || !resolvedActiveId) return
 
     const activeItem = Array.from(list.children).find(
-      (item) => (item as HTMLElement).dataset.landmarkId === activeId
+      (item) => (item as HTMLElement).dataset.landmarkId === resolvedActiveId
     ) as HTMLElement | undefined
     if (!activeItem) return
 
@@ -78,7 +82,7 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
     else if (itemBottom > track.scrollTop + track.clientHeight) {
       track.scrollTo({ top: itemBottom - track.clientHeight, behavior: "smooth" })
     }
-  }, [activeId, landmarkKey])
+  }, [landmarkKey, resolvedActiveId])
 
   if (landmarks.length === 0) return null
 
@@ -100,7 +104,7 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
       <div className="preview-rail-track" ref={trackRef} onScroll={() => setPreview(null)}>
         <ol className="preview-rail-list" ref={listRef}>
           {landmarks.map((landmark) => {
-            const isActive = activeId === landmark.id
+            const isActive = resolvedActiveId === landmark.id
             return (
               <li
                 className={`preview-rail-item ${isActive ? "active" : ""}`}
@@ -119,6 +123,11 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef }: Mes
                   onFocus={(event) => showPreview(landmark, event.currentTarget)}
                   onBlur={() => setPreview(null)}
                   onClick={() => {
+                    if (onNavigate) {
+                      setActiveId(landmark.id)
+                      onNavigate(landmark)
+                      return
+                    }
                     const target = document.getElementById(landmark.targetId)
                     if (!target) return
                     setActiveId(landmark.id)
