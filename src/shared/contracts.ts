@@ -8,6 +8,20 @@ export interface GitStatus {
   readonly deletions: number
 }
 
+export type GitDiffStatus = "added" | "modified" | "deleted"
+
+export interface GitDiffFile {
+  readonly path: string
+  readonly status: GitDiffStatus
+  readonly oldContents: string | null
+  readonly newContents: string | null
+  readonly binary: boolean
+}
+
+export interface GitDiff {
+  readonly files: ReadonlyArray<GitDiffFile>
+}
+
 export interface Project {
   readonly id: string
   readonly path: string
@@ -163,6 +177,7 @@ export interface PiDesktopApi {
     readonly add: () => Promise<Project | null>
     readonly remove: (projectId: string) => Promise<void>
     readonly refreshGit: (projectPath: string) => Promise<GitStatus | undefined>
+    readonly diff: (projectPath: string) => Promise<GitDiff | undefined>
   }
   readonly attachments: {
     readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
@@ -191,6 +206,7 @@ export const IpcChannels = {
   addProject: "projects:add",
   removeProject: "projects:remove",
   refreshProjectGit: "projects:refresh-git",
+  gitDiff: "projects:git-diff",
   listSessions: "sessions:list",
   createSession: "sessions:create",
   openSession: "sessions:open",

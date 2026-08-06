@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { AskUserInteractionRequestSchema } from "../../../shared/interaction"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, PiDesktopApi, SessionDetail, SessionEvent } from "../../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, GitDiff, PiDesktopApi, SessionDetail, SessionEvent } from "../../../shared/contracts"
 
 const GitStatusSchema = Schema.Struct({ branch: Schema.String, additions: Schema.Number, deletions: Schema.Number })
 const ProjectSchema = Schema.Struct({
@@ -148,7 +148,11 @@ export const createE2eApi = (): PiDesktopApi => {
       list: async () => (await loadFixture()).projects,
       add: async () => (await loadFixture()).projects[0] ?? null,
       remove: async () => undefined,
-      refreshGit: async (projectPath) => (await loadFixture()).projects.find((project) => project.path === projectPath)?.git
+      refreshGit: async (projectPath) => (await loadFixture()).projects.find((project) => project.path === projectPath)?.git,
+      diff: async (projectPath): Promise<GitDiff | undefined> => {
+        const data = await loadFixture()
+        return data.projects.find((project) => project.path === projectPath)?.git ? { files: [] } : undefined
+      }
     },
     sessions: {
       list: async () => (await loadFixture()).sessions,

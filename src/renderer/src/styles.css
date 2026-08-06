@@ -68,6 +68,7 @@
   .inspector { min-width: 0; overflow-y: auto; border-left: 1px solid var(--line); background: #0e0f10; }
   .subagent-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px auto 32px minmax(0, 1fr); border-left: 1px solid var(--line); background: #0e0f10; overflow: hidden; }
   .background-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px 42px minmax(0, 1fr); border-left: 1px solid var(--line); background: #0e0f10; overflow: hidden; }
+  .git-pane { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px 42px minmax(0, 1fr); border-left: 1px solid var(--line); background: #0e0f10; overflow: hidden; }
   .subagent-pane-header { display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 14px; border-bottom: 1px solid var(--line-soft); }
   .subagent-pane-header > div:first-child { min-width: 0; display: flex; align-items: center; gap: 7px; color: var(--text-2); font: 8.5px var(--display); letter-spacing: .02em; }
   .dither-avatar { position: relative; flex: 0 0 auto; overflow: hidden; border-radius: 6px; background: #191a1b; box-shadow: 0 0 0 1px #3a3c3e; }
@@ -159,12 +160,14 @@
   .eyebrow { display: block; margin-bottom: 2px; color: var(--text-3); font-size: 9px; font-weight: 750; text-transform: uppercase; letter-spacing: .11em; }
   .session-heading { min-width: 0; display: flex; align-items: center; gap: 9px; }
   .conversation-title h1 { min-width: 0; flex: 1; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: 9.5px/1.5 var(--display); letter-spacing: .015em; }
-  .git-totals { flex: 0 0 auto; padding: 2px 5px; border: 1px solid #4e3b2c; border-radius: 5px; background: #171412; color: #dca46d; font: 8px var(--mono); }
+  .header-control { height: 30px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; padding: 0 9px; border: 0; border-radius: 10px; background: linear-gradient(180deg, #202122, #171819); color: #aaa5a0; box-shadow: 0 1px 2px rgba(0,0,0,.32), inset 0 0 0 1px rgba(255,255,255,.09), inset 0 1px rgba(255,255,255,.04); }
+  .header-control:hover, .header-control.active { color: #e7bd94; filter: brightness(1.1); }
+  .git-totals { font: 8px var(--mono); white-space: nowrap; }
   .git-branch { min-width: 0; display: flex; align-items: center; gap: 5px; margin-top: 1px; overflow: hidden; color: #958c84; font: 8px/1.2 var(--mono); }
   .git-branch svg { flex: 0 0 auto; color: #aa7e59; }
   .git-branch > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .conversation-header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
-  .subagent-toggle, .background-toggle { height: 30px; flex: 0 0 auto; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 0; border-radius: 10px; background: linear-gradient(180deg, #202122, #171819); color: #aaa5a0; font-size: 10px; box-shadow: 0 1px 2px rgba(0,0,0,.32), inset 0 0 0 1px rgba(255,255,255,.09), inset 0 1px rgba(255,255,255,.04); }
+  .subagent-toggle, .background-toggle { font-size: 10px; }
   .ask-user-panel { position: sticky; z-index: 4; display: grid; gap: 10px; padding: 14px 24px 13px; border-bottom: 1px solid #4a392e; background: linear-gradient(180deg, rgba(35,27,21,.98), rgba(20,17,15,.98)); box-shadow: 0 10px 24px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.04); user-select: text; }
   .ask-user-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
   .ask-user-eyebrow { display: block; margin-bottom: 4px; color: #bd8b61; font: 7.5px var(--mono); font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
@@ -196,7 +199,6 @@
   .ask-user-submit { background: linear-gradient(180deg, #efb577, #c8884e); color: #1c140e; font-weight: 700; box-shadow: inset 0 0 0 1px rgba(255,241,225,.24), 0 1px 2px rgba(0,0,0,.3); }
   .ask-user-submit:hover:not(:disabled) { filter: brightness(1.08); }
   .ask-user-panel-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #8c8178; font: 8.5px var(--mono); }
-  .subagent-toggle:hover, .subagent-toggle.active, .background-toggle:hover, .background-toggle.active { color: #e7bd94; filter: brightness(1.1); }
   .background-toggle-icon { position: relative; width: 20px; height: 20px; display: grid; place-items: center; }
   .background-toggle-icon small { position: absolute; top: -4px; right: -6px; min-width: 14px; height: 14px; display: grid; place-items: center; padding: 0 3px; border: 2px solid #191a1b; border-radius: 8px; background: #44474a; color: #f0efed; font: 7px var(--mono); }
   .background-toggle-icon small.active { background: #c4854d; color: #17110c; }
@@ -445,6 +447,32 @@
   .background-process-copy { justify-self: end; height: 25px; display: flex; align-items: center; gap: 5px; padding: 0 8px; border-radius: 7px; background: #202224; color: #b9b5b0; box-shadow: inset 0 0 0 1px #3a3c3e; font-size: 8px; }
   .background-process-copy:hover { color: #e5e1dc; background: #292b2d; }
   .background-process-empty { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #8e8a86; text-align: center; font-size: 10px; }
+
+  .git-pane-header { display: flex; align-items: center; justify-content: space-between; padding: 0 11px 0 14px; border-bottom: 1px solid var(--line-soft); }
+  .git-pane-header > div:first-child { min-width: 0; display: flex; align-items: center; gap: 7px; color: #c3bfba; font: 8.5px var(--display); letter-spacing: .015em; }
+  .git-pane-header > div:first-child > svg { color: #b98559; }
+  .git-pane-header small { min-width: 18px; height: 18px; display: grid; place-items: center; border-radius: 9px; background: #202122; color: #aaa6a1; font: 8px var(--mono); }
+  .git-pane-actions { display: flex; align-items: center; gap: 3px; }
+  .git-pane-actions button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; background: transparent; color: #9a9691; }
+  .git-pane-actions button:hover:not(:disabled) { background: #1a1b1c; color: #e0dcd8; }
+  .git-pane-actions button:disabled { opacity: .45; }
+  .git-pane-summary { display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid var(--line-soft); color: #aaa6a1; font-size: 9.5px; }
+  .git-pane-content { min-height: 0; display: grid; grid-template-rows: minmax(0, auto) minmax(0, 1fr); overflow: hidden; }
+  .git-file-list { max-height: 156px; display: flex; flex-direction: column; gap: 3px; overflow-y: auto; padding: 8px; border-bottom: 1px solid var(--line-soft); }
+  .git-file-row { min-width: 0; height: 29px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border-radius: 7px; background: transparent; color: var(--text-3); text-align: left; font-size: 9px; }
+  .git-file-row:hover, .git-file-row.active { background: #191a1b; color: var(--text-2); }
+  .git-file-row > span { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .git-file-row > svg { flex: 0 0 auto; color: #a77e5b; }
+  .git-file-row small { flex: 0 0 auto; font: 7px var(--mono); text-transform: uppercase; }
+  .git-file-row small.added { color: var(--success); }
+  .git-file-row small.modified { color: var(--accent); }
+  .git-file-row small.deleted { color: var(--danger); }
+  .git-diff-scroll { min-height: 0; overflow: auto; padding: 8px; }
+  .git-diff-render { min-width: 0; overflow: hidden; border: 1px solid #343638; border-radius: 8px; background: #111213; }
+  .git-diff-render > * { display: block; min-width: 0; }
+  .git-diff-loading, .git-diff-empty { min-height: 160px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px; color: #8e8a86; text-align: center; font-size: 10px; }
+  .git-diff-loading svg { animation: spin 1s linear infinite; }
+  .git-diff-empty code { max-width: 100%; overflow: hidden; color: #77736f; white-space: nowrap; text-overflow: ellipsis; font: 8px var(--mono); }
 
   .inspector-section { padding: 18px 16px; border-bottom: 1px solid var(--line-soft); }
   .inspector-heading { height: 24px; display: flex; align-items: center; color: var(--text-2); font: 7.5px var(--display); letter-spacing: .035em; }

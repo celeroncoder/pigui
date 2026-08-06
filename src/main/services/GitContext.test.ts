@@ -15,6 +15,11 @@ const inspect = (cwd: string) => Effect.runPromise(Effect.gen(function*() {
   return yield* context.inspect(cwd)
 }).pipe(Effect.provide(GitContextLive)))
 
+const diff = (cwd: string) => Effect.runPromise(Effect.gen(function*() {
+  const context = yield* GitContext
+  return yield* context.diff(cwd)
+}).pipe(Effect.provide(GitContextLive)))
+
 describe("GitContext", () => {
   it("reports a branch and line totals for tracked and untracked changes", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "pi-git-context-"))
@@ -42,6 +47,29 @@ describe("GitContext", () => {
     const cwd = await mkdtemp(join(tmpdir(), "pi-git-context-"))
     try {
       await expect(inspect(cwd)).resolves.toBeUndefined()
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
+  })
+
+  it("returns readable tracked and untracked file diffs", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-git-context-"))
+    try {
+      git(cwd, ["init", "--quiet"])
+      git(cwd, ["config", "user.email", "test@example.com"])
+      git(cwd, ["config", "user.name", "Test User"])
+      await writeFile(join(cwd, "tracked.txt"), "same\nold\n", "utf8")
+      git(cwd, ["add", "tracked.txt"])
+      git(cwd, ["commit", "--quiet", "-m", "Initial commit"])
+
+      await writeFile(join(cwd, "tracked.txt"), "same\nnew\nextra\n", "utf8")
+      await writeFile(join(cwd, "untracked.txt"), "alpha\nbeta\n", "utf8")
+
+      const result = await diff(cwd)
+      expect(result?.files).toEqual([
+        { path: "tracked.txt", status: "modified", oldContents: "same\nold\n", newContents: "same\nnew\nextra\n", binary: false },
+        { path: "untracked.txt", status: "added", oldContents: null, newContents: "alpha\nbeta\n", binary: false }
+      ])
     } finally {
       await rm(cwd, { recursive: true, force: true })
     }
