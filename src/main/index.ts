@@ -337,6 +337,13 @@ const registerIpc = () => {
     return yield* sessions.models(worktree.path, path)
   })))
 
+  ipcMain.handle(IpcChannels.listCommands, (_event, context: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
+    const path = yield* decodeString(sessionPath)
+    const sessions = yield* PiSessions
+    return yield* sessions.commands(worktree.path, path)
+  })))
+
   ipcMain.handle(IpcChannels.setModel, (_event, context: unknown, sessionPath: unknown, provider: unknown, modelId: unknown) => run(Effect.gen(function*() {
     const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)

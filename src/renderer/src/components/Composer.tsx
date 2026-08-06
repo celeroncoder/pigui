@@ -1,7 +1,8 @@
 import { ArrowUp, Check, ChevronDown, Folder, GitBranch, GitFork, HardDrive, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { parseImagePathReferences } from "../../../shared/attachments"
-import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelAvailability, ModelOption, QueueDelivery, QueuedMessage, SessionDraftContext, ThinkingLevel } from "../../../shared/contracts"
+import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelAvailability, ModelOption, PiCommand, QueueDelivery, QueuedMessage, SessionDraftContext, ThinkingLevel } from "../../../shared/contracts"
+import { commandQuery, filterPiCommands, piCommandText } from "../lib/promptTemplates"
 import { ContextUsageDonut } from "./ContextUsageDonut"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
@@ -157,6 +158,7 @@ interface ComposerProps {
   readonly modelProvider?: string
   readonly modelOptions: ReadonlyArray<ModelOption>
   readonly modelAvailability: ModelAvailability["status"]
+  readonly commands: ReadonlyArray<PiCommand>
   readonly thinkingLevel: ThinkingLevel
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
@@ -189,6 +191,7 @@ export function Composer({
   modelProvider,
   modelOptions,
   modelAvailability,
+  commands,
   thinkingLevel,
   availableThinkingLevels,
   queuedMessages,
@@ -212,9 +215,24 @@ export function Composer({
 }: ComposerProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pickerRef = useRef<HTMLDivElement>(null)
+  const paletteRef = useRef<HTMLDivElement>(null)
   const [openPicker, setOpenPicker] = useState<"model" | "effort" | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [activeCommandIndex, setActiveCommandIndex] = useState(0)
   const currentProvider = modelProvider ?? modelOptions.find((option) => option.id === model)?.provider
   const displayedContext = draftContext ?? worktreeContext
+  const query = commandQuery(value)
+  const visibleCommands = useMemo(
+    () => query ? filterPiCommands(commands, query) : [],
+    [commands, query]
+  )
+
+  const chooseCommand = (command: PiCommand) => {
+    onChange(piCommandText(command))
+    setPaletteOpen(false)
+    setActiveCommandIndex(0)
+    window.requestAnimationFrame(() => inputRef.current?.focus())
+  }
 
   useLayoutEffect(() => {
     const input = inputRef.current
@@ -226,23 +244,23 @@ export function Composer({
   }, [value])
 
   useEffect(() => {
-    const listener = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key === "/") {
-        event.preventDefault()
-        inputRef.current?.focus()
-      }
-    }
-    window.addEventListener("keydown", listener)
-    return () => window.removeEventListener("keydown", listener)
-  }, [])
+    if (query === null) setPaletteOpen(false)
+    setActiveCommandIndex(0)
+  }, [query])
 
   useEffect(() => {
-    if (!openPicker) return
+    if (!openPicker && !paletteOpen) return
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !pickerRef.current?.contains(event.target)) setOpenPicker(null)
+      if (event.target instanceof Node) {
+        if (!pickerRef.current?.contains(event.target)) setOpenPicker(null)
+        if (!paletteRef.current?.contains(event.target)) setPaletteOpen(false)
+      }
     }
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenPicker(null)
+      if (event.key === "Escape") {
+        setOpenPicker(null)
+        setPaletteOpen(false)
+      }
     }
     document.addEventListener("pointerdown", closeOnOutsidePointer)
     document.addEventListener("keydown", closeOnEscape)
@@ -250,7 +268,7 @@ export function Composer({
       document.removeEventListener("pointerdown", closeOnOutsidePointer)
       document.removeEventListener("keydown", closeOnEscape)
     }
-  }, [openPicker])
+  }, [openPicker, paletteOpen])
 
   return (
     <div className="composer-shell">
@@ -297,16 +315,47 @@ export function Composer({
         onRemove={onRemoveQueuedMessage}
         onSteer={onSteerQueuedMessage}
       />
-      <div className={`composer ${isStreaming ? "streaming" : ""}`}>
+      <div className={`composer ${isStreaming ? "streaming" : ""}`} ref={paletteRef}>
         <textarea
           ref={inputRef}
           rows={1}
           value={value}
           disabled={disabled}
           aria-label="Message Pi"
+          aria-controls="prompt-template-palette"
+          aria-expanded={paletteOpen}
+          aria-haspopup="listbox"
+          aria-activedescendant={paletteOpen && visibleCommands.length > 0 ? `pi-command-option-${activeCommandIndex}` : undefined}
           placeholder={disabled ? disabledReason ?? "Select a project to begin" : isStreaming ? "Queue a follow-up or steer Pi…" : "Ask Pi to build, inspect, or fix…"}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => {
+            const nextValue = event.target.value
+            onChange(nextValue)
+            if (commandQuery(nextValue) !== null) setPaletteOpen(true)
+          }}
           onKeyDown={(event) => {
+            if (paletteOpen && visibleCommands.length > 0) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault()
+                setActiveCommandIndex((index) => (index + 1) % visibleCommands.length)
+                return
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault()
+                setActiveCommandIndex((index) => (index - 1 + visibleCommands.length) % visibleCommands.length)
+                return
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault()
+                const command = visibleCommands[activeCommandIndex]
+                if (command) chooseCommand(command)
+                return
+              }
+            }
+            if (event.key === "Escape" && paletteOpen) {
+              event.preventDefault()
+              setPaletteOpen(false)
+              return
+            }
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault()
               if (value.trim() || attachments.length > 0) onSubmit(isStreaming && event.altKey ? "steer" : "follow-up")
@@ -320,6 +369,33 @@ export function Composer({
             onPasteImage(image)
           }}
         />
+        {paletteOpen && (
+          <div className="prompt-template-palette" id="prompt-template-palette" role="listbox" aria-label={query?.kind === "skill" ? "Pi skills" : "Pi commands"}>
+            <div className="prompt-template-palette-header">
+              <span>{query?.kind === "skill" ? "Pi skills" : "Pi commands"}</span>
+              <kbd>↑↓</kbd><kbd>↵</kbd><kbd>esc</kbd>
+            </div>
+            {visibleCommands.length > 0 ? visibleCommands.map((command, index) => (
+              <button
+                type="button"
+                id={`pi-command-option-${index}`}
+                role="option"
+                aria-selected={index === activeCommandIndex}
+                className={index === activeCommandIndex ? "active" : undefined}
+                key={`${command.kind}/${command.scope}/${command.name}/${index}`}
+                onMouseEnter={() => setActiveCommandIndex(index)}
+                onClick={() => chooseCommand(command)}
+              >
+                <span className="prompt-template-name">{piCommandText(command).trim()}</span>
+                <span className={`prompt-template-scope ${command.scope}`}>{command.kind === "skill" ? "Skill" : command.scope === "project" ? "Shared" : command.scope === "user" ? "Personal" : "Configured"}</span>
+                <span className="prompt-template-description">{command.description || (command.kind === "skill" ? "Loaded Pi skill" : "Saved Pi prompt")}</span>
+                {command.argumentHint && <code>{command.argumentHint}</code>}
+              </button>
+            )) : (
+              <p className="prompt-template-empty">{query?.kind === "skill" ? <>No matching skill. Add shared skills in <code>.pi/skills</code> or personal ones in <code>~/.pi/agent/skills</code>.</> : <>No matching command. Type <code>$</code> to browse loaded Pi skills.</>}</p>
+            )}
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="composer-attachments" aria-label="Pending image attachments">
             {attachments.map((attachment) => (

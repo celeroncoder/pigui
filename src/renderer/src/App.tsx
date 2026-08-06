@@ -1,6 +1,6 @@
 import { FolderPlus, GitBranch, GitFork, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, PiCommand, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { AskUserPanel } from "./components/AskUserPanel"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
@@ -51,6 +51,7 @@ export default function App() {
   const [subagentLoading, setSubagentLoading] = useState(false)
   const [modelOptions, setModelOptions] = useState<ReadonlyArray<ModelOption>>([])
   const [modelAvailability, setModelAvailability] = useState<ModelAvailability["status"]>("ready")
+  const [commands, setCommands] = useState<ReadonlyArray<PiCommand>>([])
   const [draft, setDraft] = useState("")
   const [pendingAttachments, setPendingAttachments] = useState<ReadonlyArray<ImageAttachment>>([])
   const [lightboxImage, setLightboxImage] = useState<AttachmentPreview | null>(null)
@@ -76,6 +77,7 @@ export default function App() {
   const gitDiffRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const modelRequestRef = useRef(0)
+  const commandRequestRef = useRef(0)
   const subagentRequestRef = useRef(0)
   const addingProjectRef = useRef(false)
   const catalogRequestRef = useRef(0)
@@ -192,6 +194,17 @@ export default function App() {
     }
   }, [])
 
+  const loadCommands = useCallback(async (context: WorktreeContext, contextKey: string, sessionPath: string) => {
+    const requestId = ++commandRequestRef.current
+    setCommands([])
+    try {
+      const nextCommands = await desktopApi.sessions.commands(context, sessionPath)
+      if (requestId === commandRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setCommands(nextCommands)
+    } catch {
+      if (requestId === commandRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setCommands([])
+    }
+  }, [])
+
   const openSession = useCallback(async (project: Project, worktree: ProjectWorktree, summary: SessionSummary) => {
     const contextKey = worktreeKey(project, worktree)
     if (activeWorktreeKeyRef.current !== contextKey) return
@@ -215,6 +228,7 @@ export default function App() {
     setDraft("")
     setModelOptions([])
     setModelAvailability("ready")
+    setCommands([])
     setError(null)
     setInteractionRequest(null)
     setInteractionSubmitting(false)
@@ -228,13 +242,15 @@ export default function App() {
       setSessionRuntimeStatuses((current) => ({ ...current, [detail.summary.path]: detail.runtimeStatus }))
       setGitHubOpen(false)
       setInteractionRequest(detail.interactionRequest ?? null)
-      void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
+      const context = worktreeContext(project, worktree)
+      void loadModels(context, contextKey, detail.summary.path)
+      void loadCommands(context, contextKey, detail.summary.path)
     } catch (cause) {
       if (requestId === sessionRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not open this session")
       }
     }
-  }, [loadModels])
+  }, [loadCommands, loadModels])
 
   const inspectSubagent = useCallback(async (project: Project, worktree: ProjectWorktree, summary: SessionSummary, showLoading = true) => {
     const parentSessionPath = activeSessionPathRef.current
@@ -293,6 +309,7 @@ export default function App() {
     ++draftContextRequestRef.current
     ++sessionRequestRef.current
     ++modelRequestRef.current
+    ++commandRequestRef.current
     activeWorktreeKeyRef.current = contextKey
     activeProjectRef.current = project
     activeWorktreeRef.current = worktree
@@ -321,6 +338,7 @@ export default function App() {
     setSessions([])
     setModelOptions([])
     setModelAvailability("ready")
+    setCommands([])
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     setRecoverySubmitting(false)
@@ -493,6 +511,7 @@ export default function App() {
             return { ...current, [contextKey]: { sessions: [event.detail.summary, ...listing.sessions.filter((item) => item.path !== event.detail.summary.path)], loading: false } }
           })
           void loadModels(event.context, contextKey, event.detail.summary.path)
+          void loadCommands(event.context, contextKey, event.detail.summary.path)
         }
         return
       }
@@ -505,7 +524,7 @@ export default function App() {
       batcher.cancel()
       unsubscribe()
     }
-  }, [loadGitDiff])
+  }, [loadCommands, loadGitDiff, loadModels])
 
   useEffect(() => () => {
     if (subagentRefreshTimerRef.current !== undefined) window.clearTimeout(subagentRefreshTimerRef.current)
@@ -548,6 +567,7 @@ export default function App() {
     ++projectRequestRef.current
     ++sessionRequestRef.current
     ++modelRequestRef.current
+    ++commandRequestRef.current
     activeWorktreeKeyRef.current = contextKey
     activeSessionPathRef.current = null
     activeProjectRef.current = project
@@ -576,6 +596,7 @@ export default function App() {
     setLiveThinking(null)
     setDraft("")
     setModelOptions([])
+    setCommands([])
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
@@ -634,6 +655,7 @@ export default function App() {
       interactionSubmittingRef.current = false
       setRecoverySubmitting(false)
       void loadModels(context, contextKey, detail.summary.path)
+      void loadCommands(context, contextKey, detail.summary.path)
     } catch (cause) {
       if (activeWorktreeKeyRef.current === contextKey && activeSessionPathRef.current === sourcePath) {
         setError(cause instanceof Error ? cause.message : "Could not fork this session")
@@ -644,7 +666,7 @@ export default function App() {
         setForkingMessageId(null)
       }
     }
-  }, [loadModels])
+  }, [loadCommands, loadModels])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -1077,6 +1099,7 @@ export default function App() {
             modelProvider={session?.model.includes("/") ? session.model.split("/")[0] : undefined}
             modelOptions={modelOptions}
             modelAvailability={modelAvailability}
+            commands={commands}
             thinkingLevel={session?.thinkingLevel ?? "off"}
             availableThinkingLevels={session?.availableThinkingLevels ?? []}
             queuedMessages={session?.queuedMessages ?? []}

@@ -12,7 +12,7 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, PiCommand, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
@@ -85,8 +85,32 @@ const textFromContent = (content: string | ReadonlyArray<{ readonly type: string
 }
 
 type PiMessage = AgentSession["messages"][number]
+type PiSkill = ReturnType<AgentSession["resourceLoader"]["getSkills"]>["skills"][number]
 
 const timestampValue = (value: string | number): number => typeof value === "number" ? value : new Date(value).getTime()
+
+const commandScope = (scope: string): PiCommand["scope"] =>
+  scope === "user" || scope === "project" ? scope : "other"
+
+const skillCommand = (skill: PiSkill): PiCommand => ({
+  kind: "skill",
+  name: skill.name,
+  description: skill.description,
+  scope: commandScope(skill.sourceInfo.scope)
+})
+
+const promptCommand = (template: AgentSession["promptTemplates"][number]): PiCommand => ({
+  kind: "prompt",
+  name: template.name,
+  description: template.description,
+  ...(template.argumentHint ? { argumentHint: template.argumentHint } : {}),
+  scope: commandScope(template.sourceInfo.scope)
+})
+
+const commandsFromSession = (session: AgentSession): ReadonlyArray<PiCommand> => [
+  ...session.resourceLoader.getSkills().skills.map(skillCommand),
+  ...session.promptTemplates.map(promptCommand)
+]
 
 const appendMessageToChat = (output: ChatMessage[], message: PiMessage, id: string) => {
   if (message.role === "user") {
@@ -496,6 +520,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly steerQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
   readonly abort: (cwd: string, sessionPath: string) => Effect.Effect<void, AppError>
   readonly models: (cwd: string, sessionPath: string) => Effect.Effect<ModelAvailability, AppError>
+  readonly commands: (cwd: string, sessionPath: string) => Effect.Effect<ReadonlyArray<PiCommand>, AppError>
   readonly setModel: (cwd: string, sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
   readonly setThinkingLevel: (cwd: string, sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
   readonly answerInteraction: (cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
@@ -1239,6 +1264,11 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const active = yield* activeForWorktree(cwd, sessionPath, "list models")
       return active.modelAvailability
     }),
+    commands: Effect.fn("PiSessions.commands")(function*(cwd: string, sessionPath: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "list Pi commands")
+      return commandsFromSession(active.session)
+    }),
+
     setModel: Effect.fn("PiSessions.setModel")(function*(cwd: string, sessionPath: string, provider: string, modelId: string) {
       const active = yield* activeForWorktree(cwd, sessionPath, "set model")
       const available = yield* Effect.tryPromise({ try: () => active.session.modelRuntime.getAvailable(), catch: toAppError("list models") })

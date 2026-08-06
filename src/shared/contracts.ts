@@ -187,6 +187,16 @@ export interface ModelAvailability {
   readonly status: "pending" | "ready" | "error"
 }
 
+/** A Pi-native command that AgentSession can execute from the composer. */
+export interface PiCommand {
+  readonly kind: "prompt" | "skill"
+  readonly name: string
+  readonly description: string
+  readonly argumentHint?: string
+  /** Project resources can be committed and shared with the team. */
+  readonly scope: "user" | "project" | "other"
+}
+
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
 /** Pi's native runtime delivery queues. */
@@ -311,6 +321,7 @@ export interface PiDesktopApi {
     readonly steerQueuedMessage: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<void>
     readonly abort: (context: WorktreeContext, sessionPath: string) => Promise<void>
     readonly models: (context: WorktreeContext, sessionPath: string) => Promise<ModelAvailability>
+    readonly commands: (context: WorktreeContext, sessionPath: string) => Promise<ReadonlyArray<PiCommand>>
     readonly setModel: (context: WorktreeContext, sessionPath: string, provider: string, modelId: string) => Promise<SessionDetail>
     readonly setThinkingLevel: (context: WorktreeContext, sessionPath: string, level: ThinkingLevel) => Promise<SessionDetail>
     readonly answerInteraction: (context: WorktreeContext, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Promise<void>
@@ -337,6 +348,7 @@ export const IpcChannels = {
   steerQueuedMessage: "sessions:queue-steer",
   abortSession: "sessions:abort",
   listModels: "sessions:models",
+  listCommands: "sessions:commands",
   setModel: "sessions:set-model",
   setThinkingLevel: "sessions:set-thinking-level",
   answerInteraction: "sessions:answer-interaction",

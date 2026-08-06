@@ -33,6 +33,7 @@ const api: PiDesktopApi = {
     steerQueuedMessage: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.steerQueuedMessage, context, sessionPath, messageId),
     abort: (context, sessionPath) => ipcRenderer.invoke(IpcChannels.abortSession, context, sessionPath),
     models: (context, sessionPath) => ipcRenderer.invoke(IpcChannels.listModels, context, sessionPath),
+    commands: (context, sessionPath) => ipcRenderer.invoke(IpcChannels.listCommands, context, sessionPath),
     setModel: (context, sessionPath, provider, modelId) => ipcRenderer.invoke(IpcChannels.setModel, context, sessionPath, provider, modelId),
     setThinkingLevel: (context, sessionPath, level) => ipcRenderer.invoke(IpcChannels.setThinkingLevel, context, sessionPath, level),
     answerInteraction: (context, sessionPath, requestId, answer: AskUserInteractionAnswer) => ipcRenderer.invoke(IpcChannels.answerInteraction, context, sessionPath, requestId, answer)

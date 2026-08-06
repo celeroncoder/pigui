@@ -277,6 +277,7 @@ const recoveryPromptText = "Finish the transport recovery implementation"
 const withRecoveryPrompt = (messages, includeRecovery) => includeRecovery
   ? [...messages, { id: "fixture-recovery-prompt", role: "user", blocks: [{ type: "text", text: recoveryPromptText }], timestamp: Date.now() - 1_000 }]
   : messages
+let commands = []
 for (const [index, info] of orderedInfos.entries()) {
   const summary = summaries[index]
   if (!summary) continue
@@ -296,6 +297,23 @@ for (const [index, info] of orderedInfos.entries()) {
   let contextUsage
   try {
     contextUsage = contextSession.session.getContextUsage()
+    if (index === 0) {
+      commands = [
+        ...contextSession.session.resourceLoader.getSkills().skills.map((skill) => ({
+          kind: "skill",
+          name: skill.name,
+          description: skill.description,
+          scope: skill.sourceInfo.scope === "user" || skill.sourceInfo.scope === "project" ? skill.sourceInfo.scope : "other"
+        })),
+        ...contextSession.session.promptTemplates.map((template) => ({
+          kind: "prompt",
+          name: template.name,
+          description: template.description,
+          ...(template.argumentHint ? { argumentHint: template.argumentHint } : {}),
+          scope: template.sourceInfo.scope === "user" || template.sourceInfo.scope === "project" ? template.sourceInfo.scope : "other"
+        }))
+      ]
+    }
   } finally {
     // AgentSession owns listeners/resources; always dispose even if usage lookup throws.
     contextSession.session.dispose()
@@ -342,6 +360,21 @@ if (details.length === 0) {
   let contextUsage
   try {
     contextUsage = contextSession.session.getContextUsage()
+    commands = [
+      ...contextSession.session.resourceLoader.getSkills().skills.map((skill) => ({
+        kind: "skill",
+        name: skill.name,
+        description: skill.description,
+        scope: skill.sourceInfo.scope === "user" || skill.sourceInfo.scope === "project" ? skill.sourceInfo.scope : "other"
+      })),
+      ...contextSession.session.promptTemplates.map((template) => ({
+        kind: "prompt",
+        name: template.name,
+        description: template.description,
+        ...(template.argumentHint ? { argumentHint: template.argumentHint } : {}),
+        scope: template.sourceInfo.scope === "user" || template.sourceInfo.scope === "project" ? template.sourceInfo.scope : "other"
+      }))
+    ]
   } finally {
     contextSession.session.dispose()
   }
@@ -379,6 +412,7 @@ const fixture = {
   sessions: summaries,
   details,
   models: availableModels.map((model) => ({ provider: model.provider, id: model.id, name: model.name })),
+  commands,
   ...(interaction ? { interaction } : {})
 }
 
