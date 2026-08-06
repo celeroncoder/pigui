@@ -73,7 +73,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 <div className="sidebar-git-context" title={`Current branch: ${project.git.branch}`}>
                   <GitBranch size={11} aria-hidden="true" />
                   <span>{compactLabel(project.git.branch, 29)}</span>
-                  <small>+{project.git.additions}/-{project.git.deletions}</small>
+                  {(project.git.additions > 0 || project.git.deletions > 0) && <small>+{project.git.additions}/-{project.git.deletions}</small>}
                 </div>
               )}
 
