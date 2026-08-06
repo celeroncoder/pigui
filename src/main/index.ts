@@ -8,7 +8,7 @@ import { AttachmentStore, AttachmentStoreLive } from "./services/AttachmentStore
 import { GitContext, GitContextLive } from "./services/GitContext"
 import { PiSessions, PiSessionsLive } from "./services/PiSessions"
 import { ProjectStore, ProjectStoreLive } from "./services/ProjectStore"
-import { WindowBusLive } from "./services/WindowBus"
+import { WindowBus, WindowBusLive } from "./services/WindowBus"
 
 const NonEmptyString = Schema.NonEmptyString
 const ThinkingLevelSchema = Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
@@ -44,7 +44,7 @@ const AppLayer = Layer.provideMerge(AppServices, AppDependencies)
 const runtime = ManagedRuntime.make(AppLayer)
 let isShuttingDown = false
 
-const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | AttachmentStore>): Promise<A> => {
+const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | AttachmentStore | WindowBus>): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect)
   if (Exit.isSuccess(exit)) return exit.value
   if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) {
@@ -56,7 +56,7 @@ const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions |
 const resolveKnownWorktree = Effect.fn("resolveKnownWorktree")(function*(input: unknown) {
   const context = yield* Schema.decodeUnknownEffect(WorktreeContextSchema)(input).pipe(Effect.mapError(invalidIpcInput))
   const store = yield* ProjectStore
-  return yield* store.resolve(context.projectId, context.worktreeId)
+  return { ...(yield* store.resolve(context.projectId, context.worktreeId)), context }
 })
 
 const enrichWorktree = Effect.fn("enrichWorktree")(function*(worktree: ProjectWorktree) {
@@ -157,16 +157,45 @@ const registerIpc = () => {
     return yield* git.diff(worktree.path)
   })))
 
+  ipcMain.handle(IpcChannels.sessionDraft, (_event, input: unknown) => run(Effect.gen(function*() {
+    const { context } = yield* resolveKnownWorktree(input)
+    const store = yield* ProjectStore
+    return yield* store.sessionDraft(context.projectId, context.worktreeId)
+  })))
+
   ipcMain.handle(IpcChannels.listSessions, (_event, context: unknown) => run(Effect.gen(function*() {
     const { worktree } = yield* resolveKnownWorktree(context)
     const sessions = yield* PiSessions
     return yield* sessions.list(worktree.path)
   })))
 
-  ipcMain.handle(IpcChannels.createSession, (_event, context: unknown) => run(Effect.gen(function*() {
-    const { worktree } = yield* resolveKnownWorktree(context)
+  ipcMain.handle(IpcChannels.startSession, (_event, input: unknown, requestIdInput: unknown, text: unknown, baseBranch: unknown, attachmentPaths: unknown) => run(Effect.gen(function*() {
+    const { worktree, context } = yield* resolveKnownWorktree(input)
+    const requestId = yield* decodeString(requestIdInput)
+    const prompt = yield* decodePromptText(text)
+    const paths = yield* decodeAttachmentPaths(attachmentPaths)
+    const store = yield* ProjectStore
     const sessions = yield* PiSessions
-    return yield* sessions.create(worktree.path)
+    const draft = yield* store.sessionDraft(context.projectId, context.worktreeId)
+    const fallbackBaseBranch = draft.defaultBaseBranch ?? draft.baseBranches[0]
+    const selectedBaseBranch = worktree.kind === "linked"
+      ? yield* (baseBranch === undefined
+          ? fallbackBaseBranch
+            ? Effect.succeed(fallbackBaseBranch)
+            : Effect.fail(AppError.make({ operation: "validate base branch", message: "No base branch is available for this linked worktree" }))
+          : decodeString(baseBranch)).pipe(Effect.flatMap((candidate) => draft.baseBranches.includes(candidate)
+          ? Effect.succeed(candidate)
+          : Effect.fail(AppError.make({ operation: "validate base branch", message: "The selected base branch is no longer available" }))))
+      : undefined
+    const existing = yield* sessions.list(worktree.path)
+    if (worktree.kind === "linked" && existing.length === 0) {
+      yield* store.setupWorktree(context.projectId, context.worktreeId)
+    }
+    const detail = yield* sessions.create(worktree.path, selectedBaseBranch)
+    const bus = yield* WindowBus
+    yield* bus.emit({ type: "session-started", requestId, context, detail })
+    yield* sessions.prompt(worktree.path, detail.summary.path, prompt, "follow-up", paths ?? [])
+    return detail
   })))
 
   ipcMain.handle(IpcChannels.openSession, (_event, context: unknown, sessionPath: unknown) => run(Effect.gen(function*() {

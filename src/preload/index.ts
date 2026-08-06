@@ -12,11 +12,12 @@ const api: PiDesktopApi = {
     add: () => ipcRenderer.invoke(IpcChannels.addProject),
     remove: (projectId) => ipcRenderer.invoke(IpcChannels.removeProject, projectId),
     refreshGit: (context) => ipcRenderer.invoke(IpcChannels.refreshProjectGit, context),
-    diff: (context) => ipcRenderer.invoke(IpcChannels.gitDiff, context)
+    diff: (context) => ipcRenderer.invoke(IpcChannels.gitDiff, context),
+    sessionDraft: (context) => ipcRenderer.invoke(IpcChannels.sessionDraft, context)
   },
   sessions: {
     list: (context) => ipcRenderer.invoke(IpcChannels.listSessions, context),
-    create: (context) => ipcRenderer.invoke(IpcChannels.createSession, context),
+    start: (context, requestId, text, baseBranch, attachmentPaths) => ipcRenderer.invoke(IpcChannels.startSession, context, requestId, text, baseBranch, attachmentPaths),
     open: (context, sessionPath) => ipcRenderer.invoke(IpcChannels.openSession, context, sessionPath),
     inspect: (context, parentSessionPath, sessionPath) => ipcRenderer.invoke(IpcChannels.inspectSession, context, parentSessionPath, sessionPath),
     prompt: (context, sessionPath, text, delivery, attachmentPaths) => ipcRenderer.invoke(IpcChannels.promptSession, context, sessionPath, text, delivery, attachmentPaths),

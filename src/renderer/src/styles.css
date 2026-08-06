@@ -125,9 +125,11 @@
   .mini-button:hover { color: var(--accent); }
   .project-list { flex: 1; overflow-y: auto; margin: 3px -2px 8px; }
   .project-group { margin: 1px 0; }
-  .project-row { width: 100%; min-height: 38px; padding: 4px 8px; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 9px; border-radius: 6px; background: transparent; color: var(--text-2); text-align: left; font-size: 13px; }
+  .project-row { width: 100%; min-height: 38px; padding: 4px 8px; display: grid; grid-template-columns: 14px 18px minmax(0, 1fr); align-items: center; gap: 7px; border-radius: 6px; background: transparent; color: var(--text-2); text-align: left; font-size: 13px; }
   .project-group.active .project-row { color: var(--text); }
   .project-row > svg { color: #b8b2ac; }
+  .project-row > svg:first-child { transition: transform .15s ease; }
+  .project-row > svg:first-child.collapsed { transform: rotate(-90deg); }
   .project-row > span { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-weight: 620; }
   .project-new-session { min-width: 0; min-height: 27px; display: flex; align-items: center; gap: 6px; padding: 0 6px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: #c69a73; text-align: left; font-size: 10.5px; transition: background .14s ease, border-color .14s ease, color .14s ease; }
   .project-new-session:hover, .project-new-session:focus-visible { border-color: rgba(233,168,104,.22); background: linear-gradient(180deg, rgba(55,41,31,.9), rgba(36,27,21,.82)); color: #f0c79f; }

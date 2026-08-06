@@ -435,7 +435,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
 
 export class PiSessions extends Context.Service<PiSessions, {
   readonly list: (cwd: string) => Effect.Effect<ReadonlyArray<SessionSummary>, AppError>
-  readonly create: (cwd: string) => Effect.Effect<SessionDetail, AppError>
+  readonly create: (cwd: string, baseBranch?: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly prompt: (cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
@@ -867,10 +867,16 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const parentByChild = inferSubagentParents(projectCwd, infos)
       return infos.map((info) => summaryFromInfo(info, parentByChild.get(info.path)))
     }),
-    create: Effect.fn("PiSessions.create")(function*(cwd: string) {
+    create: Effect.fn("PiSessions.create")(function*(cwd: string, baseBranch?: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
         const projectCwd = canonicalPath(cwd)
         const manager = yield* Effect.try({ try: () => SessionManager.create(projectCwd), catch: toAppError("create Pi session") })
+        if (baseBranch) {
+          yield* Effect.try({
+            try: () => manager.appendCustomEntry("pi-desktop-worktree-context", { baseBranch }),
+            catch: toAppError("persist worktree session context")
+          })
+        }
         const active = yield* attach(projectCwd, manager)
         return detailFromActive(active)
       })))

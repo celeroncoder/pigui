@@ -61,6 +61,7 @@ describe("ProjectSidebar", () => {
     expect(markup).toContain('aria-expanded="true"')
     expect(markup).toContain('aria-expanded="false"')
     expect(markup).toContain("<kbd>⌘N</kbd>")
+    expect(markup).not.toContain("project-panel-label")
   })
 
   it("keeps the project action available when session discovery fails", () => {

@@ -96,22 +96,19 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
               </button>
 
               <div className={`project-panel ${projectActive ? "active" : ""}`} aria-label={`${project.name} session actions`}>
-                <div className="project-panel-heading">
-                  <span className="project-panel-label">{projectActive ? "Sessions" : "Workspace"}</span>
-                  {targetWorktree && (
-                    <button
-                      className="project-new-session"
-                      type="button"
-                      onClick={() => onNewSession(project, targetWorktree)}
-                      aria-label={`New session in ${project.name}, ${targetWorktree.kind === "linked" ? "linked worktree" : "local checkout"} ${targetWorktree.name}`}
-                      title={`New session in ${targetWorktree.name}`}
-                    >
-                      <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
-                      <span>New session</span>
-                      {projectActive && <kbd>⌘N</kbd>}
-                    </button>
-                  )}
-                </div>
+                {targetWorktree && (
+                  <button
+                    className="project-new-session"
+                    type="button"
+                    onClick={() => onNewSession(project, targetWorktree)}
+                    aria-label={`New session in ${project.name}, ${targetWorktree.kind === "linked" ? "linked worktree" : "local checkout"} ${targetWorktree.name}`}
+                    title={`New session in ${targetWorktree.name}`}
+                  >
+                    <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
+                    <span>New session</span>
+                    {projectActive && <kbd>⌘N</kbd>}
+                  </button>
+                )}
               </div>
 
               {expanded && (

@@ -173,6 +173,20 @@ export const createE2eApi = (): PiDesktopApi => {
       diff: async (context): Promise<GitDiff | undefined> => {
         const data = await loadFixture()
         return data.projects.find((project) => project.id === context.projectId)?.worktrees.find((worktree) => worktree.id === context.worktreeId)?.git ? { files: [], truncated: false, omittedFiles: 0 } : undefined
+      },
+      sessionDraft: async (context) => {
+        const data = await loadFixture()
+        const worktree = data.projects.find((project) => project.id === context.projectId)?.worktrees.find((candidate) => candidate.id === context.worktreeId)
+        if (!worktree) throw new Error("The generated worktree snapshot is unavailable")
+        return {
+          path: worktree.path,
+          folderName: worktree.name,
+          worktreeKind: worktree.kind === "linked" ? "linked" : "local",
+          branch: worktree.branch,
+          baseBranches: worktree.kind === "linked" ? ["origin/main", "main"] : [],
+          ...(worktree.kind === "linked" ? { defaultBaseBranch: "origin/main" } : {}),
+          setupEnvironment: { name: "E2E", configPath: `${worktree.path}/.codex/environments/environment.toml` }
+        }
       }
     },
     sessions: {
@@ -180,7 +194,7 @@ export const createE2eApi = (): PiDesktopApi => {
         const data = await loadFixture()
         return isActiveFixtureContext(data, context) ? data.sessions : []
       },
-      create: async () => Promise.reject(new Error("Session creation is tested in Electron, not the browser review harness")),
+      start: async () => Promise.reject(new Error("Session creation is tested in Electron, not the browser review harness")),
       open: async (context, sessionPath) => {
         const data = await loadFixture()
         const detail = isActiveFixtureContext(data, context) ? data.details.find((item) => item.summary.path === sessionPath) : undefined

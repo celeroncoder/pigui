@@ -53,6 +53,19 @@ export interface ProjectSelection {
   readonly worktree: ProjectWorktree
 }
 
+export interface SessionDraftContext {
+  readonly path: string
+  readonly folderName: string
+  readonly worktreeKind: "local" | "linked"
+  readonly branch: string
+  readonly baseBranches: ReadonlyArray<string>
+  readonly defaultBaseBranch?: string
+  readonly setupEnvironment?: {
+    readonly name: string
+    readonly configPath: string
+  }
+}
+
 export interface SessionSummary {
   readonly id: string
   readonly path: string
@@ -189,6 +202,7 @@ export interface ToolActivity {
 }
 
 export type SessionEvent =
+  | { readonly type: "session-started"; readonly requestId: string; readonly context: WorktreeContext; readonly detail: SessionDetail }
   | { readonly type: "session-state"; readonly sessionPath: string; readonly detail: SessionDetail }
   | { readonly type: "assistant-start"; readonly sessionPath: string; readonly messageId: string; readonly timestamp: number }
   | { readonly type: "user-message"; readonly sessionPath: string; readonly message: ChatMessage }
@@ -214,6 +228,7 @@ export interface PiDesktopApi {
     readonly remove: (projectId: string) => Promise<void>
     readonly refreshGit: (context: WorktreeContext) => Promise<GitStatus | undefined>
     readonly diff: (context: WorktreeContext) => Promise<GitDiff | undefined>
+    readonly sessionDraft: (context: WorktreeContext) => Promise<SessionDraftContext>
   }
   readonly attachments: {
     readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
@@ -221,7 +236,7 @@ export interface PiDesktopApi {
   }
   readonly sessions: {
     readonly list: (context: WorktreeContext) => Promise<ReadonlyArray<SessionSummary>>
-    readonly create: (context: WorktreeContext) => Promise<SessionDetail>
+    readonly start: (context: WorktreeContext, requestId: string, text: string, baseBranch?: string, attachmentPaths?: ReadonlyArray<string>) => Promise<SessionDetail>
     readonly open: (context: WorktreeContext, sessionPath: string) => Promise<SessionDetail>
     readonly inspect: (context: WorktreeContext, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
     readonly prompt: (context: WorktreeContext, sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
@@ -243,8 +258,9 @@ export const IpcChannels = {
   removeProject: "projects:remove",
   refreshProjectGit: "projects:refresh-git",
   gitDiff: "projects:git-diff",
+  sessionDraft: "projects:session-draft",
   listSessions: "sessions:list",
-  createSession: "sessions:create",
+  startSession: "sessions:start",
   openSession: "sessions:open",
   inspectSession: "sessions:inspect",
   promptSession: "sessions:prompt",

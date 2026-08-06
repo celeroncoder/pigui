@@ -66,6 +66,9 @@ export default function App() {
   const addingProjectRef = useRef(false)
   const catalogRequestRef = useRef(0)
   const draftContextRequestRef = useRef(0)
+  const sessionStartSequenceRef = useRef(0)
+  const pendingSessionStartRef = useRef<string | null>(null)
+  const startedSessionRequestRef = useRef<string | null>(null)
 
   const storeWorktreeSessions = useCallback((project: Project, worktree: ProjectWorktree, nextSessions: ReadonlyArray<SessionSummary>) => {
     const key = worktreeKey(project, worktree)
@@ -129,6 +132,8 @@ export default function App() {
     setDraftBaseBranch(undefined)
     setDraftContextLoading(false)
     setDraftStarting(false)
+    pendingSessionStartRef.current = null
+    startedSessionRequestRef.current = null
     setPendingAttachments([])
     setLightboxImage(null)
     setLiveThinking(null)
@@ -227,6 +232,8 @@ export default function App() {
     setDraftBaseBranch(undefined)
     setDraftContextLoading(false)
     setDraftStarting(false)
+    pendingSessionStartRef.current = null
+    startedSessionRequestRef.current = null
     setPendingAttachments([])
     setLightboxImage(null)
     setLiveThinking(null)
@@ -316,9 +323,11 @@ export default function App() {
     }
     if (event.type === "session-started") {
       const contextKey = `${event.context.projectId}:${event.context.worktreeId}`
-      if (activeWorktreeKeyRef.current !== contextKey || activeSessionPathRef.current !== null) return
+      if (activeWorktreeKeyRef.current !== contextKey || activeSessionPathRef.current !== null || pendingSessionStartRef.current !== event.requestId) return
       const project = activeProjectRef.current
       const worktree = activeWorktreeRef.current
+      pendingSessionStartRef.current = null
+      startedSessionRequestRef.current = event.requestId
       activeSessionPathRef.current = event.detail.summary.path
       setSession(event.detail)
       setSessionDraft(null)
@@ -463,6 +472,8 @@ export default function App() {
     setSessionDraft(fallbackDraft)
     setDraftBaseBranch(undefined)
     setDraftStarting(false)
+    pendingSessionStartRef.current = null
+    startedSessionRequestRef.current = null
     setPendingAttachments([])
     setLightboxImage(null)
     setLiveThinking(null)
@@ -531,7 +542,7 @@ export default function App() {
     const context = worktreeContext(activeProject, activeWorktree)
     const contextKey = worktreeKey(activeProject, activeWorktree)
     if (!session) {
-      if (!sessionDraft || draftContextLoading || draftStarting) return
+      if (!sessionDraft || draftContextLoading || draftStarting || pendingSessionStartRef.current) return
       if (sessionDraft.worktreeKind === "linked" && !draftBaseBranch) {
         setError("Choose a base branch before starting this worktree session")
         return
@@ -540,13 +551,17 @@ export default function App() {
       const previousAttachments = pendingAttachments
       const draftRevision = ++draftRevisionRef.current
       const attachmentRevision = ++attachmentRevisionRef.current
+      const requestId = `${contextKey}:${++sessionStartSequenceRef.current}`
+      pendingSessionStartRef.current = requestId
+      startedSessionRequestRef.current = null
       composerEpochRef.current += 1
       setDraft("")
       setPendingAttachments([])
       setDraftStarting(true)
       setError(null)
-      void desktopApi.sessions.start(context, rawText, draftBaseBranch, attachmentPaths).catch((cause: unknown) => {
-        if (activeWorktreeKeyRef.current !== contextKey) return
+      void desktopApi.sessions.start(context, requestId, rawText, draftBaseBranch, attachmentPaths).catch((cause: unknown) => {
+        if (activeWorktreeKeyRef.current !== contextKey || (pendingSessionStartRef.current !== requestId && startedSessionRequestRef.current !== requestId)) return
+        if (pendingSessionStartRef.current === requestId) pendingSessionStartRef.current = null
         if (draftRevisionRef.current === draftRevision) {
           draftRevisionRef.current += 1
           setDraft(previousDraft)

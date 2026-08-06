@@ -1,13 +1,23 @@
 import { execFileSync } from "node:child_process"
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect } from "effect"
+import { Effect, Fiber } from "effect"
 import { describe, expect, it } from "vitest"
 import type { Project } from "../../shared/contracts"
-import { discoverRepository, parseWorktreeList, validateStoredWorktreePath } from "./ProjectStore"
+import { discoverRepository, parseBranchRefs, parseWorktreeList, runWorktreeSetup, validateStoredWorktreePath } from "./ProjectStore"
 
 const git = (cwd: string, args: ReadonlyArray<string>) => execFileSync("git", [...args], { cwd, encoding: "utf8" })
+const waitForFile = async (path: string) => {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      return await readFile(path, "utf8")
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+  throw new Error(`Timed out waiting for ${path}`)
+}
 
 describe("Project worktrees", () => {
   it("keeps explicit branch and path metadata under one logical project", () => {
@@ -29,6 +39,93 @@ describe("Project worktrees", () => {
       { path: "/repo", branch: "main" },
       { path: "/repo-task", branch: "detached @ abcdef0" }
     ])
+  })
+
+  it("normalizes selectable Git base branches without symbolic remote heads", () => {
+    expect(parseBranchRefs("origin/main\nfeature\norigin/HEAD\nmain\norigin/main\n")).toEqual(["feature", "main", "origin/main"])
+  })
+
+  it("runs the default Codex worktree environment before a first linked-worktree session", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-project-setup-"))
+    const source = join(root, "source")
+    const worktree = join(root, "linked")
+    try {
+      await mkdir(join(source, ".codex", "environments"), { recursive: true })
+      await mkdir(worktree)
+      const canonicalSource = await realpath(source)
+      const canonicalWorktree = await realpath(worktree)
+      await writeFile(join(source, ".codex", "environments", "environment.toml"), [
+        "version = 1",
+        'name = "Repository setup"',
+        "[setup]",
+        "script = '''",
+        "printf '%s\\n%s' \"$CODEX_SOURCE_TREE_PATH\" \"$CODEX_WORKTREE_PATH\" > \"$CODEX_WORKTREE_PATH/setup-marker.txt\"",
+        "'''",
+        ""
+      ].join("\n"), "utf8")
+      const project: Project = {
+        id: "repo",
+        name: "repo",
+        addedAt: 1,
+        worktrees: [
+          { id: "source", name: "source", path: canonicalSource, branch: "main", kind: "local", addedAt: 1 },
+          { id: "linked", name: "linked", path: canonicalWorktree, branch: "feature", kind: "linked", addedAt: 1 }
+        ]
+      }
+      const linked = project.worktrees[1]
+      if (!linked) throw new Error("Expected linked worktree fixture")
+      await Effect.runPromise(runWorktreeSetup(project, linked))
+      expect(await readFile(join(canonicalWorktree, "setup-marker.txt"), "utf8")).toBe(`${canonicalSource}\n${canonicalWorktree}`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(process.platform === "win32")("terminates the setup process group when interrupted", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-project-setup-interrupt-"))
+    const source = join(root, "source")
+    const worktree = join(root, "linked")
+    try {
+      await mkdir(join(source, ".codex", "environments"), { recursive: true })
+      await mkdir(worktree)
+      const canonicalSource = await realpath(source)
+      const canonicalWorktree = await realpath(worktree)
+      await writeFile(join(source, ".codex", "environments", "environment.toml"), [
+        "version = 1",
+        'name = "Interruptible setup"',
+        "[setup]",
+        "script = '''",
+        "printf '%s' \"$$\" > \"$CODEX_WORKTREE_PATH/setup.pid\"",
+        "while :; do sleep 1; done",
+        "'''",
+        ""
+      ].join("\n"), "utf8")
+      const project: Project = {
+        id: "repo",
+        name: "repo",
+        addedAt: 1,
+        worktrees: [
+          { id: "source", name: "source", path: canonicalSource, branch: "main", kind: "local", addedAt: 1 },
+          { id: "linked", name: "linked", path: canonicalWorktree, branch: "feature", kind: "linked", addedAt: 1 }
+        ]
+      }
+      const linked = project.worktrees[1]
+      if (!linked) throw new Error("Expected linked worktree fixture")
+      const fiber = Effect.runFork(runWorktreeSetup(project, linked))
+      const pid = Number(await waitForFile(join(canonicalWorktree, "setup.pid")))
+      await Effect.runPromise(Fiber.interrupt(fiber))
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        try {
+          process.kill(pid, 0)
+          await new Promise((resolve) => setTimeout(resolve, 20))
+        } catch {
+          return
+        }
+      }
+      throw new Error(`Setup process ${pid} remained alive after interruption`)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it("discovers sibling linked worktrees as one repository and preserves their branches", async () => {

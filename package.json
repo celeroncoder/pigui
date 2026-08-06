@@ -27,7 +27,8 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "10.1.0",
-    "remark-gfm": "4.0.1"
+    "remark-gfm": "4.0.1",
+    "toml": "4.3.0"
   },
   "devDependencies": {
     "@types/node": "26.1.2",
