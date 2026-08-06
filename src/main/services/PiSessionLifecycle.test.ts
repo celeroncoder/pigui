@@ -27,6 +27,7 @@ const detail = (path: string): SessionDetail => ({
   availableThinkingLevels: ["off"],
   backgroundProcesses: [],
   queuedMessages: [],
+  runtimeStatus: "running",
   isStreaming: true,
   isCompacting: false
 })

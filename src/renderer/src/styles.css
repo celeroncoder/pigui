@@ -146,11 +146,16 @@
   .session-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent); }
   .session-metadata { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; color: #777b7e; }
   .session-metadata svg { flex: 0 0 auto; }
-  .git-status-dot, .session-state-dot { display: block; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; }
+  .git-status-dot { display: block; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; }
   .git-status-dot { width: 6px; height: 6px; flex-basis: 6px; margin-left: -5px; background: #4bd38a; box-shadow: 0 0 0 2px #101112; }
   .git-status-dot.dirty { background: #d49a60; }
-  .session-state-dot { margin-left: 2px; background: #6c7072; }
-  .session-state-dot.streaming { background: #73baff; box-shadow: 0 0 0 3px rgba(115,186,255,.1); animation: pulse 1.8s infinite; }
+  .session-status { width: 19px; height: 19px; display: grid; place-items: center; flex: 0 0 19px; border: 1px solid transparent; border-radius: 6px; background: #191a1b; color: #88837d; }
+  .session-status.running { border-color: #5c4330; background: #251c16; color: #e9a868; }
+  .session-status.running svg { animation: spin 1.1s linear infinite; }
+  .session-status.input-required { border-color: #78583c; background: #302319; color: #f0bd83; }
+  .session-status.waiting { border-color: #4b5559; background: #192023; color: #9ebcc6; }
+  .session-status.done { color: #779987; }
+  .session-status.failed { border-color: #71443e; background: #2a1a19; color: #e4897f; }
   .unavailable-worktree-row { height: 34px; padding: 0 9px 0 28px; display: flex; align-items: center; color: #816f65; font-size: 11px; font-style: italic; }
   .session-skeleton { height: 70px; border-radius: 5px; background: linear-gradient(90deg, #121314 25%, #1a1b1c 50%, #121314 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
   .session-skeleton.compact { height: 34px; margin: 1px 8px 1px 28px; }

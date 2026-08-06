@@ -76,6 +76,9 @@ export interface SessionSummary {
   readonly parentSessionPath?: string
 }
 
+/** A concise, renderer-safe projection of Pi's current session lifecycle. */
+export type SessionRuntimeStatus = "running" | "input-required" | "waiting" | "done" | "failed"
+
 export type MessageRole = "user" | "assistant" | "tool" | "system"
 
 export interface TextBlock {
@@ -188,6 +191,7 @@ export interface SessionDetail {
   /** Omitted when no model with a context window is selected. */
   readonly contextUsage?: ContextUsage
   readonly interactionRequest?: AskUserInteractionRequest
+  readonly runtimeStatus: SessionRuntimeStatus
   readonly isStreaming: boolean
   readonly isCompacting: boolean
 }
@@ -204,6 +208,7 @@ export interface ToolActivity {
 export type SessionEvent =
   | { readonly type: "session-started"; readonly requestId: string; readonly context: WorktreeContext; readonly detail: SessionDetail }
   | { readonly type: "session-state"; readonly sessionPath: string; readonly detail: SessionDetail }
+  | { readonly type: "runtime-status"; readonly sessionPath: string; readonly status: SessionRuntimeStatus }
   | { readonly type: "assistant-start"; readonly sessionPath: string; readonly messageId: string; readonly timestamp: number }
   | { readonly type: "user-message"; readonly sessionPath: string; readonly message: ChatMessage }
   | { readonly type: "queue-update"; readonly sessionPath: string; readonly messages: ReadonlyArray<QueuedMessage> }

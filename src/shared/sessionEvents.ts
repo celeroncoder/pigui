@@ -114,6 +114,7 @@ export const reduceSessionEvent = (
   }
   if (!current || current.summary.path !== activeSessionPath) return current
 
+  if (event.type === "runtime-status") return { ...current, runtimeStatus: event.status }
   if (event.type === "queue-update") return { ...current, queuedMessages: event.messages }
   if (event.type === "user-message") {
     return current.messages.some((message) => message.id === event.message.id)

@@ -27,6 +27,7 @@ const detail = (messages: ReadonlyArray<ChatMessage> = []): SessionDetail => ({
   availableThinkingLevels: ["off"],
   backgroundProcesses: [],
   queuedMessages: [],
+  runtimeStatus: "running",
   isStreaming: true,
   isCompacting: false
 })
@@ -150,6 +151,16 @@ describe("live session event reconciliation", () => {
     expect(current.contextUsage).toEqual({ tokens: 4_000, contextWindow: 128_000, percent: 3.125 })
     expect(current.backgroundProcesses).toEqual([expect.objectContaining({ id: "terminal-1", output: "Ready" })])
     expect(current.isStreaming).toBe(false)
+  })
+
+  it("keeps the active detail's runtime status in sync with its sidebar projection", () => {
+    let current = detail()
+    current = apply(current, { type: "runtime-status", sessionPath, status: "input-required" })
+
+    expect(current.runtimeStatus).toBe("input-required")
+
+    const other = reduceSessionEvent(current, sessionPath, { type: "runtime-status", sessionPath: "/sessions/other.jsonl", status: "failed" })
+    expect(other?.runtimeStatus).toBe("input-required")
   })
 
   it("ignores events from a session that is no longer active", () => {

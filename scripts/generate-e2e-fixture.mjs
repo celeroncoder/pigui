@@ -304,6 +304,7 @@ for (const [index, info] of orderedInfos.entries()) {
     backgroundProcesses: projectBackgroundProcesses(manager.getBranch()),
     queuedMessages: [],
     ...(contextUsage ? { contextUsage } : {}),
+    runtimeStatus: interaction?.sessionPath === summary.path ? "input-required" : "done",
     isStreaming: false,
     isCompacting: false
   })

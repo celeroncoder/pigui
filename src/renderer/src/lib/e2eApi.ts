@@ -73,6 +73,7 @@ const SessionDetailSchema = Schema.Struct({
   queuedMessages: Schema.Array(QueuedMessageSchema),
   contextUsage: Schema.optionalKey(ContextUsageSchema),
   interactionRequest: Schema.optionalKey(AskUserInteractionRequestSchema),
+  runtimeStatus: Schema.Literals(["running", "input-required", "waiting", "done", "failed"]),
   isStreaming: Schema.Boolean,
   isCompacting: Schema.Boolean
 })

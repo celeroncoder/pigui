@@ -12,7 +12,7 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
@@ -52,6 +52,7 @@ interface ActiveSession {
   disposed: boolean
   liveAssistantMessageIndex: number
   liveUserMessageIndex: number
+  runtimeStatus: SessionRuntimeStatus
 }
 
 const stringify = (value: unknown): string => {
@@ -156,6 +157,11 @@ const historyToChat = (manager: SessionManager): ReadonlyArray<ChatMessage> => {
 
 const recordValue = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : undefined
+
+const agentEndedWithError = (messages: ReadonlyArray<unknown>): boolean => {
+  const lastAssistant = [...messages].reverse().find((message) => recordValue(message)?.role === "assistant")
+  return recordValue(lastAssistant)?.stopReason === "error"
+}
 const stringValue = (value: unknown): string | undefined => typeof value === "string" ? value : undefined
 const numberValue = (value: unknown): number | undefined => typeof value === "number" ? value : undefined
 const thinkingLevelValue = (value: unknown): ThinkingLevel =>
@@ -382,6 +388,7 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary, con
     backgroundProcesses: [],
     queuedMessages: [],
     ...(contextUsage ? { contextUsage } : {}),
+    runtimeStatus: "done",
     isStreaming: false,
     isCompacting: false
   }
@@ -409,6 +416,7 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
     queuedMessages: active.queuedMessages,
     ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
+    runtimeStatus: active.runtimeStatus,
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
   }
@@ -428,6 +436,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     queuedMessages: active.queuedMessages,
     ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
+    runtimeStatus: active.runtimeStatus,
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
   }
@@ -488,6 +497,21 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     sessionPath: active.session.sessionFile ?? "",
     contextUsage: projectContextUsage(active.session)
   })
+
+  const emitRuntimeStatus = (active: ActiveSession, status: SessionRuntimeStatus) => {
+    active.runtimeStatus = status
+    return bus.emit({ type: "runtime-status", sessionPath: active.session.sessionFile ?? "", status })
+  }
+
+  const refreshRuntimeStatus = (active: ActiveSession) => {
+    if (active.runtimeStatus === "failed" || active.interaction.pendingRequest()) return Effect.void
+    const status: SessionRuntimeStatus = active.queuedMessages.length > 0
+      ? "waiting"
+      : active.session.isStreaming || active.session.isCompacting || active.pendingPromptStarts > 0
+        ? "running"
+        : "done"
+    return emitRuntimeStatus(active, status)
+  }
 
   const emitBackgroundProcesses = (active: ActiveSession) => emitActiveEvent(active, {
     type: "background-processes",
@@ -650,7 +674,11 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             void Effect.runPromise(bus.emit({ type: "interaction-request", sessionPath, request })).catch(() => undefined)
           },
           onClear: (requestId) => {
-            void Effect.runPromise(bus.emit({ type: "interaction-cleared", sessionPath, requestId })).catch(() => undefined)
+            void Effect.runPromise(Effect.gen(function*() {
+              yield* bus.emit({ type: "interaction-cleared", sessionPath, requestId })
+              const active = activeSessions.get(canonicalPath(sessionPath))
+              if (active) yield* refreshRuntimeStatus(active)
+            })).catch(() => undefined)
           }
         })
 
@@ -701,18 +729,20 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       disposed: false,
       liveAssistantMessageIndex: 0,
       liveUserMessageIndex: 0,
+      runtimeStatus: runtime.session.isStreaming ? "running" : "done",
       unsubscribe: () => undefined
     }
-
     active.liveDetail = snapshotFromActive(active)
 
     active.unsubscribe = runtime.session.subscribe((event) => {
       if (event.type === "queue_update") {
         if (active.queueUpdatesSuspended === 0 && refreshQueuedMessages(active)) {
           void Effect.runPromise(emitQueuedMessages(active))
+          void Effect.runPromise(refreshRuntimeStatus(active))
         }
       } else if (event.type === "agent_start") {
         void Effect.runPromise(Effect.gen(function*() {
+          yield* emitRuntimeStatus(active, "running")
           yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: true })
           yield* emitContextUsage(active)
         }))
@@ -763,6 +793,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
               options: input.options
             }
             active.interaction.register(request)
+            void Effect.runPromise(emitRuntimeStatus(active, "input-required"))
           }
         }
         void Effect.runPromise(emitActiveEvent(active, {
@@ -802,6 +833,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         void Effect.runPromise(emitContextUsage(active))
       } else if (event.type === "compaction_start") {
         void Effect.runPromise(Effect.gen(function*() {
+          yield* emitRuntimeStatus(active, "running")
           yield* emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: true })
           yield* emitContextUsage(active)
         }))
@@ -815,11 +847,20 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         }))
       } else if (event.type === "thinking_level_changed") {
         void Effect.runPromise(emitSnapshot(active))
+      } else if (event.type === "agent_end" && !event.willRetry && agentEndedWithError(event.messages)) {
+        void Effect.runPromise(emitRuntimeStatus(active, "failed"))
+      } else if (event.type === "auto_retry_start") {
+        void Effect.runPromise(emitRuntimeStatus(active, "waiting"))
+      } else if (event.type === "auto_retry_end" && !event.success) {
+        void Effect.runPromise(emitRuntimeStatus(active, "failed"))
       } else if (event.type === "agent_settled") {
         active.liveMessageId = null
         active.liveMessageStarted = false
-        void Effect.runPromise(emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: false }))
-        void Effect.runPromise(emitSnapshot(active))
+        void Effect.runPromise(Effect.gen(function*() {
+          if (active.runtimeStatus !== "failed") yield* refreshRuntimeStatus(active)
+          yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: false })
+          yield* emitSnapshot(active)
+        }))
         scheduleGitRefresh(active)
       }
     })

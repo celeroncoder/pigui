@@ -1,6 +1,6 @@
-import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AskUserPanel } from "./components/AskUserPanel"
@@ -16,6 +16,7 @@ import styles from "./App.module.css"
 import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
 import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
+import { applySessionRuntimeStatus } from "./lib/runtimeStatuses"
 import { compactLabel } from "./lib/text"
 
 const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
@@ -26,6 +27,7 @@ export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
   const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
   const [sessionsByWorktree, setSessionsByWorktree] = useState<Readonly<Record<string, WorktreeSessionList | undefined>>>({})
+  const [sessionRuntimeStatuses, setSessionRuntimeStatuses] = useState<Readonly<Record<string, SessionRuntimeStatus>>>({})
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [activeWorktree, setActiveWorktree] = useState<ProjectWorktree | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
@@ -148,6 +150,7 @@ export default function App() {
       if (requestId !== sessionRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
+      setSessionRuntimeStatuses((current) => ({ ...current, [detail.summary.path]: detail.runtimeStatus }))
       setInteractionRequest(detail.interactionRequest ?? null)
       void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
     } catch (cause) {
@@ -301,6 +304,8 @@ export default function App() {
   }, [activeProject, activeWorktree, inspectSubagent, selectedSubagent, subagentPaneOpen])
 
   useEffect(() => desktopApi.onSessionEvent((event: SessionEvent) => {
+    setSessionRuntimeStatuses((current) => applySessionRuntimeStatus(current, event))
+
     if (event.type === "error") {
       if (event.sessionPath && event.sessionPath !== activeSessionPathRef.current) return
       setError(event.message)
@@ -330,6 +335,7 @@ export default function App() {
       startedSessionRequestRef.current = event.requestId
       activeSessionPathRef.current = event.detail.summary.path
       setSession(event.detail)
+      setSessionRuntimeStatuses((current) => ({ ...current, [event.detail.summary.path]: event.detail.runtimeStatus }))
       setSessionDraft(null)
       setDraftBaseBranch(undefined)
       setDraftContextLoading(false)
@@ -587,6 +593,7 @@ export default function App() {
     if (!wasStreaming) {
       setLiveThinking(null)
       setSession((current) => current ? { ...current, isStreaming: true } : current)
+      setSessionRuntimeStatuses((current) => ({ ...current, [sessionPath]: "running" }))
     }
     setError(null)
     void desktopApi.sessions.prompt(context, sessionPath, rawText, delivery, attachmentPaths).catch((cause: unknown) => {
@@ -599,7 +606,10 @@ export default function App() {
         attachmentRevisionRef.current += 1
         setPendingAttachments(previousAttachments)
       }
-      if (!wasStreaming) setSession((current) => current ? { ...current, isStreaming: false } : current)
+      if (!wasStreaming) {
+        setSession((current) => current ? { ...current, isStreaming: false } : current)
+        setSessionRuntimeStatuses((current) => ({ ...current, [sessionPath]: "failed" }))
+      }
       setError(cause instanceof Error ? cause.message : "Pi could not process the message")
     })
   }
@@ -716,6 +726,7 @@ export default function App() {
         <ProjectSidebar
           projects={projects}
           sessionsByWorktree={sessionsByWorktree}
+          runtimeStatuses={sessionRuntimeStatuses}
           activeProject={activeProject}
           activeWorktree={activeWorktree}
           activeSessionPath={session?.summary.path ?? null}

@@ -1,6 +1,6 @@
-import { ChevronDown, FolderGit2, FolderPlus, GitBranch, GitFork, HardDrive, Plus } from "lucide-react"
+import { CircleAlert, CircleCheck, CircleDashed, CirclePause, ChevronDown, FolderGit2, FolderPlus, GitBranch, GitFork, HardDrive, MessageCircleQuestionMark, Plus } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
-import type { Project, ProjectWorktree, SessionSummary } from "../../../shared/contracts"
+import type { Project, ProjectWorktree, SessionRuntimeStatus, SessionSummary } from "../../../shared/contracts"
 import { isProjectExpanded, preserveProjectExpansionOnSelection, toggleProjectExpansion } from "./projectSidebarState"
 
 export interface WorktreeSessionList {
@@ -12,6 +12,7 @@ export interface WorktreeSessionList {
 interface ProjectSidebarProps {
   readonly projects: ReadonlyArray<Project>
   readonly sessionsByWorktree: Readonly<Record<string, WorktreeSessionList | undefined>>
+  readonly runtimeStatuses: Readonly<Record<string, SessionRuntimeStatus>>
   readonly activeProject: Project | null
   readonly activeWorktree: ProjectWorktree | null
   readonly activeSessionPath: string | null
@@ -25,10 +26,19 @@ interface ProjectSidebarProps {
 const worktreeKey = (project: Project, worktree: ProjectWorktree) => `${project.id}:${worktree.id}`
 const sessionTitle = (session: SessionSummary) => session.name || session.firstMessage || "Untitled session"
 
+const sessionStatusPresentation: Record<SessionRuntimeStatus, { readonly label: string; readonly Icon: typeof CircleCheck }> = {
+  running: { label: "Working", Icon: CircleDashed },
+  "input-required": { label: "Needs input", Icon: MessageCircleQuestionMark },
+  waiting: { label: "Waiting", Icon: CirclePause },
+  done: { label: "Done", Icon: CircleCheck },
+  failed: { label: "Failed", Icon: CircleAlert }
+}
+
 export function ProjectSidebar(props: ProjectSidebarProps) {
   const {
     projects,
     sessionsByWorktree,
+    runtimeStatuses,
     activeProject,
     activeWorktree,
     activeSessionPath,
@@ -136,8 +146,9 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                     return sessions.map((candidate) => {
                       const title = sessionTitle(candidate)
                       const active = projectActive && activeWorktree?.id === worktree.id && activeSessionPath === candidate.path
-                      const state = active && activeSessionStreaming ? "running" : active ? "selected and idle" : "idle"
-                      const label = `${title}. ${kindLabel}, branch ${branch}, ${gitState}, path ${worktree.path}. Session ${state}.`
+                      const runtimeStatus = runtimeStatuses[candidate.path] ?? (active && activeSessionStreaming ? "running" : "done")
+                      const { label: statusLabel, Icon } = sessionStatusPresentation[runtimeStatus]
+                      const label = `${title}. ${kindLabel}, branch ${branch}, ${gitState}, path ${worktree.path}. Session ${statusLabel.toLocaleLowerCase()}.`
                       return (
                         <button
                           className={`session-row flat ${active ? "active" : ""}`}
@@ -149,11 +160,13 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                           title={label}
                         >
                           <span className="session-title">{title}</span>
+                          <span className={`session-status ${runtimeStatus}`} role="img" aria-label={`Session status: ${statusLabel}`} title={`Session status: ${statusLabel}`}>
+                            <Icon size={13} aria-hidden="true" />
+                          </span>
                           <span className="session-metadata" aria-hidden="true">
                             {isLocal ? <HardDrive size={13} /> : <GitFork size={13} />}
                             <GitBranch size={13} />
                             <i className={`git-status-dot ${dirty ? "dirty" : ""}`} />
-                            <i className={`session-state-dot ${active && activeSessionStreaming ? "streaming" : ""}`} />
                           </span>
                         </button>
                       )
