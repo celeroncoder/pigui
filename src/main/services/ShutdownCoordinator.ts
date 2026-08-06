@@ -35,15 +35,23 @@ export class ShutdownCoordinator {
     try {
       await this.options.disposeSessions()
     } catch (cause) {
-      this.options.logError(`[pi-desktop] failed to dispose Pi sessions during ${reason}`, cause)
+      this.logFailure(`[pi-desktop] failed to dispose Pi sessions during ${reason}`, cause)
     }
 
     try {
       await this.options.disposeRuntime()
     } catch (cause) {
-      this.options.logError(`[pi-desktop] failed to dispose the Effect runtime during ${reason}`, cause)
+      this.logFailure(`[pi-desktop] failed to dispose the Effect runtime during ${reason}`, cause)
     }
 
     this.options.exit(this.exitCode)
+  }
+
+  private logFailure(message: string, cause: unknown): void {
+    try {
+      this.options.logError(message, cause)
+    } catch {
+      // Logging is best-effort during terminal cleanup and must never block exit.
+    }
   }
 }

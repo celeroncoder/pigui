@@ -95,4 +95,22 @@ describe("ShutdownCoordinator", () => {
     )
     expect(exit).toHaveBeenCalledWith(1)
   })
+
+  it("continues runtime disposal and exit when failure logging throws", async () => {
+    const disposeRuntime = vi.fn(async () => undefined)
+    const exit = vi.fn()
+    const coordinator = new ShutdownCoordinator({
+      disposeSessions: async () => Promise.reject(new Error("session cleanup failed")),
+      disposeRuntime,
+      exit,
+      logError: () => {
+        throw new Error("stderr unavailable")
+      }
+    })
+
+    await coordinator.shutdown("SIGHUP", 129)
+
+    expect(disposeRuntime).toHaveBeenCalledOnce()
+    expect(exit).toHaveBeenCalledWith(129)
+  })
 })

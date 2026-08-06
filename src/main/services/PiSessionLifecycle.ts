@@ -1,3 +1,20 @@
+import { Effect } from "effect"
+import { AppError } from "./AppError"
+
+export class PiSessionLifecycleGate {
+  private closed = false
+
+  ensureAvailable(operation: string): Effect.Effect<void, AppError> {
+    return this.closed
+      ? Effect.fail(AppError.make({ operation, message: "Pi Desktop is shutting down" }))
+      : Effect.void
+  }
+
+  close(): void {
+    this.closed = true
+  }
+}
+
 export const releaseInactiveEntriesExcept = async <T>(
   entries: Map<string, T>,
   keepKey: string,
@@ -8,7 +25,7 @@ export const releaseInactiveEntriesExcept = async <T>(
   for (const [key, entry] of entries) {
     if (key === keepKey || shouldRetain(entry)) continue
     entries.delete(key)
-    releases.push(release(entry))
+    releases.push(Promise.resolve().then(() => release(entry)))
   }
   const results = await Promise.allSettled(releases)
   const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : [])
@@ -58,7 +75,7 @@ export const releaseAllEntries = async <T>(
 ): Promise<void> => {
   const active = [...entries.values()]
   entries.clear()
-  const results = await Promise.allSettled(active.map(release))
+  const results = await Promise.allSettled(active.map((entry) => Promise.resolve().then(() => release(entry))))
   const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : [])
   if (failures.length > 0) {
     throw new AggregateError(failures, `Failed to dispose Pi sessions: ${failures.map(String).join("; ")}`)
