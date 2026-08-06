@@ -169,29 +169,24 @@ export const createE2eApi = (): PiDesktopApi => {
         if (!worktree || worktree.kind !== "linked") return null
         return { number: 37, title: "Browser review PR", url: "https://github.com/celeroncoder/pigui/pull/37", branch: worktree.git?.branch ?? worktree.branch, state: "mergeable" }
       },
-      inspect: async (_context, sessionPath, messageId) => {
-        const detail = (await loadFixture()).details.find((candidate) => candidate.summary.path === sessionPath)
-        const message = detail?.messages.find((candidate) => candidate.id === messageId)
-        const summary = message?.blocks.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n\n").trim()
-        if (!detail || !summary) throw new Error("The selected Pi response is unavailable")
+      worktree: async (context) => {
+        const data = await loadFixture()
+        const worktree = data.projects.find((project) => project.id === context.projectId)?.worktrees.find((candidate) => candidate.id === context.worktreeId)
+        if (!worktree) throw new Error("The generated worktree snapshot is unavailable")
+        const changes = worktree.git ?? { branch: worktree.branch, additions: 0, deletions: 0, changedFiles: 0 }
         return {
           repository: "celeroncoder/pigui",
           repositoryUrl: "https://github.com/celeroncoder/pigui",
-          branch: "codex/browser-review",
-          baseBranch: "main",
-          commit: "a1b2c3d4e5f6",
-          compareUrl: "https://github.com/celeroncoder/pigui/compare/main...codex/browser-review",
-          committedFiles: 4,
-          additions: 128,
-          deletions: 17,
-          commits: 2,
-          hasUncommittedChanges: true,
-          summary,
-          sessionName: detail.summary.name
+          branch: changes.branch,
+          path: worktree.path,
+          worktreeKind: worktree.kind === "linked" ? "linked" : "local",
+          changes,
+          hasUpstream: true,
+          ahead: 1,
+          ...(worktree.kind === "linked" ? { pullRequest: { number: 37, title: "Add worktree-aware GitHub workflow", url: "https://github.com/celeroncoder/pigui/pull/37", branch: changes.branch, state: "mergeable" as const } } : {})
         }
       },
-      comment: async () => ({ url: "https://github.com/celeroncoder/pigui/issues/17#issuecomment-browser-review" }),
-      createOrUpdateDraft: async () => ({ number: 117, title: "Browser review draft", url: "https://github.com/celeroncoder/pigui/pull/117", isDraft: true, action: "created" })
+      commitOrPush: async () => Promise.reject(new Error("Git mutations are tested in Electron, not the browser review harness"))
     },
     projects: {
       list: async () => (await loadFixture()).projects,

@@ -29,11 +29,8 @@ import {
   updateQueuedMessageText
 } from "./PromptQueue"
 import { WindowBus } from "./WindowBus"
-import type { SessionShareSummary } from "./GitHubWorkflow"
 
 const canonicalPath = (value: string) => resolve(value)
-const MAX_SHARE_SUMMARY_BYTES = 56 * 1024
-const MAX_SHARE_SESSION_NAME_CHARS = 120
 
 interface ActiveSession {
   readonly cwd: string
@@ -156,26 +153,6 @@ const historyToChat = (manager: SessionManager): ReadonlyArray<ChatMessage> => {
     }
   }
   return output
-}
-
-export const sessionShareSummary = (manager: SessionManager, messageId: string): SessionShareSummary | undefined => {
-  const entry = manager.getBranch().find((candidate) => candidate.id === messageId)
-  if (!entry || entry.type !== "message" || entry.message.role !== "assistant") return undefined
-  const content = entry.message.content
-    .flatMap((block) => block.type === "text" && block.text.trim() ? [block.text] : [])
-    .join("\n\n")
-    .trim()
-  if (!content || Buffer.byteLength(content, "utf8") > MAX_SHARE_SUMMARY_BYTES) return undefined
-  const fallbackName = content.split("\n")[0]?.trim() || "Pi session"
-  const sessionName = (manager.getSessionName() || fallbackName)
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_SHARE_SESSION_NAME_CHARS) || "Pi session"
-  return {
-    content,
-    sessionName
-  }
 }
 
 const recordValue = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
@@ -470,7 +447,6 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly create: (cwd: string, baseBranch?: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
-  readonly shareSummary: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<SessionShareSummary, AppError>
   readonly prompt: (cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
   readonly editQueuedMessage: (cwd: string, sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
   readonly removeQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
@@ -973,20 +949,6 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       } finally {
         yield* Effect.promise(() => runtime.dispose())
       }
-    }),
-    shareSummary: Effect.fn("PiSessions.shareSummary")(function*(cwd: string, sessionPath: string, messageId: string) {
-      const projectCwd = canonicalPath(cwd)
-      const requestedPath = canonicalPath(sessionPath)
-      const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
-      const info = listed.find((candidate) => canonicalPath(candidate.path) === requestedPath && canonicalPath(candidate.cwd || projectCwd) === projectCwd)
-      if (!info) return yield* Effect.fail(AppError.make({ operation: "share Pi summary", message: "Session does not belong to this worktree" }))
-      const manager = yield* Effect.try({
-        try: () => SessionManager.open(info.path, undefined, projectCwd),
-        catch: toAppError("read Pi session summary")
-      })
-      const summary = sessionShareSummary(manager, messageId)
-      if (!summary) return yield* Effect.fail(AppError.make({ operation: "share Pi summary", message: "The selected response is unavailable, still streaming, or too large to share" }))
-      return summary
     }),
     prompt: Effect.fn("PiSessions.prompt")(function*(cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
       const requestedPath = canonicalPath(sessionPath)

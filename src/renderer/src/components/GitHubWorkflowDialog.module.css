@@ -1,45 +1,40 @@
 @layer components {
-  .backdrop { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(4,5,6,.82); backdrop-filter: blur(13px); }
-  .dialog { position: relative; inset: auto; width: min(620px, 100%); max-width: none; max-height: min(760px, calc(100vh - 48px)); overflow: auto; margin: 0; padding: 0; border: 1px solid #46494b; border-radius: 14px; background: #111213; color: var(--text); box-shadow: 0 28px 90px rgba(0,0,0,.68), inset 0 1px rgba(255,255,255,.055); }
-  .header { min-height: 62px; display: flex; align-items: center; gap: 11px; padding: 0 12px 0 16px; border-bottom: 1px solid #2d2f31; }
-  .header > .icon { width: 31px; height: 31px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid #46382e; border-radius: 9px; background: linear-gradient(180deg, #2a211b, #191716); color: #dda473; }
-  .header > div:nth-child(2) { min-width: 0; }
-  .header span { display: block; margin-bottom: 2px; color: #a98261; font: 7px var(--display); letter-spacing: .06em; text-transform: uppercase; }
-  .header h2 { margin: 0; font: 11px var(--display); letter-spacing: .01em; }
-  .header > button { width: 30px; height: 30px; display: grid; place-items: center; margin-left: auto; border-radius: 8px; background: transparent; color: var(--text-3); }
-  .header > button:hover:not(:disabled) { background: #242627; color: var(--text); }
-  .loading { min-height: 220px; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--text-3); font: 10px var(--mono); }
+  .popover { position: absolute; z-index: 120; top: calc(100% + 8px); right: 0; width: min(380px, calc(100vw - 28px)); max-height: min(560px, calc(100vh - 78px)); overflow: auto; border: 1px solid #383a3c; border-radius: 12px; background: linear-gradient(180deg, #191a1b, #131415); color: #e7e2dc; box-shadow: 0 18px 48px rgba(0,0,0,.58), 0 2px 8px rgba(0,0,0,.38), inset 0 1px rgba(255,255,255,.045); }
+  .header { min-height: 42px; display: flex; align-items: center; padding: 0 10px 0 13px; border-bottom: 1px solid rgba(255,255,255,.055); }
+  .header h2 { margin: 0; color: #9f9a95; font-size: 11px; font-weight: 620; letter-spacing: .025em; }
+  .header button { width: 26px; height: 26px; display: grid; place-items: center; margin-left: auto; border-radius: 7px; background: transparent; color: #817d79; }
+  .header button:hover:not(:disabled) { background: #252627; color: #d8d2cc; }
+  .loading { min-height: 118px; display: flex; align-items: center; justify-content: center; gap: 8px; color: #8f8a85; font-size: 11px; }
   .loading svg, .spin { animation: github-spin 1s linear infinite; }
-  .content { display: grid; gap: 13px; padding: 15px 16px 17px; }
-  .context { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
-  .context > div, .context > a { min-width: 0; min-height: 31px; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid #2d3032; border-radius: 7px; background: #0d0e0f; color: #aaa6a1; font: 9px var(--mono); }
-  .context > div span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .context code { margin-left: auto; color: #77736f; font: 8px var(--mono); }
-  .context > a { grid-column: 1 / -1; color: #c99a70; text-decoration: none; }
-  .context > a svg { margin-left: auto; }
-  .notice { margin: -4px 1px 0; color: #ba966f; font-size: 9.5px; line-height: 1.45; }
-  .preview { display: grid; gap: 6px; }
-  .preview > span, .comment label { color: #97928d; font: 7.5px var(--display); letter-spacing: .055em; text-transform: uppercase; }
-  .preview p { max-height: 170px; overflow: auto; margin: 0; padding: 11px 12px; border: 1px solid #303234; border-radius: 8px; background: #0b0c0d; color: #c9c6c2; white-space: pre-wrap; overflow-wrap: anywhere; font: 10.5px/1.55 var(--mono); user-select: text; }
-  .comment { display: grid; gap: 7px; }
-  .comment > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
-  .comment input { min-width: 0; height: 35px; padding: 0 10px; border: 1px solid #414447; border-radius: 8px; outline: none; background: #0c0d0e; color: var(--text); font: 10.5px var(--mono); user-select: text; }
-  .comment input:focus { border-color: #a9754c; box-shadow: 0 0 0 2px rgba(233,168,104,.1); }
-  .comment button { height: 35px; display: inline-flex; align-items: center; gap: 7px; padding: 0 12px; border-radius: 8px; background: linear-gradient(180deg, #33271f, #251d18); color: #e6b382; box-shadow: inset 0 0 0 1px rgba(233,168,104,.18); font-size: 10px; }
-  .comment button:disabled, .prAction:disabled { opacity: .48; }
-  .divider { height: 1px; position: relative; margin: 2px 0; background: #292b2d; }
-  .divider span { position: absolute; left: 50%; top: 50%; padding: 0 8px; transform: translate(-50%, -50%); background: #111213; color: #77736f; font: 8px var(--mono); }
-  .prAction { width: 100%; min-height: 54px; display: flex; align-items: center; gap: 10px; padding: 8px 11px; border: 1px solid #3d4042; border-radius: 9px; background: linear-gradient(180deg, #1d1f20, #161718); color: #c9c6c2; text-align: left; }
-  .prAction:hover:not(:disabled) { border-color: #74553e; background: linear-gradient(180deg, #26221f, #1b1918); }
-  .prAction > svg { flex: 0 0 auto; color: #d09767; }
-  .prAction span { min-width: 0; display: grid; gap: 3px; }
-  .prAction strong { color: #e0ddd9; font-size: 10.5px; font-weight: 650; }
-  .prAction small { overflow: hidden; color: #8f8b87; white-space: nowrap; text-overflow: ellipsis; font-size: 8.5px; }
-  .error, .success { min-height: 34px; display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 7px; font-size: 10px; line-height: 1.4; }
-  .error { border: 1px solid #59322f; background: #241716; color: #e9aba5; }
-  .fatal { margin: 16px; }
-  .success { border: 1px solid #2f503a; background: #14231a; color: #9ed1ab; }
-  .success a { flex: 1; display: flex; align-items: center; gap: 7px; color: inherit; text-decoration: none; }
-  .success a svg { margin-left: auto; }
+  .content { display: grid; gap: 2px; padding: 7px 8px 9px; }
+  .row, .action { min-height: 36px; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 0 7px; color: #d8d3cd; }
+  .row > svg, .action > svg { color: #aaa39d; }
+  .row strong { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; font-weight: 560; }
+  .row code { max-width: 145px; overflow: hidden; color: #77736f; white-space: nowrap; text-overflow: ellipsis; font: 9px var(--mono); }
+  .diff { display: flex; gap: 7px; font: 10px var(--mono); }
+  .diff i { color: #44d58a; font-style: normal; }
+  .diff b { color: #ff6268; font-weight: 400; }
+  .commitMessage { display: grid; gap: 5px; margin: 5px 7px 4px; }
+  .commitMessage span { color: #77736f; font-size: 8px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; }
+  .commitMessage input { height: 32px; padding: 0 9px; border: 1px solid #3d3d3d; border-radius: 8px; outline: none; background: #0e0f10; color: #ddd7d0; font: 10px var(--sans); user-select: text; }
+  .commitMessage input:focus { border-color: #8b684b; box-shadow: 0 0 0 2px rgba(180,128,82,.12); }
+  .action { width: 100%; grid-template-columns: 20px 1fr; border-radius: 7px; background: transparent; text-align: left; font-size: 12px; }
+  .action:hover:not(:disabled) { background: #23201e; color: #e7bd94; }
+  .action:hover:not(:disabled) > svg { color: #d19c70; }
+  .action:disabled { opacity: .5; }
+  .pullRequest { display: grid; gap: 1px; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,.065); }
+  .pullRequest a, .prStatus { min-height: 36px; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 0 7px; color: #d8d3cd; text-decoration: none; border-radius: 7px; }
+  .pullRequest a:hover { background: #23201e; color: #e7bd94; }
+  .pullRequest a span, .prStatus span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; }
+  .pullRequest a > svg:last-child { color: #686561; }
+  .prStatus { grid-template-columns: 20px minmax(0, 1fr); color: #8f8a85; }
+  .prStatus.mergeable { color: #48d78c; }
+  .prStatus.conflict { color: #ff6268; }
+  .prStatus.merged { color: #ad8bfa; }
+  .prStatus.pending svg { animation: github-spin 1.1s linear infinite; color: #e2bd55; }
+  .error, .success { min-height: 32px; display: flex; align-items: center; gap: 7px; margin: 5px 6px 0; padding: 7px 9px; border-radius: 7px; font-size: 10px; }
+  .error { background: #3a2021; color: #ffaaa9; }
+  .success { background: #20342a; color: #8de0ad; }
+  .fatal { margin: 9px; }
   @keyframes github-spin { to { transform: rotate(360deg); } }
 }

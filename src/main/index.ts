@@ -79,15 +79,6 @@ const listProjectsWithGit = Effect.fn("listProjectsWithGit")(function*() {
   return yield* Effect.forEach(projects, enrichProject, { concurrency: 4 })
 })
 
-const resolveGitHubSummary = Effect.fn("resolveGitHubSummary")(function*(context: unknown, sessionPath: unknown, messageId: unknown) {
-  const { worktree } = yield* resolveKnownWorktree(context)
-  const path = yield* decodeString(sessionPath)
-  const id = yield* decodeString(messageId)
-  const sessions = yield* PiSessions
-  const summary = yield* sessions.shareSummary(worktree.path, path, id)
-  return { cwd: worktree.path, summary }
-})
-
 const appIconPath = join(__dirname, "../renderer/pi-icon.png")
 
 const createWindow = () => {
@@ -179,23 +170,22 @@ const registerIpc = () => {
     return yield* github.branchPullRequest(worktree.path)
   })))
 
-  ipcMain.handle(IpcChannels.inspectGitHubWorkflow, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
-    const { cwd, summary } = yield* resolveGitHubSummary(context, sessionPath, messageId)
+  ipcMain.handle(IpcChannels.inspectGitHubWorktree, (_event, context: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
     const github = yield* GitHubWorkflow
-    return yield* github.inspect(cwd, summary)
+    const git = yield* GitContext
+    const [state, changes] = yield* Effect.all([github.worktree(worktree.path), git.inspect(worktree.path)], { concurrency: 2 })
+    if (!changes) return yield* Effect.fail(AppError.make({ operation: "inspect GitHub worktree", message: "The selected workspace is not a Git worktree" }))
+    if (state.branch !== changes.branch) return yield* Effect.fail(AppError.make({ operation: "inspect GitHub worktree", message: "The selected branch changed while GitHub status was loading; inspect it again" }))
+    const { pullRequest, ...base } = state
+    return { ...base, worktreeKind: worktree.kind === "linked" ? "linked" as const : "local" as const, changes, ...(pullRequest ? { pullRequest } : {}) }
   })))
 
-  ipcMain.handle(IpcChannels.postGitHubComment, (_event, context: unknown, sessionPath: unknown, messageId: unknown, target: unknown) => run(Effect.gen(function*() {
-    const { cwd, summary } = yield* resolveGitHubSummary(context, sessionPath, messageId)
-    const requestedTarget = yield* decodeString(target)
+  ipcMain.handle(IpcChannels.commitOrPushGitHubWorktree, (_event, context: unknown, message: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
+    const commitMessage = yield* decodeString(message)
     const github = yield* GitHubWorkflow
-    return yield* github.comment(cwd, summary, requestedTarget)
-  })))
-
-  ipcMain.handle(IpcChannels.createOrUpdateGitHubDraft, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
-    const { cwd, summary } = yield* resolveGitHubSummary(context, sessionPath, messageId)
-    const github = yield* GitHubWorkflow
-    return yield* github.createOrUpdateDraft(cwd, summary)
+    return yield* github.commitOrPush(worktree.path, commitMessage)
   })))
 
   ipcMain.handle(IpcChannels.listSessions, (_event, context: unknown) => run(Effect.gen(function*() {

@@ -9,9 +9,8 @@ const api: PiDesktopApi = {
   },
   github: {
     branchPullRequest: (context) => ipcRenderer.invoke(IpcChannels.inspectGitHubBranchPullRequest, context),
-    inspect: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.inspectGitHubWorkflow, context, sessionPath, messageId),
-    comment: (context, sessionPath, messageId, target) => ipcRenderer.invoke(IpcChannels.postGitHubComment, context, sessionPath, messageId, target),
-    createOrUpdateDraft: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.createOrUpdateGitHubDraft, context, sessionPath, messageId)
+    worktree: (context) => ipcRenderer.invoke(IpcChannels.inspectGitHubWorktree, context),
+    commitOrPush: (context, message) => ipcRenderer.invoke(IpcChannels.commitOrPushGitHubWorktree, context, message)
   },
   projects: {
     list: () => ipcRenderer.invoke(IpcChannels.listProjects),

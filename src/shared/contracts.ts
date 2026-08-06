@@ -25,38 +25,6 @@ export interface GitDiff {
   readonly omittedFiles: number
 }
 
-export interface GitHubPullRequest {
-  readonly number: number
-  readonly title: string
-  readonly url: string
-  readonly isDraft: boolean
-}
-
-export interface GitHubWorkflowContext {
-  readonly repository: string
-  readonly repositoryUrl: string
-  readonly branch: string
-  readonly baseBranch: string
-  readonly commit: string
-  readonly compareUrl: string
-  readonly committedFiles: number
-  readonly additions: number
-  readonly deletions: number
-  readonly commits: number
-  readonly hasUncommittedChanges: boolean
-  readonly summary: string
-  readonly sessionName: string
-  readonly existingPullRequest?: GitHubPullRequest
-}
-
-export interface GitHubCommentResult {
-  readonly url: string
-}
-
-export interface GitHubPullRequestResult extends GitHubPullRequest {
-  readonly action: "created" | "updated"
-}
-
 export type GitHubPullRequestState = "mergeable" | "conflict" | "pending" | "merged"
 
 export interface GitHubBranchPullRequest {
@@ -65,6 +33,23 @@ export interface GitHubBranchPullRequest {
   readonly url: string
   readonly branch: string
   readonly state: GitHubPullRequestState
+}
+
+export interface GitHubWorktreeContext {
+  readonly repository: string
+  readonly repositoryUrl: string
+  readonly branch: string
+  readonly path: string
+  readonly worktreeKind: "local" | "linked"
+  readonly changes: GitStatus
+  readonly hasUpstream: boolean
+  readonly ahead: number
+  readonly pullRequest?: GitHubBranchPullRequest
+}
+
+export interface GitHubSyncResult {
+  readonly action: "committed-and-pushed" | "pushed"
+  readonly commit?: string
 }
 
 export interface ProjectWorktree {
@@ -283,9 +268,8 @@ export interface PiDesktopApi {
   }
   readonly github: {
     readonly branchPullRequest: (context: WorktreeContext) => Promise<GitHubBranchPullRequest | null>
-    readonly inspect: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<GitHubWorkflowContext>
-    readonly comment: (context: WorktreeContext, sessionPath: string, messageId: string, target: string) => Promise<GitHubCommentResult>
-    readonly createOrUpdateDraft: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<GitHubPullRequestResult>
+    readonly worktree: (context: WorktreeContext) => Promise<GitHubWorktreeContext>
+    readonly commitOrPush: (context: WorktreeContext, message: string) => Promise<GitHubSyncResult>
   }
   readonly sessions: {
     readonly list: (context: WorktreeContext) => Promise<ReadonlyArray<SessionSummary>>
@@ -327,9 +311,8 @@ export const IpcChannels = {
   answerInteraction: "sessions:answer-interaction",
   saveAttachment: "attachments:save",
   previewAttachment: "attachments:preview",
-  inspectGitHubWorkflow: "github:inspect-workflow",
   inspectGitHubBranchPullRequest: "github:inspect-branch-pull-request",
-  postGitHubComment: "github:comment",
-  createOrUpdateGitHubDraft: "github:create-or-update-draft",
+  inspectGitHubWorktree: "github:inspect-worktree",
+  commitOrPushGitHubWorktree: "github:commit-or-push-worktree",
   sessionEvent: "sessions:event"
 } as const

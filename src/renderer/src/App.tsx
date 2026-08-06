@@ -43,7 +43,7 @@ export default function App() {
   const [gitPaneOpen, setGitPaneOpen] = useState(false)
   const [gitDiff, setGitDiff] = useState<GitDiff | null>(null)
   const [gitDiffLoading, setGitDiffLoading] = useState(false)
-  const [githubMessageId, setGitHubMessageId] = useState<string | null>(null)
+  const [githubOpen, setGitHubOpen] = useState(false)
   const [selectedSubagent, setSelectedSubagent] = useState<SessionSummary | null>(null)
   const [subagentDetail, setSubagentDetail] = useState<SessionDetail | null>(null)
   const [subagentLoading, setSubagentLoading] = useState(false)
@@ -75,30 +75,31 @@ export default function App() {
   const pendingSessionStartRef = useRef<string | null>(null)
   const startedSessionRequestRef = useRef<string | null>(null)
   const pullRequestRequestsRef = useRef(new Map<string, number>())
+  const pullRequestPendingRef = useRef(new Map<string, number>())
   const projectsRef = useRef<ReadonlyArray<Project>>([])
   const sessionsByWorktreeRef = useRef<Readonly<Record<string, WorktreeSessionList | undefined>>>({})
 
-  const refreshPullRequests = useCallback(async (contexts: ReadonlyArray<{ readonly project: Project; readonly worktree: ProjectWorktree; readonly key: string }>) => {
+  const refreshPullRequests = useCallback(async (contexts: ReadonlyArray<{ readonly project: Project; readonly worktree: ProjectWorktree; readonly key: string }>, force = false) => {
     if (contexts.length === 0) return
-    const requests = contexts.map(({ project, worktree, key }) => {
+    const requests = contexts.flatMap(({ project, worktree, key }) => {
+      if (!force && pullRequestPendingRef.current.has(key)) return []
       const requestId = (pullRequestRequestsRef.current.get(key) ?? 0) + 1
       pullRequestRequestsRef.current.set(key, requestId)
-      return { project, worktree, key, requestId }
+      pullRequestPendingRef.current.set(key, requestId)
+      return [{ project, worktree, key, requestId }]
     })
-    const results = await Promise.all(requests.map(async ({ project, worktree, key, requestId }) => {
+    await Promise.all(requests.map(async ({ project, worktree, key, requestId }) => {
       try {
-        return { key, requestId, pullRequest: await desktopApi.github.branchPullRequest(worktreeContext(project, worktree)) }
+        const pullRequest = await desktopApi.github.branchPullRequest(worktreeContext(project, worktree))
+        if (pullRequestRequestsRef.current.get(key) === requestId) {
+          setPullRequestsByWorktree((current) => ({ ...current, [key]: pullRequest }))
+        }
       } catch {
-        return undefined
+        // Keep the last known state when GitHub is temporarily unavailable.
+      } finally {
+        if (pullRequestPendingRef.current.get(key) === requestId) pullRequestPendingRef.current.delete(key)
       }
     }))
-    setPullRequestsByWorktree((current) => {
-      const next = { ...current }
-      for (const result of results) {
-        if (result && pullRequestRequestsRef.current.get(result.key) === result.requestId) next[result.key] = result.pullRequest
-      }
-      return next
-    })
   }, [])
 
   const storeWorktreeSessions = useCallback((project: Project, worktree: ProjectWorktree, nextSessions: ReadonlyArray<SessionSummary>) => {
@@ -180,7 +181,7 @@ export default function App() {
     composerEpochRef.current += 1
     draftRevisionRef.current += 1
     attachmentRevisionRef.current += 1
-    setGitHubMessageId(null)
+    setGitHubOpen(false)
     setSession(null)
     setSessionDraft(null)
     setDraftBaseBranch(undefined)
@@ -203,7 +204,7 @@ export default function App() {
       activeSessionPathRef.current = detail.summary.path
       setSession(detail)
       setSessionRuntimeStatuses((current) => ({ ...current, [detail.summary.path]: detail.runtimeStatus }))
-      setGitHubMessageId(null)
+      setGitHubOpen(false)
       setInteractionRequest(detail.interactionRequest ?? null)
       void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
     } catch (cause) {
@@ -283,7 +284,7 @@ export default function App() {
     setGitPaneOpen(false)
     setGitDiff(null)
     setGitDiffLoading(false)
-    setGitHubMessageId(null)
+    setGitHubOpen(false)
     setSession(null)
     setSessionDraft(null)
     setDraftBaseBranch(undefined)
@@ -510,7 +511,7 @@ export default function App() {
       ?? project?.worktrees[0]
     if (!project || !worktree) return
     const contextKey = worktreeKey(project, worktree)
-    setGitHubMessageId(null)
+    setGitHubOpen(false)
     ++projectRequestRef.current
     ++sessionRequestRef.current
     ++modelRequestRef.current
@@ -768,9 +769,6 @@ export default function App() {
   const gitChangeLabel = gitLineTotalsVisible
     ? `${git?.additions ?? 0} lines added, ${git?.deletions ?? 0} lines deleted`
     : `${gitChangedFiles} changed ${gitChangedFiles === 1 ? "file" : "files"}`
-  const latestShareableMessage = [...conversationItems].reverse().find((item) => item.type === "message"
-    && item.message.role === "assistant"
-    && item.message.blocks.some((block) => block.type === "text" && block.text.trim()))
 
   return (
     <div className="app-shell">
@@ -830,17 +828,28 @@ export default function App() {
               {git && <span className="git-branch" title={`Current branch: ${git.branch}`}><GitBranch size={11} aria-hidden="true" /><span>{git.branch}</span></span>}
             </div>
             <div className="conversation-header-actions">
-              {activeProject && activeWorktree && session && latestShareableMessage?.type === "message" && (
-                <button
-                  type="button"
-                  className={styles.headerControl}
-                  disabled={session.isStreaming}
-                  title={session.isStreaming ? "Wait for Pi to finish before publishing a response" : "Publish the latest Pi response to GitHub"}
-                  onClick={() => setGitHubMessageId(latestShareableMessage.message.id)}
-                >
-                  <GitPullRequest size={14} />
-                  <span>GitHub</span>
-                </button>
+              {activeProject && activeWorktree && (
+                <div className={styles.githubControlWrap}>
+                  <button
+                    type="button"
+                    className={`${styles.headerControl} ${githubOpen ? styles.active : ""}`}
+                    aria-expanded={githubOpen}
+                    aria-controls="github-worktree-popover"
+                    title="Commit or push this worktree"
+                    onClick={() => setGitHubOpen((open) => !open)}
+                  >
+                    <GitPullRequest size={14} />
+                    <span>GitHub</span>
+                  </button>
+                  {githubOpen && (
+                    <GitHubWorkflowDialog
+                      worktreeContext={worktreeContext(activeProject, activeWorktree)}
+                      defaultCommitMessage={session?.summary.name || `Update ${activeWorktree.branch}`}
+                      onClose={() => setGitHubOpen(false)}
+                      onPullRequestChanged={() => void refreshPullRequests([{ project: activeProject, worktree: activeWorktree, key: worktreeKey(activeProject, activeWorktree) }], true)}
+                    />
+                  )}
+                </div>
               )}
               {backgroundProcesses.length > 0 && (
                 <button
@@ -903,7 +912,6 @@ export default function App() {
               isStreaming={session?.isStreaming ?? false}
               liveStatus={liveStatus}
               onOpenImage={setLightboxImage}
-              onShareToGitHub={!session?.isStreaming ? (message) => setGitHubMessageId(message.id) : undefined}
             />
           ) : (
             <div className="message-scroll-shell">
@@ -1059,15 +1067,6 @@ export default function App() {
             <div className="image-lightbox-canvas"><img src={lightboxImage.dataUrl} alt={lightboxImage.name} /></div>
           </div>
         </div>
-      )}
-      {githubMessageId && activeProject && activeWorktree && session && (
-        <GitHubWorkflowDialog
-          worktreeContext={worktreeContext(activeProject, activeWorktree)}
-          sessionPath={session.summary.path}
-          messageId={githubMessageId}
-          onClose={() => setGitHubMessageId(null)}
-          onPullRequestChanged={() => void refreshPullRequests([{ project: activeProject, worktree: activeWorktree, key: worktreeKey(activeProject, activeWorktree) }])}
-        />
       )}
     </div>
   )
