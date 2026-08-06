@@ -93,22 +93,22 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 </div>
               )}
 
-              {isExpanded && (
-                <div className={`project-panel ${isActive ? "active" : ""}`} aria-label={`${project.name} session actions`}>
-                  <div className="project-panel-heading">
-                    <span className="project-panel-label">{isActive ? "Sessions" : "Workspace"}</span>
-                    <button
-                      className="project-new-session"
-                      type="button"
-                      onClick={() => onNewSession(project)}
-                      aria-label={`New session in ${project.name}`}
-                      title={`New session in ${project.name}`}
-                    >
-                      <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
-                      <span>New session</span>
-                      {isActive && <kbd>⌘N</kbd>}
-                    </button>
-                  </div>
+              <div className={`project-panel ${isActive ? "active" : ""}`} aria-label={`${project.name} session actions`}>
+                <div className="project-panel-heading">
+                  <span className="project-panel-label">{isActive ? "Sessions" : "Workspace"}</span>
+                  <button
+                    className="project-new-session"
+                    type="button"
+                    onClick={() => onNewSession(project)}
+                    aria-label={`New session in ${project.name}`}
+                    title={`New session in ${project.name}`}
+                  >
+                    <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
+                    <span>New session</span>
+                    {isActive && <kbd>⌘N</kbd>}
+                  </button>
+                </div>
+                {isExpanded && (
                   <div className="session-list">
                     {isLoading && <div className="session-skeleton" aria-label="Loading sessions" />}
                     {!isLoading && sessions.length === 0 && (
@@ -126,8 +126,8 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                       </button>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )
         })}

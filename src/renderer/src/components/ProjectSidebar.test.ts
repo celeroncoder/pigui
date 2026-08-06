@@ -7,10 +7,9 @@ import { ProjectSidebar } from "./ProjectSidebar"
 const project = (id: string, name: string): Project => ({ id, name, path: `/workspace/${id}`, addedAt: 1 })
 
 describe("project sidebar session actions", () => {
-  it("renders the expanded project's scoped new-session action", () => {
+  it("keeps each project's new-session action scoped to that project", () => {
     const alpha = project("alpha", "Alpha")
     const beta = project("beta", "Beta")
-    const createdFor: Project[] = []
     const markup = renderToStaticMarkup(createElement(ProjectSidebar, {
       projects: [alpha, beta],
       sessionsByProjectId: {},
@@ -20,12 +19,11 @@ describe("project sidebar session actions", () => {
       onSelectProject: () => undefined,
       onSelectSession: () => undefined,
       onAddProject: () => undefined,
-      onNewSession: (selected) => createdFor.push(selected)
+      onNewSession: () => undefined
     }))
 
     expect(markup).toContain('aria-label="New session in Alpha"')
-    expect(markup).not.toContain('aria-label="New session in Beta"')
-    expect(createdFor).toEqual([])
+    expect(markup).toContain('aria-label="New session in Beta"')
   })
 
   it("marks the active project and keeps the shortcut hint scoped to it", () => {
