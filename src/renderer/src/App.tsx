@@ -653,7 +653,7 @@ export default function App() {
         <div className="titlebar-actions" />
       </header>
 
-      <div className={`workspace-layout ${(gitPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""}`}>
+      <div className={`workspace-layout ${(gitPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""} ${gitPaneOpen ? "with-git" : ""}`}>
         <ProjectSidebar
           projects={projects}
           sessions={sidebarSessions}
