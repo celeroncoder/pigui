@@ -3,5 +3,6 @@
   .headerControl:hover, .headerControl.active { color: #e7bd94; filter: brightness(1.1); }
   .headerControl:disabled { opacity: .45; filter: none; }
   .githubControlWrap { position: relative; flex: 0 0 auto; }
+  .githubLogo { border-radius: 50%; filter: grayscale(1) brightness(0) invert(.78); }
   .gitTotals { font: 8px var(--mono); white-space: nowrap; }
 }

@@ -30,7 +30,12 @@ export const providerLogoUrl = (provider: string, size: number) => {
   return `https://img.logo.dev/${path}?token=${LOGO_DEV_TOKEN}&size=${size}&format=webp&theme=dark&retina=true&fallback=monogram`
 }
 
-export function ProviderLogo({ provider, size = 16 }: { readonly provider: string; readonly size?: number }) {
+export function ProviderLogo({ provider, size = 16, className, decorative = false }: {
+  readonly provider: string
+  readonly size?: number
+  readonly className?: string
+  readonly decorative?: boolean
+}) {
   const brand = providerBrand(provider)
-  return <img className="provider-logo" src={providerLogoUrl(provider, size)} alt={`${brand.name} logo`} width={size} height={size} loading="lazy" decoding="async" />
+  return <img className={["provider-logo", className].filter(Boolean).join(" ")} src={providerLogoUrl(provider, size)} alt={decorative ? "" : `${brand.name} logo`} width={size} height={size} loading="lazy" decoding="async" />
 }

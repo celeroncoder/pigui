@@ -1,4 +1,4 @@
-import { CircleDashed, FolderPlus, GitBranch, GitPullRequest, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
@@ -11,6 +11,7 @@ import { ConversationTimeline } from "./components/ConversationTimeline"
 import { GitHubWorkflowDialog } from "./components/GitHubWorkflowDialog"
 // import { Inspector } from "./components/Inspector"
 import { ProjectSidebar, type WorktreeSessionList } from "./components/ProjectSidebar"
+import { ProviderLogo } from "./components/ProviderLogo"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
 import styles from "./App.module.css"
@@ -838,7 +839,7 @@ export default function App() {
                     title="Commit or push this worktree"
                     onClick={() => setGitHubOpen((open) => !open)}
                   >
-                    <GitPullRequest size={14} />
+                    <ProviderLogo provider="github" size={14} className={styles.githubLogo} decorative />
                     <span>GitHub</span>
                   </button>
                   {githubOpen && (

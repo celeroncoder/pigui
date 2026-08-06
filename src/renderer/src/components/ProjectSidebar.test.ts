@@ -107,18 +107,23 @@ describe("ProjectSidebar", () => {
     expect(markup).toContain(`aria-label="Session status: ${label}"`)
   })
 
-  it("keeps each project action scoped and the active project independently collapsible", () => {
+  it("keeps project details and new-session icon actions beside each independently collapsible project", () => {
     const alpha = project("alpha", "Alpha")
     const beta = project("beta", "Beta")
     const markup = renderSidebar([alpha, beta], alpha)
 
     expect(markup).toContain('aria-label="New session in Alpha, local checkout Alpha"')
     expect(markup).toContain('aria-label="New session in Beta, local checkout Beta"')
+    expect(markup).toContain('aria-label="Project details for Alpha"')
+    expect(markup).toContain('aria-label="Project details for Beta"')
+    expect(markup).toContain("lucide-square-pen")
+    expect(markup).toContain("lucide-ellipsis")
     expect(markup).toContain('class="project-row active"')
     expect(markup).toContain('aria-expanded="true"')
     expect(markup).toContain('aria-expanded="false"')
-    expect(markup).toContain("<kbd>⌘N</kbd>")
+    expect(markup).not.toContain("<kbd>")
     expect(markup).not.toContain("project-panel-label")
+    expect(markup).not.toContain("project-new-session")
   })
 
   it("keeps creation available but omits pseudo-session rows when discovery fails", () => {
