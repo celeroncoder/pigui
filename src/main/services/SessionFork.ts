@@ -1,4 +1,5 @@
-import type { SessionManager } from "@earendil-works/pi-coding-agent"
+import { existsSync, writeFileSync } from "node:fs"
+import { SessionManager } from "@earendil-works/pi-coding-agent"
 import type { SessionForkMetadata } from "../../shared/contracts"
 
 export const sessionForkMetadataType = "pi-desktop-session-fork"
@@ -35,7 +36,7 @@ export const createSessionFork = (
   manager: SessionManager,
   sourceSessionName: string,
   sourceMessageId: string
-): { readonly sessionPath: string; readonly metadata: SessionForkMetadata } => {
+): { readonly manager: SessionManager; readonly sessionPath: string; readonly metadata: SessionForkMetadata } => {
   const branch = manager.getBranch()
   const forkableEntries = branch.filter((entry) =>
     entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")
@@ -67,5 +68,17 @@ export const createSessionFork = (
   const sessionPath = manager.createBranchedSession(branchLeafId)
   if (!sessionPath) throw new Error("Pi could not persist the forked session")
   manager.appendCustomEntry(sessionForkMetadataType, metadata)
-  return { sessionPath, metadata }
+
+  // Pi normally defers writing a user-only session until the first assistant
+  // response. A fork from the first user turn must survive session switching,
+  // so materialize the exact SDK-produced tree without fabricating context.
+  // Reopening establishes Pi's normal flushed state for future appends.
+  if (!existsSync(sessionPath)) {
+    const header = manager.getHeader()
+    if (!header) throw new Error("Pi did not create a forked session header")
+    const contents = [header, ...manager.getEntries()].map((entry) => JSON.stringify(entry)).join("\n")
+    writeFileSync(sessionPath, `${contents}\n`, { encoding: "utf8", flag: "wx" })
+  }
+  const forkedManager = SessionManager.open(sessionPath, manager.getSessionDir(), manager.getCwd())
+  return { manager: forkedManager, sessionPath, metadata }
 }

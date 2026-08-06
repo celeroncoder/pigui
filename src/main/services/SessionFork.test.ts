@@ -1,7 +1,7 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { SessionManager } from "@earendil-works/pi-coding-agent"
+import { parseSessionEntries, SessionManager } from "@earendil-works/pi-coding-agent"
 import { afterEach, describe, expect, it } from "vitest"
 import { createSessionFork, sessionForkMetadata } from "./SessionFork"
 
@@ -103,5 +103,42 @@ describe("session forks", () => {
 
     expect(forkedMessages.map((entry) => entry.id)).toEqual(expect.arrayContaining([assistantId, toolId]))
     expect(forkedMessages.at(-1)?.id).toBe(toolId)
+  })
+
+  it("persists a fork from the first user message before an assistant reply", async () => {
+    const source = createManager()
+    const firstUserId = source.appendMessage({ role: "user", content: "First question", timestamp: 1 })
+    source.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "Original answer" }],
+      api: "test",
+      provider: "test",
+      model: "test",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: 2
+    })
+
+    const fork = createSessionFork(SessionManager.open(source.getSessionFile()!), "Original session", firstUserId)
+
+    expect(existsSync(fork.sessionPath)).toBe(true)
+    expect(fork.manager.getBranch().filter((entry) => entry.type === "message").map((entry) => entry.id)).toEqual([firstUserId])
+    expect(sessionForkMetadata(fork.manager)?.sourceMessageId).toBe(firstUserId)
+    const listed = await SessionManager.list(source.getCwd(), source.getSessionDir())
+    expect(listed.some((session) => session.path === fork.sessionPath)).toBe(true)
+
+    fork.manager.appendMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "New answer" }],
+      api: "test",
+      provider: "test",
+      model: "test",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: 3
+    })
+    const persistedEntries = parseSessionEntries(readFileSync(fork.sessionPath, "utf8"))
+    expect(persistedEntries.filter((entry) => entry.type === "session")).toHaveLength(1)
+    expect(SessionManager.open(fork.sessionPath).buildSessionContext().messages.map((message) => message.role)).toEqual(["user", "assistant"])
   })
 })

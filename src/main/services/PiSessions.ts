@@ -1031,11 +1031,11 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           try: () => SessionManager.open(source.path, undefined, projectCwd),
           catch: toAppError("read Pi session fork")
         })
-        yield* Effect.try({
+        const forked = yield* Effect.try({
           try: () => createSessionFork(manager, source.name || source.firstMessage || "Untitled session", messageId),
           catch: toAppError("fork Pi session")
         })
-        const active = yield* attach(projectCwd, manager)
+        const active = yield* attach(projectCwd, forked.manager)
         return detailFromActive(active)
       })))
     }),
