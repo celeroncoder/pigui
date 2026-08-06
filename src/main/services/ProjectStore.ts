@@ -38,6 +38,29 @@ const isMissingFile = (cause: unknown) => cause instanceof Error && "code" in ca
 const storageFile = () => join(app.getPath("userData"), "projects.json")
 const stableId = (value: string) => createHash("sha1").update(value).digest("hex").slice(0, 12)
 
+const canonicalFolder = Effect.fn("ProjectStore.canonicalFolder")(function*(folderPath: string, operation: string) {
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const resolved = await realpath(folderPath)
+      const details = await stat(resolved)
+      if (!details.isDirectory()) throw new Error("The selected path is not a folder")
+      return resolved
+    },
+    catch: toAppError(operation)
+  })
+})
+
+export const validateStoredWorktreePath = Effect.fn("ProjectStore.validateStoredWorktreePath")(function*(storedPath: string) {
+  const resolved = yield* canonicalFolder(storedPath, "validate stored worktree")
+  if (resolved !== storedPath) {
+    return yield* Effect.fail(AppError.make({
+      operation: "validate stored worktree",
+      message: "The worktree path no longer resolves to its approved canonical folder; remove and add it again"
+    }))
+  }
+  return resolved
+})
+
 interface WorktreeRecord {
   readonly path: string
   readonly branch: string
@@ -128,15 +151,7 @@ const writeProjects = Effect.fn("ProjectStore.write")(function*(projects: Readon
 })
 
 export const discoverRepository = Effect.fn("ProjectStore.discoverRepository")(function*(folderPath: string, previous?: Project) {
-  const selectedPath = yield* Effect.tryPromise({
-    try: async () => {
-      const resolved = await realpath(folderPath)
-      const details = await stat(resolved)
-      if (!details.isDirectory()) throw new Error("The selected path is not a folder")
-      return resolved
-    },
-    catch: toAppError("validate project folder")
-  })
+  const selectedPath = yield* canonicalFolder(folderPath, "validate project folder")
 
   const git = (args: ReadonlyArray<string>) => Effect.tryPromise({
     try: async () => (await execFileAsync("git", ["-C", selectedPath, ...args], { timeout: 5_000, maxBuffer: 512 * 1024 })).stdout,
@@ -147,19 +162,20 @@ export const discoverRepository = Effect.fn("ProjectStore.discoverRepository")(f
     onSuccess: (output) => output.trim()
   }))
   if (!root) {
-    const existing = previous?.worktrees.find((worktree) => worktree.path === selectedPath)
+    const existing = previous?.worktrees[0]
+    const addedAt = existing?.addedAt ?? previous?.addedAt ?? Date.now()
     const worktree = {
-      id: existing?.id ?? stableId(selectedPath),
+      id: stableId(selectedPath),
       path: selectedPath,
       name: existing?.name ?? basename(selectedPath),
-      branch: existing?.branch ?? "no Git branch",
-      addedAt: existing?.addedAt ?? Date.now()
+      branch: "no Git branch",
+      addedAt
     } satisfies ProjectWorktree
     return {
-      project: previous ?? {
+      project: {
         id: stableId(selectedPath),
-        name: basename(selectedPath),
-        addedAt: worktree.addedAt,
+        name: previous?.name ?? basename(selectedPath),
+        addedAt: previous?.addedAt ?? addedAt,
         worktrees: [worktree]
       },
       worktree
@@ -173,7 +189,13 @@ export const discoverRepository = Effect.fn("ProjectStore.discoverRepository")(f
   const worktrees: ProjectWorktree[] = []
 
   for (const record of listed) {
-    const path = yield* Effect.tryPromise({ try: () => realpath(record.path), catch: toAppError("resolve linked Git worktree") })
+    const path = yield* Effect.tryPromise({ try: () => realpath(record.path), catch: toAppError("resolve linked Git worktree") }).pipe(Effect.match({
+      onFailure: () => undefined,
+      onSuccess: (resolved) => resolved
+    }))
+    // Git retains manually-deleted worktrees as prunable metadata. A stale
+    // sibling must not make every healthy worktree in the repository unusable.
+    if (!path) continue
     const existing = previousWorktrees.get(path)
     worktrees.push({
       id: stableId(`${projectId}:${path}`),
@@ -191,7 +213,7 @@ export const discoverRepository = Effect.fn("ProjectStore.discoverRepository")(f
   return {
     project: {
       id: projectId,
-      name: previous?.name ?? repositoryName,
+      name: previous?.id === projectId ? previous.name : repositoryName,
       addedAt: previous?.addedAt ?? now,
       worktrees
     } satisfies Project,
@@ -257,6 +279,7 @@ export const ProjectStoreLive = Layer.effect(ProjectStore)(Effect.gen(function*(
       const project = projects.find((candidate) => candidate.id === projectId)
       const worktree = project?.worktrees.find((candidate) => candidate.id === worktreeId)
       if (!project || !worktree) return yield* Effect.fail(AppError.make({ operation: "resolve worktree", message: "Unknown project worktree" }))
+      yield* validateStoredWorktreePath(worktree.path)
       return { project, worktree }
     }),
     remove: Effect.fn("ProjectStore.remove")(function*(projectId: string) {
