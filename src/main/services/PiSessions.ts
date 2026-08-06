@@ -19,7 +19,7 @@ import { AskUserInteractionBridge } from "./AskUserInteraction"
 import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import { projectToolOutput } from "./PiEventProjection"
-import { releaseInactiveEntriesExcept } from "./PiSessionLifecycle"
+import { releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
 import { ProviderAvailability } from "./ProviderAvailability"
 import {
   type NativePromptQueue,
@@ -459,7 +459,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly setModel: (cwd: string, sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
   readonly setThinkingLevel: (cwd: string, sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
   readonly answerInteraction: (cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
-  readonly dispose: () => Effect.Effect<void>
+  readonly dispose: () => Effect.Effect<void, AppError>
 }>()("PiSessions") {}
 
 const createPiRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
@@ -533,9 +533,17 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     active.disposed = true
     cancelGitRefresh(active)
     active.providerAvailability.dispose()
-    active.interaction.dispose()
-    active.unsubscribe()
-    await active.runtime.dispose()
+    try {
+      await releaseSessionResources({
+        disposeInteraction: () => active.interaction.dispose(),
+        unsubscribe: () => active.unsubscribe(),
+        disposeRuntime: () => active.runtime.dispose(),
+        disposeSession: () => active.session.dispose()
+      })
+    } catch (cause) {
+      const sessionPath = active.session.sessionFile ?? "unknown session"
+      throw new Error(`Failed to release ${sessionPath}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+    }
   }
 
   const releaseInactiveSessionsExcept = (keepKey: string) => releaseInactiveEntriesExcept(
@@ -879,7 +887,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
 
     const sessionKey = canonicalPath(sessionPath)
     activeSessions.set(sessionKey, active)
-    yield* Effect.promise(() => releaseInactiveSessionsExcept(sessionKey))
+    yield* Effect.tryPromise({
+      try: () => releaseInactiveSessionsExcept(sessionKey),
+      catch: toAppError("release inactive Pi sessions")
+    })
     return active
   })
 
@@ -888,7 +899,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     const requestedSessionPath = canonicalPath(sessionPath)
     const existing = activeSessions.get(requestedSessionPath)
     if (existing && canonicalPath(existing.cwd) === projectCwd) {
-      yield* Effect.promise(() => releaseInactiveSessionsExcept(requestedSessionPath))
+      yield* Effect.tryPromise({
+        try: () => releaseInactiveSessionsExcept(requestedSessionPath),
+        catch: toAppError("release inactive Pi sessions")
+      })
       return existing
     }
 
@@ -1100,9 +1114,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     dispose: Effect.fn("PiSessions.dispose")(function*() {
       yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = [...activeSessions.values()]
-        activeSessions.clear()
-        yield* Effect.promise(() => Promise.all(active.map(releaseActiveSession)).then(() => undefined))
+        yield* Effect.tryPromise({
+          try: () => releaseAllEntries(activeSessions, releaseActiveSession),
+          catch: toAppError("dispose Pi sessions")
+        })
       })))
     })
   }

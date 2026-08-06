@@ -9,6 +9,7 @@ import { GitContext, GitContextLive } from "./services/GitContext"
 import { GitHubWorkflow, GitHubWorkflowLive } from "./services/GitHubWorkflow"
 import { PiSessions, PiSessionsLive } from "./services/PiSessions"
 import { ProjectStore, ProjectStoreLive } from "./services/ProjectStore"
+import { ShutdownCoordinator, type ShutdownReason } from "./services/ShutdownCoordinator"
 import { WindowBus, WindowBusLive } from "./services/WindowBus"
 
 const NonEmptyString = Schema.NonEmptyString
@@ -43,12 +44,26 @@ const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive, Attachment
 const AppServices = Layer.mergeAll(ProjectStoreLive, PiSessionsLive)
 const AppLayer = Layer.provideMerge(AppServices, AppDependencies)
 const runtime = ManagedRuntime.make(AppLayer)
-let isShuttingDown = false
+
+const disposeSessions = async (): Promise<void> => {
+  const exit = await runtime.runPromiseExit(Effect.gen(function*() {
+    const sessions = yield* PiSessions
+    yield* sessions.dispose()
+  }))
+  if (Exit.isFailure(exit)) throw Cause.squash(exit.cause)
+}
+
+const shutdown = new ShutdownCoordinator({
+  disposeSessions,
+  disposeRuntime: () => runtime.dispose(),
+  exit: (code) => app.exit(code),
+  logError: (message, cause) => console.error(message, cause)
+})
 
 const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | GitHubWorkflow | AttachmentStore | WindowBus>): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect)
   if (Exit.isSuccess(exit)) return exit.value
-  if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) {
+  if (shutdown.isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) {
     throw AppError.make({ operation: "application", message: "Pi Desktop is shutting down" })
   }
   throw Cause.squash(exit.cause)
@@ -108,6 +123,11 @@ const createWindow = () => {
     return { action: "deny" }
   })
   window.webContents.on("will-navigate", (event) => event.preventDefault())
+  window.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit" || shutdown.isShuttingDown) return
+    console.error("[pi-desktop] renderer process terminated unexpectedly", details)
+    void shutdown.shutdown("renderer-crash", 1)
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -343,11 +363,25 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
 })
 
-app.on("before-quit", () => {
-  if (isShuttingDown) return
-  isShuttingDown = true
-  void runtime.runPromise(Effect.gen(function*() {
-    const sessions = yield* PiSessions
-    yield* sessions.dispose()
-  })).finally(() => runtime.dispose())
+app.on("before-quit", (event) => {
+  event.preventDefault()
+  void shutdown.shutdown("application-quit", 0)
 })
+
+const signalExitCodes: ReadonlyArray<readonly [NodeJS.Signals, number]> = process.platform === "win32"
+  ? [["SIGINT", 130], ["SIGTERM", 143]]
+  : [["SIGHUP", 129], ["SIGINT", 130], ["SIGTERM", 143]]
+
+for (const [signal, exitCode] of signalExitCodes) {
+  process.once(signal, () => {
+    void shutdown.shutdown(signal, exitCode)
+  })
+}
+
+const shutdownAfterFatalError = (reason: ShutdownReason, cause: unknown) => {
+  console.error(`[pi-desktop] ${reason}`, cause)
+  void shutdown.shutdown(reason, 1)
+}
+
+process.once("uncaughtException", (error) => shutdownAfterFatalError("uncaught-exception", error))
+process.once("unhandledRejection", (reason) => shutdownAfterFatalError("unhandled-rejection", reason))
