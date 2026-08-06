@@ -19,6 +19,7 @@ export class ProviderAvailability {
   private availability: ModelAvailability
   private refreshInFlight: Promise<void> | undefined
   private onUpdate: ((availability: ModelAvailability) => void) | undefined
+  private disposed = false
 
   constructor(private readonly runtime: ModelAvailabilityRuntime) {
     this.availability = { models: optionsFrom(runtime.getAvailableSnapshot()), status: "pending" }
@@ -29,7 +30,12 @@ export class ProviderAvailability {
   }
 
   setOnUpdate(listener: (availability: ModelAvailability) => void) {
-    this.onUpdate = listener
+    if (!this.disposed) this.onUpdate = listener
+  }
+
+  dispose() {
+    this.disposed = true
+    this.onUpdate = undefined
   }
 
   refresh(): Promise<void> {
@@ -53,6 +59,6 @@ export class ProviderAvailability {
 
   private update(next: ModelAvailability) {
     this.availability = next
-    this.onUpdate?.(next)
+    if (!this.disposed) this.onUpdate?.(next)
   }
 }

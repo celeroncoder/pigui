@@ -532,6 +532,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const releaseActiveSession = async (active: ActiveSession) => {
     active.disposed = true
     cancelGitRefresh(active)
+    active.providerAvailability.dispose()
     active.interaction.dispose()
     active.unsubscribe()
     await active.runtime.dispose()

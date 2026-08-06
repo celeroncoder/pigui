@@ -48,4 +48,21 @@ describe("ProviderAvailability", () => {
       status: "error"
     })
   })
+
+  it("does not notify a released session after its health check settles", async () => {
+    const health = deferred<ReadonlyArray<{ provider: string; id: string; name: string }>>()
+    const availability = new ProviderAvailability({
+      getAvailableSnapshot: () => [],
+      getAvailable: () => health.promise
+    })
+    const updates: string[] = []
+    availability.setOnUpdate((next) => updates.push(next.status))
+
+    const refresh = availability.refresh()
+    availability.dispose()
+    health.resolve([{ provider: "openai", id: "fresh", name: "Fresh model" }])
+    await refresh
+
+    expect(updates).toEqual([])
+  })
 })
