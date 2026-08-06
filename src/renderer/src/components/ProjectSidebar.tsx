@@ -11,7 +11,7 @@ interface ProjectSidebarProps {
   readonly onSelectProject: (project: Project) => void
   readonly onSelectSession: (session: SessionSummary) => void
   readonly onAddProject: () => void
-  readonly onNewSession: () => void
+  readonly onNewSession: (project: Project) => void
 }
 
 const formatRelative = (timestamp: number) => {
@@ -37,14 +37,6 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
   return (
     <aside className="project-sidebar" aria-label="Projects and sessions">
-      <div className="sidebar-actions">
-        <button className="primary-action" type="button" onClick={onNewSession} disabled={!activeProject}>
-          <Plus size={16} strokeWidth={2.2} />
-          <span>New session</span>
-          <kbd>⌘N</kbd>
-        </button>
-      </div>
-
       <div className="section-label-row">
         <span className="section-label">Workspaces</span>
         <button className="mini-button" type="button" onClick={onAddProject} aria-label="Add project folder">
@@ -62,6 +54,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 type="button"
                 onClick={() => onSelectProject(project)}
                 aria-expanded={isActive}
+                aria-current={isActive ? "page" : undefined}
               >
                 <ChevronDown className={isActive ? "" : "collapsed"} size={14} />
                 <Folder size={15} />
@@ -77,27 +70,42 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                 </div>
               )}
 
-              {isActive && (
-                <div className="session-list">
-                  {isLoading && <div className="session-skeleton" aria-label="Loading sessions" />}
-                  {!isLoading && sessions.length === 0 && (
-                    <button className="empty-session" type="button" onClick={onNewSession}>
-                      No sessions yet. Start one.
-                    </button>
-                  )}
-                  {!isLoading && sessions.map((session) => (
-                    <button
-                      className={`session-row ${activeSessionPath === session.path ? "active" : ""}`}
-                      key={session.path}
-                      type="button"
-                      onClick={() => onSelectSession(session)}
-                    >
-                      <span className="session-title" title={session.name || session.firstMessage}>{compactLabel(session.name || session.firstMessage || "Untitled session")}</span>
-                      <span className="session-time">{formatRelative(session.updatedAt)}</span>
-                    </button>
-                  ))}
+              <div className={`project-panel ${isActive ? "active" : ""}`} aria-label={`${project.name} session actions`}>
+                <div className="project-panel-heading">
+                  <span className="project-panel-label">{isActive ? "Sessions" : "Workspace"}</span>
+                  <button
+                    className="project-new-session"
+                    type="button"
+                    onClick={() => onNewSession(project)}
+                    aria-label={`New session in ${project.name}`}
+                    title={`New session in ${project.name}`}
+                  >
+                    <Plus size={13} strokeWidth={2.4} aria-hidden="true" />
+                    <span>New session</span>
+                    {isActive && <kbd>⌘N</kbd>}
+                  </button>
                 </div>
-              )}
+
+                {isActive && (
+                  <div className="session-list">
+                    {isLoading && <div className="session-skeleton" aria-label="Loading sessions" />}
+                    {!isLoading && sessions.length === 0 && (
+                      <span className="empty-session">No sessions yet. Start one above.</span>
+                    )}
+                    {!isLoading && sessions.map((session) => (
+                      <button
+                        className={`session-row ${activeSessionPath === session.path ? "active" : ""}`}
+                        key={session.path}
+                        type="button"
+                        onClick={() => onSelectSession(session)}
+                      >
+                        <span className="session-title" title={session.name || session.firstMessage}>{compactLabel(session.name || session.firstMessage || "Untitled session")}</span>
+                        <span className="session-time">{formatRelative(session.updatedAt)}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )
         })}

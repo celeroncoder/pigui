@@ -17,6 +17,7 @@ import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
 import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
 import { compactLabel } from "./lib/text"
+import { createProjectSelectionGate } from "./lib/projectSelection"
 
 const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
 
@@ -49,6 +50,7 @@ export default function App() {
   const activeSessionPathRef = useRef<string | null>(null)
   const activeProjectRef = useRef<Project | null>(null)
   const activeProjectIdRef = useRef<string | null>(null)
+  const projectSelectionGateRef = useRef(createProjectSelectionGate())
   const projectRequestRef = useRef(0)
   const gitRequestRef = useRef(0)
   const gitDiffRequestRef = useRef(0)
@@ -154,46 +156,49 @@ export default function App() {
     }
   }, [])
 
-  const selectProject = useCallback(async (project: Project) => {
-    const requestId = ++projectRequestRef.current
-    ++sessionRequestRef.current
-    ++modelRequestRef.current
-    activeProjectIdRef.current = project.id
-    activeSessionPathRef.current = null
-    composerEpochRef.current += 1
-    draftRevisionRef.current += 1
-    attachmentRevisionRef.current += 1
-    setActiveProject(project)
-    ++gitDiffRequestRef.current
-    setGitPaneOpen(false)
-    setGitDiff(null)
-    setGitDiffLoading(false)
-    setSession(null)
-    setPendingAttachments([])
-    setLightboxImage(null)
-    setLiveThinking(null)
-    setDraft("")
-    setSessions([])
-    setModelOptions([])
-    setInteractionRequest(null)
-    setInteractionSubmitting(false)
-    interactionSubmittingRef.current = false
-    setLoadingSessions(true)
-    setError(null)
-    void refreshProjectGit(project)
-    try {
-      const nextSessions = await desktopApi.sessions.list(project.path)
-      if (requestId !== projectRequestRef.current || activeProjectIdRef.current !== project.id) return
-      setSessions(nextSessions)
-      const first = nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:")) ?? nextSessions[0]
-      if (first) await openSession(project, first)
-    } catch (cause) {
-      if (requestId === projectRequestRef.current && activeProjectIdRef.current === project.id) {
-        setError(cause instanceof Error ? cause.message : "Could not load project sessions")
+  const selectProject = useCallback((project: Project) => {
+    const selection = (async () => {
+      const requestId = ++projectRequestRef.current
+      ++sessionRequestRef.current
+      ++modelRequestRef.current
+      activeProjectIdRef.current = project.id
+      activeSessionPathRef.current = null
+      composerEpochRef.current += 1
+      draftRevisionRef.current += 1
+      attachmentRevisionRef.current += 1
+      setActiveProject(project)
+      ++gitDiffRequestRef.current
+      setGitPaneOpen(false)
+      setGitDiff(null)
+      setGitDiffLoading(false)
+      setSession(null)
+      setPendingAttachments([])
+      setLightboxImage(null)
+      setLiveThinking(null)
+      setDraft("")
+      setSessions([])
+      setModelOptions([])
+      setInteractionRequest(null)
+      setInteractionSubmitting(false)
+      interactionSubmittingRef.current = false
+      setLoadingSessions(true)
+      setError(null)
+      void refreshProjectGit(project)
+      try {
+        const nextSessions = await desktopApi.sessions.list(project.path)
+        if (requestId !== projectRequestRef.current || activeProjectIdRef.current !== project.id) return
+        setSessions(nextSessions)
+        const first = nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:")) ?? nextSessions[0]
+        if (first) await openSession(project, first)
+      } catch (cause) {
+        if (requestId === projectRequestRef.current && activeProjectIdRef.current === project.id) {
+          setError(cause instanceof Error ? cause.message : "Could not load project sessions")
+        }
+      } finally {
+        if (requestId === projectRequestRef.current) setLoadingSessions(false)
       }
-    } finally {
-      if (requestId === projectRequestRef.current) setLoadingSessions(false)
-    }
+    })()
+    return projectSelectionGateRef.current.track(selection)
   }, [openSession, refreshProjectGit])
 
   useEffect(() => {
@@ -324,9 +329,14 @@ export default function App() {
     }
   }
 
-  const newSession = useCallback(async () => {
-    if (!activeProject) return
-    const project = activeProject
+  const newSession = useCallback(async (requestedProject?: Project) => {
+    await projectSelectionGateRef.current.wait()
+    const project = requestedProject ?? activeProjectRef.current
+    if (!project) return
+    if (activeProjectIdRef.current !== project.id) {
+      await selectProject(project)
+      if (activeProjectIdRef.current !== project.id) return
+    }
     const requestId = ++sessionRequestRef.current
     setError(null)
     try {
@@ -351,7 +361,7 @@ export default function App() {
         setError(cause instanceof Error ? cause.message : "Could not create session")
       }
     }
-  }, [activeProject, loadModels])
+  }, [loadModels, selectProject])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -529,7 +539,7 @@ export default function App() {
           onSelectProject={(project) => void selectProject(project)}
           onSelectSession={(summary) => activeProject && void openSession(activeProject, summary)}
           onAddProject={() => void addProject()}
-          onNewSession={() => void newSession()}
+          onNewSession={(project) => void newSession(project)}
         />
 
         <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
