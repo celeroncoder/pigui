@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleAlert, Copy } from "lucide-react"
+import { Brain, Check, ChevronDown, CircleAlert, CircleDashed, Copy } from "lucide-react"
 import { lazy, Suspense, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -36,8 +36,9 @@ const copyText = (blocks: ReadonlyArray<MessageBlock>) => {
 }
 
 function ToolBlock({ block, result }: { readonly block: ToolCallBlock; readonly result?: ToolResultBlock }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(result?.status === "running")
   const hasError = result?.isError ?? false
+  const isRunning = result?.status === "running"
 
   const compactInput = block.input.replace(/\s+/g, " ").trim()
 
@@ -47,7 +48,11 @@ function ToolBlock({ block, result }: { readonly block: ToolCallBlock; readonly 
         <ToolGlyph name={block.name} />
         <span className="tool-name">{block.name}</span>
         <code className="tool-description">{compactInput}</code>
-        {hasError ? <CircleAlert className="tool-state error" size={14} /> : <Check className="tool-state" size={14} />}
+        {isRunning
+          ? <CircleDashed className="tool-state running" size={14} />
+          : hasError
+            ? <CircleAlert className="tool-state error" size={14} />
+            : <Check className="tool-state" size={14} />}
         <ChevronDown className={`tool-chevron ${open ? "open" : ""}`} size={13} />
       </button>
       {open && (

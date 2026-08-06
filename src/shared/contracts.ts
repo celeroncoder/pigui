@@ -73,6 +73,7 @@ export interface ToolResultBlock {
   readonly name: string
   readonly output: string
   readonly isError: boolean
+  readonly status?: "running" | "success" | "error"
   readonly diff?: string
 }
 
@@ -174,7 +175,7 @@ export type SessionEvent =
   | { readonly type: "queue-update"; readonly sessionPath: string; readonly messages: ReadonlyArray<QueuedMessage> }
   | { readonly type: "text-delta"; readonly sessionPath: string; readonly messageId: string; readonly delta: string }
   | { readonly type: "thinking-delta"; readonly sessionPath: string; readonly messageId: string; readonly delta: string }
-  | { readonly type: "tool-start"; readonly sessionPath: string; readonly tool: ToolActivity }
+  | { readonly type: "tool-start"; readonly sessionPath: string; readonly messageId: string; readonly tool: ToolActivity }
   | { readonly type: "tool-update"; readonly sessionPath: string; readonly toolId: string; readonly output: string }
   | { readonly type: "tool-end"; readonly sessionPath: string; readonly toolId: string; readonly output: string; readonly isError: boolean; readonly diff?: string }
   | { readonly type: "agent-status"; readonly sessionPath: string; readonly isStreaming: boolean }

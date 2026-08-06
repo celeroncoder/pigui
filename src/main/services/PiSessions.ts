@@ -12,11 +12,14 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
 import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
+import { projectToolOutput } from "./PiEventProjection"
+import { releaseInactiveEntriesExcept } from "./PiSessionLifecycle"
 import {
   type NativePromptQueue,
   prioritizeQueuedMessageForSteering,
@@ -40,10 +43,14 @@ interface ActiveSession {
   readonly queuedImages: Map<string, ReadonlyArray<PiImageAttachment>>
   queuedMessages: ReadonlyArray<QueuedMessage>
   queueUpdatesSuspended: number
+  pendingPromptStarts: number
   liveMessageId: string | null
+  liveMessageStarted: boolean
+  liveDetail: SessionDetail | undefined
   gitRefreshTimer: ReturnType<typeof setTimeout> | undefined
   gitRefreshGeneration: number
   disposed: boolean
+  liveAssistantMessageIndex: number
   liveUserMessageIndex: number
 }
 
@@ -380,7 +387,7 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary, con
   }
 }
 
-const detailFromActive = (active: ActiveSession): SessionDetail => {
+const snapshotFromActive = (active: ActiveSession): SessionDetail => {
   const messages = historyToChat(active.session.sessionManager)
   const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
   const interactionRequest = active.interaction.pendingRequest()
@@ -402,7 +409,26 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     queuedMessages: active.queuedMessages,
     ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
-    isStreaming: active.session.isStreaming,
+    isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
+    isCompacting: active.session.isCompacting
+  }
+}
+
+const detailFromActive = (active: ActiveSession): SessionDetail => {
+  const detail = active.liveDetail ?? snapshotFromActive(active)
+  const { contextUsage: _previousContextUsage, interactionRequest: _previousInteraction, ...base } = detail
+  const contextUsage = projectContextUsage(active.session)
+  const interactionRequest = active.interaction.pendingRequest()
+  return {
+    ...base,
+    model: active.session.model ? `${active.session.model.provider}/${active.session.model.id}` : "No model configured",
+    thinkingLevel: active.session.thinkingLevel,
+    availableThinkingLevels: active.session.getAvailableThinkingLevels(),
+    backgroundProcesses: runningProcesses(active.backgroundProcesses),
+    queuedMessages: active.queuedMessages,
+    ...(contextUsage ? { contextUsage } : {}),
+    ...(interactionRequest ? { interactionRequest } : {}),
+    isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
   }
 }
@@ -441,19 +467,29 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const queueMutationLock = yield* Semaphore.make(1)
   const activeSessions = new Map<string, ActiveSession>()
 
-  const emitSnapshot = (active: ActiveSession, overrides?: Pick<Partial<SessionDetail>, "isCompacting">) => bus.emit({
+  const emitActiveEvent = (active: ActiveSession, event: SessionEvent) => {
+    // The renderer intentionally ignores offscreen session paths. Mirror the
+    // same projection here so reopening a running session restores its live UI.
+    const sessionPath = active.session.sessionFile ?? ""
+    const current = active.liveDetail ?? snapshotFromActive(active)
+    const next = reduceSessionEvent(current, sessionPath, event)
+    if (next) active.liveDetail = next
+    return bus.emit(event)
+  }
+
+  const emitSnapshot = (active: ActiveSession, overrides?: Pick<Partial<SessionDetail>, "isCompacting">) => emitActiveEvent(active, {
     type: "session-state",
     sessionPath: active.session.sessionFile ?? "",
-    detail: { ...detailFromActive(active), ...overrides }
+    detail: { ...snapshotFromActive(active), ...overrides }
   })
 
-  const emitContextUsage = (active: ActiveSession) => bus.emit({
+  const emitContextUsage = (active: ActiveSession) => emitActiveEvent(active, {
     type: "context-usage",
     sessionPath: active.session.sessionFile ?? "",
     contextUsage: projectContextUsage(active.session)
   })
 
-  const emitBackgroundProcesses = (active: ActiveSession) => bus.emit({
+  const emitBackgroundProcesses = (active: ActiveSession) => emitActiveEvent(active, {
     type: "background-processes",
     sessionPath: active.session.sessionFile ?? "",
     processes: runningProcesses(active.backgroundProcesses)
@@ -465,6 +501,28 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     if (active.gitRefreshTimer) clearTimeout(active.gitRefreshTimer)
     active.gitRefreshTimer = undefined
   }
+
+  const releaseActiveSession = async (active: ActiveSession) => {
+    active.disposed = true
+    cancelGitRefresh(active)
+    active.interaction.dispose()
+    active.unsubscribe()
+    await active.runtime.dispose()
+  }
+
+  const releaseInactiveSessionsExcept = (keepKey: string) => releaseInactiveEntriesExcept(
+    activeSessions,
+    keepKey,
+    // Runtime disposal aborts Pi's agent and tears down runtime-scoped work.
+    // Preserve established runs, background terminals, compaction/queue state,
+    // and the async preflight gap between IPC acceptance and agent_start.
+    (active) => active.session.isStreaming
+      || active.session.isCompacting
+      || active.pendingPromptStarts > 0
+      || active.queuedMessages.length > 0
+      || runningProcesses(active.backgroundProcesses).length > 0,
+    releaseActiveSession
+  )
 
   const scheduleGitRefresh = (active: ActiveSession, delay = 350) => {
     if (active.disposed || active.gitRefreshTimer) return
@@ -504,7 +562,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     return true
   }
 
-  const emitQueuedMessages = (active: ActiveSession) => bus.emit({
+  const emitQueuedMessages = (active: ActiveSession) => emitActiveEvent(active, {
     type: "queue-update",
     sessionPath: active.session.sessionFile ?? "",
     messages: active.queuedMessages
@@ -575,14 +633,6 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const attach = Effect.fn("PiSessions.attach")(function*(cwd: string, manager: SessionManager) {
     const attachedRuntime = yield* Effect.tryPromise({
       try: async () => {
-        for (const active of activeSessions.values()) {
-          cancelGitRefresh(active)
-          active.interaction.dispose()
-          active.unsubscribe()
-          await active.runtime.dispose()
-        }
-        activeSessions.clear()
-
         const next = await createAgentSessionRuntime(createPiRuntime, {
           cwd,
           agentDir: getAgentDir(),
@@ -642,13 +692,19 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       queuedImages: new Map(),
       queuedMessages: reconcileQueuedMessages([], nativePromptQueue(runtime.session)),
       queueUpdatesSuspended: 0,
+      pendingPromptStarts: 0,
       liveMessageId: null,
+      liveMessageStarted: false,
+      liveDetail: undefined,
       gitRefreshTimer: undefined,
       gitRefreshGeneration: 0,
       disposed: false,
+      liveAssistantMessageIndex: 0,
       liveUserMessageIndex: 0,
       unsubscribe: () => undefined
     }
+
+    active.liveDetail = snapshotFromActive(active)
 
     active.unsubscribe = runtime.session.subscribe((event) => {
       if (event.type === "queue_update") {
@@ -657,12 +713,12 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         }
       } else if (event.type === "agent_start") {
         void Effect.runPromise(Effect.gen(function*() {
-          yield* bus.emit({ type: "agent-status", sessionPath, isStreaming: true })
+          yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: true })
           yield* emitContextUsage(active)
         }))
       } else if (event.type === "message_start" && event.message.role === "user") {
         active.liveUserMessageIndex += 1
-        void Effect.runPromise(bus.emit({
+        void Effect.runPromise(emitActiveEvent(active, {
           type: "user-message",
           sessionPath,
           message: {
@@ -673,16 +729,29 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           }
         }))
       } else if (event.type === "message_start" && event.message.role === "assistant") {
-        active.liveMessageId = `live-${event.message.timestamp}`
-        void Effect.runPromise(bus.emit({ type: "assistant-start", sessionPath, messageId: active.liveMessageId, timestamp: event.message.timestamp }))
+        if (!active.liveMessageId || active.liveMessageStarted) {
+          active.liveAssistantMessageIndex += 1
+          active.liveMessageId = `live-assistant-${event.message.timestamp}-${active.liveAssistantMessageIndex}`
+        }
+        active.liveMessageStarted = true
+        void Effect.runPromise(emitActiveEvent(active, { type: "assistant-start", sessionPath, messageId: active.liveMessageId, timestamp: event.message.timestamp }))
       } else if (event.type === "message_update") {
-        if (!active.liveMessageId) active.liveMessageId = `live-${Date.now()}`
+        if (!active.liveMessageId) {
+          active.liveAssistantMessageIndex += 1
+          active.liveMessageId = `live-assistant-${Date.now()}-${active.liveAssistantMessageIndex}`
+        }
+        active.liveMessageStarted = true
         if (event.assistantMessageEvent.type === "text_delta") {
-          void Effect.runPromise(bus.emit({ type: "text-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
+          void Effect.runPromise(emitActiveEvent(active, { type: "text-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
         } else if (event.assistantMessageEvent.type === "thinking_delta") {
-          void Effect.runPromise(bus.emit({ type: "thinking-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
+          void Effect.runPromise(emitActiveEvent(active, { type: "thinking-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
         }
       } else if (event.type === "tool_execution_start") {
+        if (!active.liveMessageId) {
+          active.liveMessageId = `live-tool-${event.toolCallId}`
+          active.liveMessageStarted = false
+        }
+        const messageId = active.liveMessageId
         active.pendingTools.set(event.toolCallId, { name: event.toolName, args: event.args })
         if (event.toolName === "ask_user") {
           const input = decodeAskUserInput(event.args)
@@ -696,13 +765,14 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             active.interaction.register(request)
           }
         }
-        void Effect.runPromise(bus.emit({
+        void Effect.runPromise(emitActiveEvent(active, {
           type: "tool-start",
           sessionPath,
+          messageId,
           tool: { id: event.toolCallId, name: event.toolName, input: stringify(event.args), status: "running", startedAt: Date.now() }
         }))
       } else if (event.type === "tool_execution_update") {
-        void Effect.runPromise(bus.emit({ type: "tool-update", sessionPath, toolId: event.toolCallId, output: stringify(event.partialResult) }))
+        void Effect.runPromise(emitActiveEvent(active, { type: "tool-update", sessionPath, toolId: event.toolCallId, output: projectToolOutput(event.partialResult) }))
       } else if (event.type === "tool_execution_end") {
         const diff = diffFromResult(event.result)
         const call = active.pendingTools.get(event.toolCallId)
@@ -712,11 +782,11 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           applyBackgroundToolResult(active.backgroundProcesses, event.toolName, call?.args, event.result, Date.now())
           void Effect.runPromise(emitBackgroundProcesses(active))
         }
-        void Effect.runPromise(bus.emit({
+        void Effect.runPromise(emitActiveEvent(active, {
           type: "tool-end",
           sessionPath,
           toolId: event.toolCallId,
-          output: stringify(event.result),
+          output: projectToolOutput(event.result),
           isError: event.isError,
           ...(diff ? { diff } : {})
         }))
@@ -732,12 +802,12 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         void Effect.runPromise(emitContextUsage(active))
       } else if (event.type === "compaction_start") {
         void Effect.runPromise(Effect.gen(function*() {
-          yield* bus.emit({ type: "compaction-status", sessionPath, isCompacting: true })
+          yield* emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: true })
           yield* emitContextUsage(active)
         }))
       } else if (event.type === "compaction_end") {
         void Effect.runPromise(Effect.gen(function*() {
-          yield* bus.emit({ type: "compaction-status", sessionPath, isCompacting: false })
+          yield* emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: false })
           yield* emitContextUsage(active)
           // Pi clears its compaction controller immediately after this event.
           // The end event itself is authoritative, so keep the snapshot in sync.
@@ -747,13 +817,16 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         void Effect.runPromise(emitSnapshot(active))
       } else if (event.type === "agent_settled") {
         active.liveMessageId = null
-        void Effect.runPromise(bus.emit({ type: "agent-status", sessionPath, isStreaming: false }))
+        active.liveMessageStarted = false
+        void Effect.runPromise(emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: false }))
         void Effect.runPromise(emitSnapshot(active))
         scheduleGitRefresh(active)
       }
     })
 
-    activeSessions.set(canonicalPath(sessionPath), active)
+    const sessionKey = canonicalPath(sessionPath)
+    activeSessions.set(sessionKey, active)
+    yield* Effect.promise(() => releaseInactiveSessionsExcept(sessionKey))
     return active
   })
 
@@ -761,7 +834,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     const projectCwd = canonicalPath(cwd)
     const requestedSessionPath = canonicalPath(sessionPath)
     const existing = activeSessions.get(requestedSessionPath)
-    if (existing && canonicalPath(existing.cwd) === projectCwd) return existing
+    if (existing && canonicalPath(existing.cwd) === projectCwd) {
+      yield* Effect.promise(() => releaseInactiveSessionsExcept(requestedSessionPath))
+      return existing
+    }
 
     const knownSessions = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
     const known = knownSessions.find((info) => canonicalPath(info.path) === requestedSessionPath && canonicalPath(info.cwd || projectCwd) === projectCwd)
@@ -828,40 +904,54 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const paths = [...new Set([...inferredPaths, ...attachmentPaths])]
       const prompt = normalizeImageReferences(text, paths)
       if (prompt.trim().length === 0) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Add a message or image before sending" }))
-      const images = yield* Effect.all(paths.map((path) => attachments.readForPi(path))).pipe(
-        Effect.mapError((error) => AppError.make({ operation: "read image attachment", message: error.message }))
-      )
+      let promptStartPending = true
+      const finishPromptStart = () => {
+        if (!promptStartPending) return
+        promptStartPending = false
+        active.pendingPromptStarts -= 1
+      }
+      yield* Effect.sync(() => {
+        active.pendingPromptStarts += 1
+      })
+      yield* Effect.gen(function*() {
+        const images = yield* Effect.all(paths.map((path) => attachments.readForPi(path))).pipe(
+          Effect.mapError((error) => AppError.make({ operation: "read image attachment", message: error.message }))
+        )
 
-      const operation = yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
-        if (activeSessions.get(requestedPath) !== active) {
-          return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "The session changed before the message could be sent" }))
-        }
-        if (active.session.isStreaming) {
-          const error = queueabilityError(active.session, prompt)
-          if (error) return yield* Effect.fail(error)
-          yield* Effect.tryPromise({
-            try: () => delivery === "steer" ? active.session.steer(prompt, images) : active.session.followUp(prompt, images),
-            catch: toAppError(delivery === "steer" ? "steer Pi" : "queue follow-up Pi message")
-          })
-          if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
-          if (images.length > 0) {
-            const queuedMessage = [...active.queuedMessages].reverse().find((message) =>
-              message.delivery === delivery && message.text === prompt && !active.queuedImages.has(message.id)
-            )
-            if (queuedMessage) active.queuedImages.set(queuedMessage.id, images)
+        const operation = yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+          if (activeSessions.get(requestedPath) !== active) {
+            return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "The session changed before the message could be sent" }))
           }
-          return { kind: "queued" } as const
-        }
+          if (active.session.isStreaming) {
+            const error = queueabilityError(active.session, prompt)
+            if (error) return yield* Effect.fail(error)
+            yield* Effect.tryPromise({
+              try: () => delivery === "steer" ? active.session.steer(prompt, images) : active.session.followUp(prompt, images),
+              catch: toAppError(delivery === "steer" ? "steer Pi" : "queue follow-up Pi message")
+            })
+            if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
+            if (images.length > 0) {
+              const queuedMessage = [...active.queuedMessages].reverse().find((message) =>
+                message.delivery === delivery && message.text === prompt && !active.queuedImages.has(message.id)
+              )
+              if (queuedMessage) active.queuedImages.set(queuedMessage.id, images)
+            }
+            return { kind: "queued" } as const
+          }
 
-        const run = yield* Effect.try({
-          try: () => active.session.prompt(prompt, images.length > 0 ? { images } : undefined),
-          catch: toAppError("prompt Pi")
-        })
-        return { kind: "started", run } as const
-      })))
+          const run = yield* Effect.try({
+            try: () => active.session.prompt(prompt, {
+              ...(images.length > 0 ? { images } : {}),
+              preflightResult: finishPromptStart
+            }),
+            catch: toAppError("prompt Pi")
+          })
+          return { kind: "started", run } as const
+        })))
 
-      if (operation.kind === "queued") return
-      yield* Effect.tryPromise({ try: () => operation.run, catch: toAppError("prompt Pi") })
+        if (operation.kind === "queued") return
+        yield* Effect.tryPromise({ try: () => operation.run, catch: toAppError("prompt Pi") })
+      }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
     }),
     editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(sessionPath: string, messageId: string, text: string) {
       const requestedPath = canonicalPath(sessionPath)
@@ -929,9 +1019,8 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const model = available.find((candidate) => candidate.provider === provider && candidate.id === modelId)
       if (!model) return yield* Effect.fail(AppError.make({ operation: "set model", message: "The selected model is unavailable" }))
       yield* Effect.tryPromise({ try: () => active.session.setModel(model), catch: toAppError("set model") })
-      const detail = detailFromActive(active)
       yield* emitSnapshot(active)
-      return detail
+      return detailFromActive(active)
     }),
     setThinkingLevel: Effect.fn("PiSessions.setThinkingLevel")(function*(sessionPath: string, level: ThinkingLevel) {
       const active = activeSessions.get(canonicalPath(sessionPath))
@@ -941,9 +1030,8 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         return yield* Effect.fail(AppError.make({ operation: "set effort", message: `Effort ${level} is unavailable for this model` }))
       }
       yield* Effect.sync(() => active.session.setThinkingLevel(level))
-      const detail = detailFromActive(active)
       yield* emitSnapshot(active)
-      return detail
+      return detailFromActive(active)
     }),
     answerInteraction: Effect.fn("PiSessions.answerInteraction")(function*(sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) {
       const active = activeSessions.get(canonicalPath(sessionPath))
@@ -957,14 +1045,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
         const active = [...activeSessions.values()]
         activeSessions.clear()
-        yield* Effect.promise(async () => {
-          for (const session of active) {
-            cancelGitRefresh(session)
-            session.interaction.dispose()
-            session.unsubscribe()
-            await session.runtime.dispose()
-          }
-        })
+        yield* Effect.promise(() => Promise.all(active.map(releaseActiveSession)).then(() => undefined))
       })))
     })
   }

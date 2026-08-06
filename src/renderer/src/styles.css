@@ -288,6 +288,7 @@
   .tool-name { color: #c6c1bc; font: 10px var(--mono); font-weight: 500; }
   .tool-description { min-width: 0; overflow: hidden; padding: 2px 5px; border-radius: 3px; background: #191919; color: var(--text-3); text-overflow: ellipsis; white-space: nowrap; font: 9.5px var(--mono); }
   .tool-state { color: #6f9c7a; }
+  .tool-state.running { color: #9a7656; animation: spin 1.25s linear infinite; }
   .tool-state.error { color: var(--danger); }
   .tool-chevron { color: var(--text-3); transition: transform .15s ease; }
   .tool-chevron.open { transform: rotate(180deg); }
