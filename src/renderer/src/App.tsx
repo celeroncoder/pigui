@@ -1,5 +1,5 @@
 import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
@@ -481,14 +481,21 @@ export default function App() {
     }
   }
 
-  const displayMessages: ReadonlyArray<ChatMessage> = session?.isCompacting
+  const displayMessages: ReadonlyArray<ChatMessage> = useMemo(() => session?.isCompacting
     ? [...session.messages, { id: "compaction-active", role: "system", blocks: [{ type: "compaction", status: "compacting" }], timestamp: Date.now() }]
-    : session?.messages ?? []
-  const conversationItems = buildConversationItems(displayMessages)
-  const conversationLandmarks = buildConversationPreviewLandmarks(conversationItems)
-  const allPreviewLandmarks = filterUserMessagePreviewLandmarks(conversationLandmarks)
-  const previewStride = Math.max(1, Math.ceil(allPreviewLandmarks.length / 28))
-  const previewLandmarks = allPreviewLandmarks.filter((_landmark, index) => index === 0 || index === allPreviewLandmarks.length - 1 || index % previewStride === 0)
+    : session?.messages ?? [], [session?.isCompacting, session?.messages])
+  const { conversationItems, conversationLandmarks, allPreviewLandmarks, previewLandmarks } = useMemo(() => {
+    const items = buildConversationItems(displayMessages)
+    const landmarks = buildConversationPreviewLandmarks(items)
+    const allPreviews = filterUserMessagePreviewLandmarks(landmarks)
+    const previewStride = Math.max(1, Math.ceil(allPreviews.length / 28))
+    return {
+      conversationItems: items,
+      conversationLandmarks: landmarks,
+      allPreviewLandmarks: allPreviews,
+      previewLandmarks: allPreviews.filter((_landmark, index) => index === 0 || index === allPreviews.length - 1 || index % previewStride === 0)
+    }
+  }, [displayMessages])
   const linkedSubagents = sessions.filter((candidate) => candidate.parentSessionPath === session?.summary.path)
   const sidebarSessions = sessions.filter((candidate) => !candidate.parentSessionPath)
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")

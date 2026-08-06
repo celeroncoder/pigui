@@ -25,5 +25,6 @@ describe("timeline virtualization", () => {
 
     expect(calculateVirtualRange(layout, 800, 300, 100)).toEqual({ start: 6, end: 12 })
     expect(calculateVirtualRange(layout, 0, 300, 0)).toEqual({ start: 0, end: 3 })
+    expect(calculateVirtualRange(layout, 10_000, 300, 0)).toEqual({ start: 19, end: 20 })
   })
 })

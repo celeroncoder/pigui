@@ -47,9 +47,23 @@ export const calculateVirtualRange = (
 
   const rangeStart = Math.max(0, scrollOffset - overscan)
   const rangeEnd = Math.max(rangeStart, scrollOffset + viewportSize + overscan)
-  let start = 0
-  while (start < layout.items.length && (layout.items[start]?.start ?? 0) + (layout.items[start]?.size ?? 0) < rangeStart) start += 1
-  let end = start
-  while (end < layout.items.length && (layout.items[end]?.start ?? 0) < rangeEnd) end += 1
-  return { start, end: Math.max(start + 1, end) }
+  let startLow = 0
+  let startHigh = layout.items.length
+  while (startLow < startHigh) {
+    const middle = Math.floor((startLow + startHigh) / 2)
+    const item = layout.items[middle]
+    if (item && item.start + item.size < rangeStart) startLow = middle + 1
+    else startHigh = middle
+  }
+  const start = Math.min(startLow, layout.items.length - 1)
+
+  let endLow = start
+  let endHigh = layout.items.length
+  while (endLow < endHigh) {
+    const middle = Math.floor((endLow + endHigh) / 2)
+    const item = layout.items[middle]
+    if (item && item.start < rangeEnd) endLow = middle + 1
+    else endHigh = middle
+  }
+  return { start, end: Math.min(layout.items.length, Math.max(start + 1, endLow)) }
 }

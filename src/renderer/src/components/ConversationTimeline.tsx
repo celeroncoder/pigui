@@ -31,12 +31,13 @@ const setScrollTopImmediately = (root: HTMLDivElement, top: number) => {
 export function ConversationTimeline({ items, landmarks, previewLandmarks, previewTotalCount, isStreaming, liveStatus, onOpenImage }: ConversationTimelineProps) {
   const [historyStart, setHistoryStart] = useState(() => initialHistoryStart(items.length))
   const [viewport, setViewport] = useState({ top: 0, height: 0 })
+  const [surfaceOffset, setSurfaceOffset] = useState(0)
   const [measurementVersion, setMeasurementVersion] = useState(0)
+  const [scrollAnchorId, setScrollAnchorId] = useState<string | null>(null)
   const scrollRootRef = useRef<HTMLDivElement>(null)
-  const virtualSurfaceRef = useRef<HTMLDivElement>(null)
+  const virtualSurfaceRef = useRef<HTMLOListElement>(null)
   const measuredSizesRef = useRef(new Map<string, number>())
   const rowNodesRef = useRef(new Map<string, HTMLElement>())
-  const rowObserverRef = useRef<ResizeObserver | null>(null)
   const pendingScrollRef = useRef<PendingScroll | null>(null)
   const scrollAnchorRef = useRef<ScrollAnchor | null>(null)
   const stickToBottomRef = useRef(true)
@@ -51,14 +52,15 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
   )
   const layoutById = useMemo(() => new Map(layout.items.map((item) => [item.id, item])), [layout])
   const layoutByIdRef = useRef(layoutById)
-  layoutByIdRef.current = layoutById
-  const virtualRange = calculateVirtualRange(layout, viewport.top, viewport.height)
+  const virtualScrollTop = Math.max(0, viewport.top - surfaceOffset)
+  const virtualRange = calculateVirtualRange(layout, virtualScrollTop, viewport.height)
   const virtualItems = layout.items.slice(virtualRange.start, virtualRange.end)
-  const scrollAnchorItem = scrollAnchorRef.current ? layoutById.get(scrollAnchorRef.current.id) : undefined
+  const scrollAnchorItem = scrollAnchorId ? layoutById.get(scrollAnchorId) : undefined
   const renderedVirtualItems = scrollAnchorItem && !virtualItems.some((item) => item.id === scrollAnchorItem.id)
     ? [...virtualItems, scrollAnchorItem].sort((left, right) => left.index - right.index)
     : virtualItems
-  const topRange = calculateVirtualRange(layout, viewport.top, 1, 0)
+  const renderedItemKey = renderedVirtualItems.map((item) => item.id).join("|")
+  const topRange = calculateVirtualRange(layout, virtualScrollTop, 1, 0)
   const topAbsoluteIndex = clampedHistoryStart + topRange.start
   const landmarkIndexByTarget = useMemo(() => new Map(landmarks.map((landmark, index) => [landmark.targetId, index])), [landmarks])
   const activePreviewLandmark = previewLandmarks.findLast((landmark) => (landmarkIndexByTarget.get(landmark.targetId) ?? -1) <= topAbsoluteIndex)
@@ -77,6 +79,7 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
     }
     const releaseScrollAnchor = () => {
       scrollAnchorRef.current = null
+      setScrollAnchorId(null)
       stickToBottomRef.current = false
     }
     updateViewport()
@@ -84,6 +87,7 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
     root.addEventListener("pointerdown", releaseScrollAnchor, { passive: true })
     root.addEventListener("touchstart", releaseScrollAnchor, { passive: true })
     root.addEventListener("wheel", releaseScrollAnchor, { passive: true })
+    root.addEventListener("keydown", releaseScrollAnchor)
     const resizeObserver = new ResizeObserver(updateViewport)
     resizeObserver.observe(root)
     return () => {
@@ -91,9 +95,14 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
       root.removeEventListener("pointerdown", releaseScrollAnchor)
       root.removeEventListener("touchstart", releaseScrollAnchor)
       root.removeEventListener("wheel", releaseScrollAnchor)
+      root.removeEventListener("keydown", releaseScrollAnchor)
       resizeObserver.disconnect()
     }
   }, [])
+
+  useLayoutEffect(() => {
+    layoutByIdRef.current = layoutById
+  }, [layoutById])
 
   useEffect(() => {
     const observer = new ResizeObserver((entries) => {
@@ -117,23 +126,13 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
       if (root && correction !== 0 && !stickToBottomRef.current) setScrollTopImmediately(root, root.scrollTop + correction)
       setMeasurementVersion((current) => current + 1)
     })
-    rowObserverRef.current = observer
     for (const node of rowNodesRef.current.values()) observer.observe(node)
-    return () => {
-      observer.disconnect()
-      rowObserverRef.current = null
-    }
-  }, [])
+    return () => observer.disconnect()
+  }, [renderedItemKey])
 
   const setRowNode = useCallback((id: string, node: HTMLElement | null) => {
-    const previous = rowNodesRef.current.get(id)
-    if (previous) rowObserverRef.current?.unobserve(previous)
-    if (node) {
-      rowNodesRef.current.set(id, node)
-      rowObserverRef.current?.observe(node)
-    } else {
-      rowNodesRef.current.delete(id)
-    }
+    if (node) rowNodesRef.current.set(id, node)
+    else rowNodesRef.current.delete(id)
   }, [])
 
   useLayoutEffect(() => {
@@ -142,6 +141,7 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
     const pending = pendingScrollRef.current
     pendingScrollRef.current = null
     const surfaceTop = virtualSurfaceRef.current?.offsetTop ?? 0
+    setSurfaceOffset((current) => current === surfaceTop ? current : surfaceTop)
     const scrollAnchor = scrollAnchorRef.current
     if (!scrollAnchor && pending?.type === "target") {
       const target = layoutById.get(pending.id)
@@ -153,7 +153,7 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
     setViewport((current) => current.top === root.scrollTop && current.height === root.clientHeight
       ? current
       : { top: root.scrollTop, height: root.clientHeight })
-  }, [items.length, layout.totalSize, layoutById])
+  }, [isStreaming, items.length, layout.totalSize, layoutById, liveStatus])
 
   useEffect(() => {
     const root = scrollRootRef.current
@@ -202,7 +202,10 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
       }
     }
     stickToBottomRef.current = false
-    flushSync(() => setHistoryStart((current) => nextHistoryStart(current)))
+    flushSync(() => {
+      setScrollAnchorId(anchor?.id ?? null)
+      setHistoryStart((current) => nextHistoryStart(current))
+    })
     if (root && anchor) {
       const anchorNode = rowNodesRef.current.get(anchor.id)
       if (anchorNode) setScrollTopImmediately(root, root.scrollTop + anchorNode.getBoundingClientRect().top - root.getBoundingClientRect().top - anchor.viewportOffset)
@@ -213,6 +216,7 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
     const targetIndex = landmarks.findIndex((candidate) => candidate.targetId === landmark.targetId)
     if (targetIndex < 0) return
     scrollAnchorRef.current = null
+    setScrollAnchorId(null)
     stickToBottomRef.current = false
     if (targetIndex < clampedHistoryStart) {
       pendingScrollRef.current = { type: "target", id: items[targetIndex]?.id ?? "" }
@@ -234,28 +238,29 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
               <span>{clampedHistoryStart} earlier {clampedHistoryStart === 1 ? "item" : "items"}</span>
             </div>
           )}
-          <div className="virtual-message-list" ref={virtualSurfaceRef} style={{ height: layout.totalSize }} role="feed" aria-label="Conversation history">
+          <ol className="virtual-message-list" ref={virtualSurfaceRef} style={{ height: layout.totalSize }} aria-label="Conversation history">
             {renderedVirtualItems.map((virtualItem) => {
               const item = loadedItems[virtualItem.index]
               const landmark = loadedLandmarks[virtualItem.index]
               if (!item) return null
               const absoluteIndex = clampedHistoryStart + virtualItem.index
               return (
-                <div
+                <li
                   className="virtual-message-row"
                   data-timeline-id={item.id}
                   key={item.id}
                   ref={(node) => setRowNode(item.id, node)}
-                  role="presentation"
+                  aria-posinset={absoluteIndex + 1}
+                  aria-setsize={items.length}
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
                   {item.type === "message"
                     ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={onOpenImage} />
                     : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={isStreaming && absoluteIndex === lastActivityIndex} onOpenImage={onOpenImage} />}
-                </div>
+                </li>
               )
             })}
-          </div>
+          </ol>
           {isStreaming && (
             <div className="live-status" role="status" aria-live="polite">
               <CircleDashed size={14} />
