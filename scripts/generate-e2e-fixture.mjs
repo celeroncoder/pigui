@@ -237,6 +237,7 @@ const projectBackgroundProcesses = (entries) => {
 }
 
 const details = []
+const recoveryPreview = process.env.PI_E2E_RECOVERY === "1"
 for (const [index, info] of orderedInfos.entries()) {
   const summary = summaries[index]
   if (!summary) continue
@@ -267,7 +268,64 @@ for (const [index, info] of orderedInfos.entries()) {
     thinkingLevel: context.thinkingLevel,
     availableThinkingLevels: thinkingLevelsForModel(selectedModel),
     backgroundProcesses: projectBackgroundProcesses(manager.getBranch()),
-    queuedMessages: [],
+    queuedMessages: recoveryPreview && info.path === preferred?.path
+      ? [
+          { id: "fixture-recovery-steer", delivery: "steer", text: "Check the transport state before continuing" },
+          { id: "fixture-recovery-follow-up", delivery: "follow-up", text: "Run the focused regression tests" }
+        ]
+      : [],
+    ...(recoveryPreview && info.path === preferred?.path ? {
+      recovery: {
+        reason: "The Pi response pipe closed before the turn completed.",
+        interruptedAt: Date.now(),
+        lastPrompt: "Finish the transport recovery implementation"
+      }
+    } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
+    isStreaming: false,
+    isCompacting: false
+  })
+}
+
+if (details.length === 0) {
+  const manager = SessionManager.inMemory(cwd)
+  const selectedModel = availableModels[0]
+  const summary = {
+    id: manager.getSessionId(),
+    path: `pi-e2e-memory://${manager.getSessionId()}`,
+    name: "Pi session review",
+    firstMessage: "",
+    updatedAt: Date.now(),
+    messageCount: 0
+  }
+  summaries.push(summary)
+  const contextSession = await createAgentSessionFromServices({ services, sessionManager: manager })
+  let contextUsage
+  try {
+    contextUsage = contextSession.session.getContextUsage()
+  } finally {
+    contextSession.session.dispose()
+  }
+  details.push({
+    summary,
+    messages: [],
+    model: selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "",
+    thinkingLevel: "off",
+    availableThinkingLevels: thinkingLevelsForModel(selectedModel),
+    backgroundProcesses: [],
+    queuedMessages: recoveryPreview
+      ? [
+          { id: "fixture-recovery-steer", delivery: "steer", text: "Check the transport state before continuing" },
+          { id: "fixture-recovery-follow-up", delivery: "follow-up", text: "Run the focused regression tests" }
+        ]
+      : [],
+    ...(recoveryPreview ? {
+      recovery: {
+        reason: "The Pi response pipe closed before the turn completed.",
+        interruptedAt: Date.now(),
+        lastPrompt: "Finish the transport recovery implementation"
+      }
+    } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     isStreaming: false,
     isCompacting: false
@@ -287,4 +345,4 @@ const outputPath = join(root, ".e2e-public/pi-e2e.json")
 await mkdir(dirname(outputPath), { recursive: true })
 await writeFile(outputPath, `${JSON.stringify(fixture)}\n`, "utf8")
 await copyFile(join(root, "src/renderer/public/favicon.svg"), join(root, ".e2e-public/favicon.svg"))
-console.log(`Generated Pi-backed E2E fixture: ${summaries.length} sessions, ${fixture.models.length} models${interaction ? ", ask_user preview included" : ""}`)
+console.log(`Generated Pi-backed E2E fixture: ${summaries.length} sessions, ${fixture.models.length} models${interaction ? ", ask_user preview included" : ""}${recoveryPreview ? ", recovery preview included" : ""}`)

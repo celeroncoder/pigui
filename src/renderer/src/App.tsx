@@ -1,6 +1,6 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRecoveryAction, SessionSummary, ThinkingLevel } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { ActivityGroup } from "./components/ActivityGroup"
@@ -14,6 +14,7 @@ import { MessageView } from "./components/MessageView"
 import { ProjectSidebar } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
+import { TransportRecoveryPanel } from "./components/TransportRecoveryPanel"
 import styles from "./App.module.css"
 import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
@@ -43,6 +44,7 @@ export default function App() {
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [interactionRequest, setInteractionRequest] = useState<AskUserInteractionRequest | null>(null)
   const [interactionSubmitting, setInteractionSubmitting] = useState(false)
+  const [recoverySubmitting, setRecoverySubmitting] = useState(false)
   const interactionSubmittingRef = useRef(false)
   const draftRevisionRef = useRef(0)
   const attachmentRevisionRef = useRef(0)
@@ -96,6 +98,7 @@ export default function App() {
     setError(null)
     setInteractionRequest(null)
     setInteractionSubmitting(false)
+    setRecoverySubmitting(false)
     interactionSubmittingRef.current = false
     try {
       const detail = await desktopApi.sessions.open(project.path, summary.path)
@@ -181,6 +184,7 @@ export default function App() {
     setModelOptions([])
     setInteractionRequest(null)
     setInteractionSubmitting(false)
+    setRecoverySubmitting(false)
     interactionSubmittingRef.current = false
     setLoadingSessions(true)
     setError(null)
@@ -260,6 +264,7 @@ export default function App() {
     if (event.type === "interaction-cleared") {
       setInteractionRequest((current) => current?.requestId === event.requestId ? null : current)
       setInteractionSubmitting(false)
+      setRecoverySubmitting(false)
       interactionSubmittingRef.current = false
       return
     }
@@ -423,6 +428,30 @@ export default function App() {
     })
   }
 
+  const recoverSession = (action: SessionRecoveryAction) => {
+    if (!session || recoverySubmitting) return
+    const sessionPath = session.summary.path
+    setRecoverySubmitting(true)
+    setError(null)
+    if (action !== "resume") setSession((current) => current ? { ...current, recovery: undefined, isStreaming: true } : current)
+    void desktopApi.sessions.recover(sessionPath, action).then((detail) => {
+      if (activeSessionPathRef.current !== sessionPath) return
+      setSession(detail)
+      setInteractionRequest(detail.interactionRequest ?? null)
+    }).catch((cause: unknown) => {
+      if (activeSessionPathRef.current !== sessionPath) return
+      setError(cause instanceof Error ? cause.message : "Pi could not recover this session")
+      const project = activeProjectRef.current
+      if (action !== "resume" && project) {
+        void desktopApi.sessions.open(project.path, sessionPath).then((detail) => {
+          if (activeSessionPathRef.current === sessionPath) setSession(detail)
+        }).catch(() => undefined)
+      }
+    }).finally(() => {
+      if (activeSessionPathRef.current === sessionPath) setRecoverySubmitting(false)
+    })
+  }
+
   const addPastedImage = async (image: File) => {
     if (!session) return
     const sessionPath = session.summary.path
@@ -534,7 +563,7 @@ export default function App() {
           onNewSession={() => void newSession()}
         />
 
-        <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
+        <main className={`conversation ${(interactionRequest || session?.recovery) ? "has-interaction" : ""}`} id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject?.name ?? "Workspace"}</span>
@@ -610,12 +639,20 @@ export default function App() {
             </div>
           </div>
 
-          {interactionRequest && (
-            <AskUserPanel
-              request={interactionRequest}
-              submitting={interactionSubmitting}
-              onAnswer={answerInteraction}
-            />
+          {(interactionRequest || session?.recovery) && (
+            <div className={styles.sessionNotices}>
+              {session?.recovery && (
+                <TransportRecoveryPanel
+                  recovery={session.recovery}
+                  queuedCount={session.queuedMessages.length}
+                  busy={recoverySubmitting}
+                  onRecover={recoverSession}
+                />
+              )}
+              {interactionRequest && (
+                <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
+              )}
+            </div>
           )}
 
           <div className="message-scroll-shell">
@@ -667,8 +704,8 @@ export default function App() {
           <Composer
             key={session?.summary.path ?? "no-session"}
             value={draft}
-            disabled={!session || interactionRequest !== null}
-            disabledReason={interactionRequest ? "Answer Pi above to continue…" : undefined}
+            disabled={!session || interactionRequest !== null || session.recovery !== undefined || recoverySubmitting}
+            disabledReason={interactionRequest ? "Answer Pi above to continue…" : session?.recovery ? "Choose a recovery option above…" : recoverySubmitting ? "Recovering Pi session…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? "Choose model"}

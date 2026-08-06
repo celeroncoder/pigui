@@ -119,6 +119,14 @@ export interface QueuedMessage {
   readonly text: string
 }
 
+export type SessionRecoveryAction = "resume" | "continue" | "restart"
+
+export interface SessionRecovery {
+  readonly reason: string
+  readonly interruptedAt: number
+  readonly lastPrompt?: string
+}
+
 export type BackgroundProcessStatus = "running" | "done" | "failed" | "killed" | "stopped"
 
 export interface BackgroundProcess {
@@ -152,6 +160,8 @@ export interface SessionDetail {
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly backgroundProcesses: ReadonlyArray<BackgroundProcess>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
+  /** Present when Pi's last run ended before its transport completed normally. */
+  readonly recovery?: SessionRecovery
   /** Omitted when no model with a context window is selected. */
   readonly contextUsage?: ContextUsage
   readonly interactionRequest?: AskUserInteractionRequest
@@ -205,6 +215,7 @@ export interface PiDesktopApi {
     readonly open: (projectPath: string, sessionPath: string) => Promise<SessionDetail>
     readonly inspect: (projectPath: string, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
     readonly prompt: (sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
+    readonly recover: (sessionPath: string, action: SessionRecoveryAction) => Promise<SessionDetail>
     readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Promise<void>
     readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
     readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Promise<void>
@@ -228,6 +239,7 @@ export const IpcChannels = {
   openSession: "sessions:open",
   inspectSession: "sessions:inspect",
   promptSession: "sessions:prompt",
+  recoverSession: "sessions:recover",
   editQueuedMessage: "sessions:queue-edit",
   removeQueuedMessage: "sessions:queue-remove",
   steerQueuedMessage: "sessions:queue-steer",

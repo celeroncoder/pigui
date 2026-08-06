@@ -22,6 +22,11 @@ const SessionSummarySchema = Schema.Struct({
 const ThinkingLevelSchema = Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
 const QueueDeliverySchema = Schema.Literals(["follow-up", "steer"])
 const QueuedMessageSchema = Schema.Struct({ id: Schema.String, delivery: QueueDeliverySchema, text: Schema.String })
+const SessionRecoverySchema = Schema.Struct({
+  reason: Schema.String,
+  interruptedAt: Schema.Number,
+  lastPrompt: Schema.optionalKey(Schema.String)
+})
 const MessageBlockSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
   Schema.Struct({ type: Schema.Literal("thinking"), text: Schema.String }),
@@ -63,6 +68,7 @@ const SessionDetailSchema = Schema.Struct({
   availableThinkingLevels: Schema.Array(ThinkingLevelSchema),
   backgroundProcesses: Schema.Array(BackgroundProcessSchema),
   queuedMessages: Schema.Array(QueuedMessageSchema),
+  recovery: Schema.optionalKey(SessionRecoverySchema),
   contextUsage: Schema.optionalKey(ContextUsageSchema),
   interactionRequest: Schema.optionalKey(AskUserInteractionRequestSchema),
   isStreaming: Schema.Boolean,
@@ -176,6 +182,14 @@ export const createE2eApi = (): PiDesktopApi => {
         return detail
       },
       prompt: async () => Promise.reject(new Error("Live prompting is tested in Electron, not the browser review harness")),
+      recover: async (sessionPath) => {
+        const data = await loadFixture()
+        const current = data.details.find((item) => item.summary.path === sessionPath)
+        if (!current) throw new Error("The generated Pi session snapshot is unavailable")
+        const detail: SessionDetail = { ...current, recovery: undefined }
+        window.setTimeout(() => emit({ type: "session-state", sessionPath, detail }), 80)
+        return detail
+      },
       editQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
       removeQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
       steerQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),

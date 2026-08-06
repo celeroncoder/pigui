@@ -20,6 +20,7 @@ const api: PiDesktopApi = {
     open: (projectPath, sessionPath) => ipcRenderer.invoke(IpcChannels.openSession, projectPath, sessionPath),
     inspect: (projectPath, parentSessionPath, sessionPath) => ipcRenderer.invoke(IpcChannels.inspectSession, projectPath, parentSessionPath, sessionPath),
     prompt: (sessionPath, text, delivery, attachmentPaths) => ipcRenderer.invoke(IpcChannels.promptSession, sessionPath, text, delivery, attachmentPaths),
+    recover: (sessionPath, action) => ipcRenderer.invoke(IpcChannels.recoverSession, sessionPath, action),
     editQueuedMessage: (sessionPath, messageId, text) => ipcRenderer.invoke(IpcChannels.editQueuedMessage, sessionPath, messageId, text),
     removeQueuedMessage: (sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.removeQueuedMessage, sessionPath, messageId),
     steerQueuedMessage: (sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.steerQueuedMessage, sessionPath, messageId),

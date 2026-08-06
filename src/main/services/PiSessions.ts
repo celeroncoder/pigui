@@ -12,7 +12,7 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRecovery, SessionRecoveryAction, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
@@ -20,6 +20,7 @@ import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import { projectToolOutput } from "./PiEventProjection"
 import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
+import { interruptedTransportReason, lastUserPrompt, recoveryPrompt } from "./SessionRecovery"
 import {
   type NativePromptQueue,
   prioritizeQueuedMessageForSteering,
@@ -44,6 +45,9 @@ interface ActiveSession {
   queuedMessages: ReadonlyArray<QueuedMessage>
   queueUpdatesSuspended: number
   pendingPromptStarts: number
+  abortRequested: boolean
+  pendingTransportFailure: string | undefined
+  recovery: SessionRecovery | undefined
   liveMessageId: string | null
   liveMessageStarted: boolean
   liveDetail: SessionDetail | undefined
@@ -387,6 +391,18 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary, con
   }
 }
 
+const historicalRecovery = (manager: SessionManager): SessionRecovery | undefined => {
+  const messages = manager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : [])
+  const reason = interruptedTransportReason(messages, false, false)
+  if (!reason) return undefined
+  const lastEntry = manager.getBranch().findLast((entry) => entry.type === "message" && entry.message.role === "assistant")
+  return {
+    reason,
+    interruptedAt: lastEntry ? timestampValue(lastEntry.timestamp) : Date.now(),
+    ...(lastUserPrompt(messages) ? { lastPrompt: lastUserPrompt(messages) } : {})
+  }
+}
+
 const snapshotFromActive = (active: ActiveSession): SessionDetail => {
   const messages = historyToChat(active.session.sessionManager)
   const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
@@ -407,6 +423,7 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
+    ...(active.recovery ? { recovery: active.recovery } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
@@ -416,7 +433,7 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
 
 const detailFromActive = (active: ActiveSession): SessionDetail => {
   const detail = active.liveDetail ?? snapshotFromActive(active)
-  const { contextUsage: _previousContextUsage, interactionRequest: _previousInteraction, ...base } = detail
+  const { contextUsage: _previousContextUsage, interactionRequest: _previousInteraction, recovery: _previousRecovery, ...base } = detail
   const contextUsage = projectContextUsage(active.session)
   const interactionRequest = active.interaction.pendingRequest()
   return {
@@ -426,6 +443,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
+    ...(active.recovery ? { recovery: active.recovery } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
@@ -439,6 +457,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly prompt: (sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
+  readonly recover: (sessionPath: string, action: SessionRecoveryAction) => Effect.Effect<SessionDetail, AppError>
   readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
   readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
   readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
@@ -702,6 +721,9 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       queuedMessages: reconcileQueuedMessages([], nativePromptQueue(runtime.session)),
       queueUpdatesSuspended: 0,
       pendingPromptStarts: 0,
+      abortRequested: false,
+      pendingTransportFailure: undefined,
+      recovery: historicalRecovery(manager),
       liveMessageId: null,
       liveMessageStarted: false,
       liveDetail: undefined,
@@ -721,10 +743,15 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           void Effect.runPromise(emitQueuedMessages(active))
         }
       } else if (event.type === "agent_start") {
+        active.abortRequested = false
+        active.pendingTransportFailure = undefined
+        active.recovery = undefined
         void Effect.runPromise(Effect.gen(function*() {
           yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: true })
           yield* emitContextUsage(active)
         }))
+      } else if (event.type === "agent_end") {
+        active.pendingTransportFailure = interruptedTransportReason(event.messages, event.willRetry, active.abortRequested)
       } else if (event.type === "message_start" && event.message.role === "user") {
         active.liveUserMessageIndex += 1
         void Effect.runPromise(emitActiveEvent(active, {
@@ -827,6 +854,16 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       } else if (event.type === "agent_settled") {
         active.liveMessageId = null
         active.liveMessageStarted = false
+        if (active.pendingTransportFailure) {
+          const prompt = lastUserPrompt(active.session.messages)
+          active.recovery = {
+            reason: active.pendingTransportFailure,
+            interruptedAt: Date.now(),
+            ...(prompt ? { lastPrompt: prompt } : {})
+          }
+        }
+        active.pendingTransportFailure = undefined
+        active.abortRequested = false
         void Effect.runPromise(emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: false }))
         void Effect.runPromise(emitSnapshot(active))
         scheduleGitRefresh(active)
@@ -963,10 +1000,13 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           }
 
           const run = yield* Effect.try({
-            try: () => active.session.prompt(prompt, {
-              ...(images.length > 0 ? { images } : {}),
-              preflightResult: finishPromptStart
-            }),
+            try: () => {
+              active.recovery = undefined
+              return active.session.prompt(prompt, {
+                ...(images.length > 0 ? { images } : {}),
+                preflightResult: finishPromptStart
+              })
+            },
             catch: toAppError("prompt Pi")
           })
           return { kind: "started", run } as const
@@ -975,6 +1015,50 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         if (operation.kind === "queued") return
         yield* Effect.tryPromise({ try: () => operation.run, catch: toAppError("prompt Pi") })
       }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
+    }),
+    recover: Effect.fn("PiSessions.recover")(function*(sessionPath: string, action: SessionRecoveryAction) {
+      const requestedPath = canonicalPath(sessionPath)
+      const prepared = yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        const current = activeSessions.get(requestedPath)
+        if (!current) return yield* Effect.fail(AppError.make({ operation: "recover Pi session", message: "Open the interrupted session before recovering it" }))
+        const recovery = current.recovery
+        if (!recovery) return yield* Effect.fail(AppError.make({ operation: "recover Pi session", message: "This Pi session is no longer interrupted" }))
+        const prompt = recoveryPrompt(action, recovery)
+        if (action === "restart" && !prompt) {
+          return yield* Effect.fail(AppError.make({ operation: "recover Pi session", message: "The interrupted session has no preserved user prompt to restart" }))
+        }
+
+        const preservedQueue = current.queuedMessages
+        const preservedImages = new Map(current.queuedImages)
+        activeSessions.delete(requestedPath)
+        yield* Effect.promise(() => releaseActiveSession(current))
+        const manager = yield* Effect.try({
+          try: () => SessionManager.open(requestedPath, undefined, current.cwd),
+          catch: toAppError("reopen Pi session")
+        })
+        const next = yield* attach(current.cwd, manager)
+        next.recovery = undefined
+        for (const [id, images] of preservedImages) next.queuedImages.set(id, images)
+        if (preservedQueue.length > 0) yield* replaceNativeQueue(next, preservedQueue)
+        if (prompt) next.pendingPromptStarts += 1
+        yield* emitSnapshot(next)
+        return { active: next, prompt }
+      })))
+
+      if (prepared.prompt) {
+        const prompt = prepared.prompt
+        let promptStartPending = true
+        const finishPromptStart = () => {
+          if (!promptStartPending) return
+          promptStartPending = false
+          prepared.active.pendingPromptStarts -= 1
+        }
+        yield* Effect.tryPromise({
+          try: () => prepared.active.session.prompt(prompt, { preflightResult: finishPromptStart }),
+          catch: toAppError("continue recovered Pi session")
+        }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
+      }
+      return detailFromActive(prepared.active)
     }),
     editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(sessionPath: string, messageId: string, text: string) {
       const requestedPath = canonicalPath(sessionPath)
@@ -1026,6 +1110,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     abort: Effect.fn("PiSessions.abort")(function*(sessionPath: string) {
       const active = activeSessions.get(canonicalPath(sessionPath))
       if (!active) return
+      active.abortRequested = true
       active.interaction.cancelPending()
       yield* Effect.tryPromise({ try: () => active.session.abort(), catch: toAppError("abort Pi") })
     }),
