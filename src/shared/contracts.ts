@@ -117,6 +117,15 @@ export interface BackgroundProcess {
   readonly updatedAt: number
 }
 
+/** Pi's current model-context measurement, if the selected model exposes one. */
+export interface ContextUsage {
+  /** Estimated tokens in context, or null until Pi can measure them after compaction. */
+  readonly tokens: number | null
+  readonly contextWindow: number
+  /** Pi's context percentage, or null when token usage is temporarily unknown. */
+  readonly percent: number | null
+}
+
 export interface SessionDetail {
   readonly summary: SessionSummary
   readonly messages: ReadonlyArray<ChatMessage>
@@ -125,6 +134,8 @@ export interface SessionDetail {
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly backgroundProcesses: ReadonlyArray<BackgroundProcess>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
+  /** Omitted when no model with a context window is selected. */
+  readonly contextUsage?: ContextUsage
   readonly interactionRequest?: AskUserInteractionRequest
   readonly isStreaming: boolean
   readonly isCompacting: boolean
@@ -151,6 +162,7 @@ export type SessionEvent =
   | { readonly type: "tool-end"; readonly sessionPath: string; readonly toolId: string; readonly output: string; readonly isError: boolean; readonly diff?: string }
   | { readonly type: "agent-status"; readonly sessionPath: string; readonly isStreaming: boolean }
   | { readonly type: "compaction-status"; readonly sessionPath: string; readonly isCompacting: boolean }
+  | { readonly type: "context-usage"; readonly sessionPath: string; readonly contextUsage?: ContextUsage }
   | { readonly type: "background-processes"; readonly sessionPath: string; readonly processes: ReadonlyArray<BackgroundProcess> }
   | { readonly type: "project-git"; readonly projectPath: string; readonly git?: GitStatus }
   | { readonly type: "interaction-request"; readonly sessionPath: string; readonly request: AskUserInteractionRequest }

@@ -50,6 +50,11 @@ const BackgroundProcessSchema = Schema.Struct({
   startedAt: Schema.Number,
   updatedAt: Schema.Number
 })
+const ContextUsageSchema = Schema.Struct({
+  tokens: Schema.Union([Schema.Number, Schema.Null]),
+  contextWindow: Schema.Number,
+  percent: Schema.Union([Schema.Number, Schema.Null])
+})
 const SessionDetailSchema = Schema.Struct({
   summary: SessionSummarySchema,
   messages: Schema.Array(ChatMessageSchema),
@@ -58,6 +63,7 @@ const SessionDetailSchema = Schema.Struct({
   availableThinkingLevels: Schema.Array(ThinkingLevelSchema),
   backgroundProcesses: Schema.Array(BackgroundProcessSchema),
   queuedMessages: Schema.Array(QueuedMessageSchema),
+  contextUsage: Schema.optionalKey(ContextUsageSchema),
   interactionRequest: Schema.optionalKey(AskUserInteractionRequestSchema),
   isStreaming: Schema.Boolean,
   isCompacting: Schema.Boolean

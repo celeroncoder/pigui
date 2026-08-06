@@ -359,6 +359,10 @@ export default function App() {
       setSession((current) => current ? { ...current, isCompacting: event.isCompacting } : current)
       return
     }
+    if (event.type === "context-usage") {
+      setSession((current) => current ? { ...current, contextUsage: event.contextUsage } : current)
+      return
+    }
     if (event.type === "background-processes") {
       setSession((current) => current ? { ...current, backgroundProcesses: event.processes } : current)
       return
@@ -713,6 +717,7 @@ export default function App() {
             thinkingLevel={session?.thinkingLevel ?? "off"}
             availableThinkingLevels={session?.availableThinkingLevels ?? []}
             queuedMessages={session?.queuedMessages ?? []}
+            contextUsage={session?.contextUsage}
             onModelChange={(option) => {
               if (!session) return
               const sessionPath = session.summary.path
@@ -723,7 +728,8 @@ export default function App() {
                       ...current,
                       model: detail.model,
                       thinkingLevel: detail.thinkingLevel,
-                      availableThinkingLevels: detail.availableThinkingLevels
+                      availableThinkingLevels: detail.availableThinkingLevels,
+                      contextUsage: detail.contextUsage
                     } : current)
                   }
                 })
@@ -742,7 +748,8 @@ export default function App() {
                     setSession((current) => current ? {
                       ...current,
                       thinkingLevel: detail.thinkingLevel,
-                      availableThinkingLevels: detail.availableThinkingLevels
+                      availableThinkingLevels: detail.availableThinkingLevels,
+                      contextUsage: detail.contextUsage
                     } : current)
                   }
                 })
