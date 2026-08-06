@@ -254,6 +254,13 @@ export default function App() {
     }
   }, [openSession, refreshProjectGit, storeWorktreeSessions])
 
+  const selectProject = useCallback((project: Project) => {
+    const worktree = activeProjectRef.current?.id === project.id
+      ? activeWorktreeRef.current ?? project.worktrees.find((candidate) => candidate.kind === "local") ?? project.worktrees[0]
+      : project.worktrees.find((candidate) => candidate.kind === "local") ?? project.worktrees[0]
+    if (worktree) void selectWorktree(project, worktree)
+  }, [selectWorktree])
+
   useEffect(() => {
     void desktopApi.projects.list().then((items) => {
       setProjects(items)
@@ -698,6 +705,7 @@ export default function App() {
           activeWorktree={activeWorktree}
           activeSessionPath={session?.summary.path ?? null}
           activeSessionStreaming={session?.isStreaming ?? false}
+          onSelectProject={selectProject}
           onSelectSession={(project, worktree, summary) => void selectWorktree(project, worktree, summary.path)}
           onAddProject={() => void addProject()}
           onNewSession={(project, worktree) => void newSession(project, worktree)}
