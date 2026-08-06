@@ -271,6 +271,86 @@ const projectBackgroundProcesses = (entries) => {
     .sort((left, right) => right.startedAt - left.startedAt)
 }
 
+const emptyTokens = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 })
+const addTokens = (target, usage) => ({
+  input: target.input + usage.input,
+  output: target.output + usage.output,
+  cacheRead: target.cacheRead + usage.cacheRead,
+  cacheWrite: target.cacheWrite + usage.cacheWrite,
+  total: target.total + usage.input + usage.output + usage.cacheRead + usage.cacheWrite
+})
+
+const metricTelemetry = orderedInfos.map((info) => {
+  const manager = SessionManager.open(info.path)
+  const branchMessages = manager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : [])
+  const latestUserIndex = branchMessages.findLastIndex((message) => message.role === "user")
+  const latestUser = branchMessages[latestUserIndex]
+  const terminal = latestUserIndex >= 0
+    ? branchMessages.slice(latestUserIndex + 1).filter((message) => message.role === "assistant")
+      .findLast((message) => message.stopReason !== "pending" && message.stopReason !== "toolUse")
+    : undefined
+  const outcome = !latestUser || !terminal
+    ? "incomplete"
+    : terminal.stopReason === "error" || terminal.stopReason === "aborted" ? "failure" : "success"
+  const usage = manager.getEntries().flatMap((entry) => {
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      return [{ model: `${entry.message.provider}/${entry.message.responseModel ?? entry.message.model}`, usage: entry.message.usage }]
+    }
+    if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
+      return [{ model: "Tools & summaries", usage: entry.message.usage }]
+    }
+    if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
+      return [{ model: "Tools & summaries", usage: entry.usage }]
+    }
+    return []
+  })
+  return {
+    id: info.id,
+    outcome,
+    ...(latestUser && terminal ? { completionMs: Math.max(0, terminal.timestamp - latestUser.timestamp) } : {}),
+    ...(outcome === "failure" ? { failureReason: terminal.errorMessage?.trim() || (terminal.stopReason === "aborted" ? "Aborted" : "Provider error") } : {}),
+    usage
+  }
+})
+
+const metricModelTotals = new Map()
+const metricFailureReasons = new Map()
+let metricTokens = emptyTokens()
+let metricSuccessful = 0
+let metricFailed = 0
+let metricCompletionMs = 0
+for (const telemetry of metricTelemetry) {
+  if (telemetry.outcome === "success") metricSuccessful += 1
+  if (telemetry.outcome === "failure") {
+    metricFailed += 1
+    metricFailureReasons.set(telemetry.failureReason, (metricFailureReasons.get(telemetry.failureReason) ?? 0) + 1)
+  }
+  metricCompletionMs += telemetry.completionMs ?? 0
+  for (const item of telemetry.usage) {
+    metricTokens = addTokens(metricTokens, item.usage)
+    const current = metricModelTotals.get(item.model) ?? { tokens: emptyTokens(), sessions: new Set() }
+    current.tokens = addTokens(current.tokens, item.usage)
+    current.sessions.add(telemetry.id)
+    metricModelTotals.set(item.model, current)
+  }
+}
+const metricCompleted = metricSuccessful + metricFailed
+const metrics = {
+  generatedAt: Date.now(),
+  sessionCount: metricTelemetry.length,
+  completedSessions: metricCompleted,
+  successfulSessions: metricSuccessful,
+  failedSessions: metricFailed,
+  incompleteSessions: metricTelemetry.length - metricCompleted,
+  successRate: metricCompleted > 0 ? metricSuccessful / metricCompleted : null,
+  averageCompletionMs: metricCompleted > 0 ? metricCompletionMs / metricCompleted : null,
+  tokenUsage: metricTokens,
+  modelUsage: [...metricModelTotals.entries()].map(([model, value]) => ({ model, sessions: value.sessions.size, ...value.tokens }))
+    .sort((left, right) => right.total - left.total || left.model.localeCompare(right.model)),
+  failureReasons: [...metricFailureReasons.entries()].map(([reason, count]) => ({ reason, count }))
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
+}
+
 const details = []
 const recoveryPreview = process.env.PI_E2E_RECOVERY === "1"
 const recoveryPromptText = "Finish the transport recovery implementation"
@@ -413,6 +493,7 @@ const fixture = {
   details,
   models: availableModels.map((model) => ({ provider: model.provider, id: model.id, name: model.name })),
   commands,
+  metrics,
   ...(interaction ? { interaction } : {})
 }
 

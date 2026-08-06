@@ -180,6 +180,12 @@ const registerIpc = () => {
     return yield* git.diff(worktree.path)
   })))
 
+  ipcMain.handle(IpcChannels.projectMetrics, (_event, input: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(input)
+    const sessions = yield* PiSessions
+    return yield* sessions.metrics(worktree.path)
+  })))
+
   ipcMain.handle(IpcChannels.sessionDraft, (_event, input: unknown) => run(Effect.gen(function*() {
     const { context } = yield* resolveKnownWorktree(input)
     const store = yield* ProjectStore

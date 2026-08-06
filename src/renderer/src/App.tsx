@@ -43,6 +43,9 @@ export default function App() {
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
   const [backgroundPaneOpen, setBackgroundPaneOpen] = useState(false)
   const [gitPaneOpen, setGitPaneOpen] = useState(false)
+  const [metricsPaneOpen, setMetricsPaneOpen] = useState(false)
+  const [projectMetrics, setProjectMetrics] = useState<ProjectMetrics | null>(null)
+  const [metricsLoading, setMetricsLoading] = useState(false)
   const [gitDiff, setGitDiff] = useState<GitDiff | null>(null)
   const [gitDiffLoading, setGitDiffLoading] = useState(false)
   const [githubOpen, setGitHubOpen] = useState(false)
@@ -75,6 +78,7 @@ export default function App() {
   const projectRequestRef = useRef(0)
   const gitRequestRef = useRef(0)
   const gitDiffRequestRef = useRef(0)
+  const metricsRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const modelRequestRef = useRef(0)
   const commandRequestRef = useRef(0)
@@ -389,6 +393,7 @@ export default function App() {
     setSubagentPaneOpen(false)
     setBackgroundPaneOpen(false)
     setGitPaneOpen(false)
+    setMetricsPaneOpen(false)
     setGitDiff(null)
     setGitDiffLoading(false)
     setSelectedSubagent(null)
@@ -915,7 +920,7 @@ export default function App() {
         <div className="titlebar-actions" />
       </header>
 
-      <div className={`workspace-layout ${(gitPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""} ${gitPaneOpen ? "with-git" : ""}`}>
+      <div className={`workspace-layout ${(gitPaneOpen || metricsPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""} ${gitPaneOpen ? "with-git" : ""}`}>
         <ProjectSidebar
           projects={projects}
           sessionsByWorktree={sessionsByWorktree}
@@ -951,6 +956,7 @@ export default function App() {
                       if (!activeProject || !activeWorktree) return
                       setSubagentPaneOpen(false)
                       setBackgroundPaneOpen(false)
+                      setMetricsPaneOpen(false)
                       setGitPaneOpen(true)
                       void loadGitDiff(activeProject, activeWorktree)
                     }}
@@ -1002,6 +1008,7 @@ export default function App() {
                   onClick={() => {
                     setSubagentPaneOpen(false)
                     setGitPaneOpen(false)
+                    setMetricsPaneOpen(false)
                     setBackgroundPaneOpen((open) => !open)
                   }}
                 >
@@ -1023,6 +1030,7 @@ export default function App() {
                     const first = linkedSubagents[0]
                     setBackgroundPaneOpen(false)
                     setGitPaneOpen(false)
+                    setMetricsPaneOpen(false)
                     setSubagentPaneOpen(true)
                     if (first) void inspectSubagent(activeProject, activeWorktree, first)
                   }}
@@ -1195,6 +1203,14 @@ export default function App() {
               onRefresh={() => void loadGitDiff(activeProject, activeWorktree)}
             />
           </Suspense>
+        )}
+        {metricsPaneOpen && activeProject && (
+          <ProjectMetricsPane
+            metrics={projectMetrics}
+            loading={metricsLoading}
+            onRefresh={() => void loadProjectMetrics(activeProject)}
+            onClose={() => setMetricsPaneOpen(false)}
+          />
         )}
       </div>
       {lightboxImage && (
