@@ -373,7 +373,9 @@ const signalExitCodes: ReadonlyArray<readonly [NodeJS.Signals, number]> = proces
   : [["SIGHUP", 129], ["SIGINT", 130], ["SIGTERM", 143]]
 
 for (const [signal, exitCode] of signalExitCodes) {
-  process.once(signal, () => {
+  // Keep handling repeated signals until cleanup finishes so a second signal
+  // cannot restore Node's default behavior and cut runtime disposal short.
+  process.on(signal, () => {
     void shutdown.shutdown(signal, exitCode)
   })
 }

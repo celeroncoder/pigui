@@ -19,7 +19,7 @@ import { AskUserInteractionBridge } from "./AskUserInteraction"
 import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import { projectToolOutput } from "./PiEventProjection"
-import { releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
+import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
 import { ProviderAvailability } from "./ProviderAvailability"
 import {
   type NativePromptQueue,
@@ -478,6 +478,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const sessionLifecycleLock = yield* Semaphore.make(1)
   const queueMutationLock = yield* Semaphore.make(1)
   const activeSessions = new Map<string, ActiveSession>()
+  const lifecycleGate = new PiSessionLifecycleGate()
 
   const emitActiveEvent = (active: ActiveSession, event: SessionEvent) => {
     // The renderer intentionally ignores offscreen session paths. Mirror the
@@ -936,6 +937,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     create: Effect.fn("PiSessions.create")(function*(cwd: string, baseBranch?: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("create Pi session")
         const projectCwd = canonicalPath(cwd)
         const manager = yield* Effect.try({ try: () => SessionManager.create(projectCwd), catch: toAppError("create Pi session") })
         if (baseBranch) {
@@ -950,31 +952,38 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     open: Effect.fn("PiSessions.open")(function*(cwd: string, sessionPath: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("open Pi session")
         const active = yield* getOrOpen(cwd, sessionPath)
         return detailFromActive(active)
       })))
     }),
     inspect: Effect.fn("PiSessions.inspect")(function*(cwd: string, parentSessionPath: string, sessionPath: string) {
-      const projectCwd = canonicalPath(cwd)
-      const requestedPath = canonicalPath(sessionPath)
-      const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
-      const infos = listed.filter((candidate) => canonicalPath(candidate.cwd || projectCwd) === projectCwd)
-      const info = infos.find((candidate) => canonicalPath(candidate.path) === requestedPath)
-      const parentByChild = inferSubagentParents(projectCwd, infos)
-      const inferredParentPath = info ? parentByChild.get(info.path) : undefined
-      if (!info || !inferredParentPath || canonicalPath(inferredParentPath) !== canonicalPath(parentSessionPath)) {
-        return yield* Effect.fail(AppError.make({ operation: "inspect Pi session", message: "Session is not linked to this parent" }))
-      }
-      const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
-      const runtime = yield* Effect.tryPromise({
-        try: () => createAgentSessionRuntime(createPiRuntime, { cwd: projectCwd, agentDir: getAgentDir(), sessionManager: manager }),
-        catch: toAppError("inspect Pi context usage")
-      })
-      try {
-        return detailFromManager(manager, summaryFromInfo(info), projectContextUsage(runtime.session))
-      } finally {
-        yield* Effect.promise(() => runtime.dispose())
-      }
+      return yield* sessionLifecycleLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("inspect Pi session")
+        const projectCwd = canonicalPath(cwd)
+        const requestedPath = canonicalPath(sessionPath)
+        const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
+        const infos = listed.filter((candidate) => canonicalPath(candidate.cwd || projectCwd) === projectCwd)
+        const info = infos.find((candidate) => canonicalPath(candidate.path) === requestedPath)
+        const parentByChild = inferSubagentParents(projectCwd, infos)
+        const inferredParentPath = info ? parentByChild.get(info.path) : undefined
+        if (!info || !inferredParentPath || canonicalPath(inferredParentPath) !== canonicalPath(parentSessionPath)) {
+          return yield* Effect.fail(AppError.make({ operation: "inspect Pi session", message: "Session is not linked to this parent" }))
+        }
+        const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
+        const runtime = yield* Effect.tryPromise({
+          try: () => createAgentSessionRuntime(createPiRuntime, { cwd: projectCwd, agentDir: getAgentDir(), sessionManager: manager }),
+          catch: toAppError("inspect Pi context usage")
+        })
+        try {
+          return detailFromManager(manager, summaryFromInfo(info), projectContextUsage(runtime.session))
+        } finally {
+          yield* Effect.tryPromise({
+            try: () => runtime.dispose(),
+            catch: toAppError("dispose inspected Pi session")
+          })
+        }
+      }))
     }),
     prompt: Effect.fn("PiSessions.prompt")(function*(cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
       const requestedPath = canonicalPath(sessionPath)
@@ -1114,6 +1123,9 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     dispose: Effect.fn("PiSessions.dispose")(function*() {
       yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* Effect.sync(() => {
+          lifecycleGate.close()
+        })
         yield* Effect.tryPromise({
           try: () => releaseAllEntries(activeSessions, releaseActiveSession),
           catch: toAppError("dispose Pi sessions")

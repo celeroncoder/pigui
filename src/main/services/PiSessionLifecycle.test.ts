@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
+import { Effect } from "effect"
 import type { SessionDetail, SessionEvent } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
-import { releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
+import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
 
 interface FakeSession {
   readonly path: string
@@ -39,6 +40,19 @@ const apply = (current: SessionDetail, activePath: string, event: SessionEvent):
 }
 
 describe("Pi session lifecycle", () => {
+  it("permanently rejects new runtime creation after shutdown begins", async () => {
+    const gate = new PiSessionLifecycleGate()
+    await expect(Effect.runPromise(gate.ensureAvailable("open Pi session"))).resolves.toBeUndefined()
+
+    gate.close()
+
+    await expect(Effect.runPromise(gate.ensureAvailable("open Pi session"))).rejects.toMatchObject({
+      _tag: "AppError",
+      operation: "open Pi session",
+      message: "Pi Desktop is shutting down"
+    })
+  })
+
   it("keeps a running session alive while another session is selected", async () => {
     const sessionA: FakeSession = { path: "session-a", running: true, promptStartsPending: 0 }
     const sessionB: FakeSession = { path: "session-b", running: false, promptStartsPending: 0 }
@@ -101,7 +115,7 @@ describe("Pi session lifecycle", () => {
     const sessions = new Map([[sessionA.path, sessionA], [sessionB.path, sessionB]])
     const released: string[] = []
 
-    const release = releaseInactiveEntriesExcept(sessions, "session-c", retained, async (session) => {
+    const release = releaseInactiveEntriesExcept(sessions, "session-c", retained, (session) => {
       released.push(session.path)
       throw new Error(`failed-${session.path}`)
     })
@@ -119,9 +133,10 @@ describe("Pi session lifecycle", () => {
     const sessions = new Map([[sessionA.path, sessionA], [sessionB.path, sessionB]])
     const released: string[] = []
 
-    await expect(releaseAllEntries(sessions, async (session) => {
+    await expect(releaseAllEntries(sessions, (session) => {
       released.push(session.path)
       if (session === sessionA) throw new Error("first session failed")
+      return Promise.resolve()
     })).rejects.toThrow("Failed to dispose Pi sessions")
 
     expect(released).toEqual([sessionA.path, sessionB.path])
