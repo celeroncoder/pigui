@@ -9,6 +9,7 @@ const ProjectWorktreeSchema = Schema.Struct({
   name: Schema.String,
   branch: Schema.String,
   addedAt: Schema.Number,
+  kind: Schema.optionalKey(Schema.Literals(["local", "linked"])),
   git: Schema.optionalKey(GitStatusSchema)
 })
 const ProjectSchema = Schema.Struct({

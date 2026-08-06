@@ -72,6 +72,7 @@ const thinkingLevelsForModel = (model) => {
 
 const stableId = (value) => createHash("sha1").update(value).digest("hex").slice(0, 12)
 const worktreeId = (path) => `e2e-worktree-${stableId(path)}`
+const primaryWorktreePath = linkedWorktrees[0]?.path
 const worktrees = linkedWorktrees
   .sort((left, right) => Number(right.path === cwd) - Number(left.path === cwd))
   .map((entry) => ({
@@ -80,6 +81,7 @@ const worktrees = linkedWorktrees
     name: basename(entry.path),
     branch: entry.branch,
     addedAt: Date.now(),
+    kind: entry.path === primaryWorktreePath ? "local" : "linked",
     ...(entry.path === cwd && gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
   }))
 const worktree = worktrees.find((entry) => entry.path === cwd) ?? {
@@ -88,6 +90,7 @@ const worktree = worktrees.find((entry) => entry.path === cwd) ?? {
   name: basename(cwd),
   branch: gitBranch || "detached HEAD",
   addedAt: Date.now(),
+  kind: linkedWorktrees.length === 0 ? "local" : "linked",
   ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
 }
 if (!worktrees.some((entry) => entry.id === worktree.id)) worktrees.unshift(worktree)

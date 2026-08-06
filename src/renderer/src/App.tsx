@@ -11,7 +11,7 @@ import { Composer } from "./components/Composer"
 // import { Inspector } from "./components/Inspector"
 import { MessagePreviewRail } from "./components/MessagePreviewRail"
 import { MessageView } from "./components/MessageView"
-import { ProjectSidebar } from "./components/ProjectSidebar"
+import { ProjectSidebar, type WorktreeSessionList } from "./components/ProjectSidebar"
 import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
 import styles from "./App.module.css"
@@ -27,6 +27,7 @@ const worktreeKey = (project: Project, worktree: ProjectWorktree) => `${project.
 export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
   const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
+  const [sessionsByWorktree, setSessionsByWorktree] = useState<Readonly<Record<string, WorktreeSessionList | undefined>>>({})
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [activeWorktree, setActiveWorktree] = useState<ProjectWorktree | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
@@ -43,7 +44,6 @@ export default function App() {
   const [draft, setDraft] = useState("")
   const [pendingAttachments, setPendingAttachments] = useState<ReadonlyArray<ImageAttachment>>([])
   const [lightboxImage, setLightboxImage] = useState<AttachmentPreview | null>(null)
-  const [loadingSessions, setLoadingSessions] = useState(false)
   const [interactionRequest, setInteractionRequest] = useState<AskUserInteractionRequest | null>(null)
   const [interactionSubmitting, setInteractionSubmitting] = useState(false)
   const interactionSubmittingRef = useRef(false)
@@ -64,6 +64,32 @@ export default function App() {
   const modelRequestRef = useRef(0)
   const subagentRequestRef = useRef(0)
   const addingProjectRef = useRef(false)
+  const catalogRequestRef = useRef(0)
+
+  const storeWorktreeSessions = useCallback((project: Project, worktree: ProjectWorktree, nextSessions: ReadonlyArray<SessionSummary>) => {
+    const key = worktreeKey(project, worktree)
+    setSessionsByWorktree((current) => ({ ...current, [key]: { sessions: nextSessions, loading: false } }))
+  }, [])
+
+  const loadSessionCatalog = useCallback(async (items: ReadonlyArray<Project>) => {
+    const requestId = ++catalogRequestRef.current
+    const contexts = items.flatMap((project) => project.worktrees.map((worktree) => ({ project, worktree, key: worktreeKey(project, worktree) })))
+    setSessionsByWorktree(Object.fromEntries(contexts.map(({ key }) => [key, { sessions: [], loading: true }])))
+    const results = await Promise.all(contexts.map(async ({ project, worktree, key }) => {
+      try {
+        return [key, { sessions: await desktopApi.sessions.list(worktreeContext(project, worktree)), loading: false }] as const
+      } catch {
+        return [key, { sessions: [], loading: false, unavailable: true }] as const
+      }
+    }))
+    if (requestId === catalogRequestRef.current) {
+      setSessionsByWorktree((current) => {
+        const next = { ...current }
+        for (const [key, listing] of results) if (current[key]?.loading) next[key] = listing
+        return next
+      })
+    }
+  }, [])
 
   useEffect(() => {
     activeSessionPathRef.current = session?.summary.path ?? null
@@ -84,7 +110,7 @@ export default function App() {
       const options = await desktopApi.sessions.models(context, sessionPath)
       if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setModelOptions(options)
     } catch {
-      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath) setModelOptions([])
+      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setModelOptions([])
     }
   }, [])
 
@@ -146,7 +172,7 @@ export default function App() {
       const git = await desktopApi.projects.refreshGit(worktreeContext(project, worktree))
       if (requestId !== gitRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
       const updateWorktree = (current: ProjectWorktree) => current.id === worktree.id
-        ? git ? { ...current, branch: git.branch, git } : { id: current.id, path: current.path, name: current.name, branch: current.branch, addedAt: current.addedAt }
+        ? git ? { ...current, branch: git.branch, git } : { ...current, git: undefined }
         : current
       const updateProject = (current: Project) => current.id === project.id ? { ...current, worktrees: current.worktrees.map(updateWorktree) } : current
       setProjects((current) => current.map(updateProject))
@@ -171,12 +197,14 @@ export default function App() {
     }
   }, [])
 
-  const selectWorktree = useCallback(async (project: Project, worktree: ProjectWorktree) => {
+  const selectWorktree = useCallback(async (project: Project, worktree: ProjectWorktree, preferredSessionPath?: string) => {
     const contextKey = worktreeKey(project, worktree)
     const requestId = ++projectRequestRef.current
     ++sessionRequestRef.current
     ++modelRequestRef.current
     activeWorktreeKeyRef.current = contextKey
+    activeProjectRef.current = project
+    activeWorktreeRef.current = worktree
     activeSessionPathRef.current = null
     composerEpochRef.current += 1
     draftRevisionRef.current += 1
@@ -197,34 +225,35 @@ export default function App() {
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
-    setLoadingSessions(true)
     setError(null)
     void refreshProjectGit(project, worktree)
     try {
       const nextSessions = await desktopApi.sessions.list(worktreeContext(project, worktree))
       if (requestId !== projectRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
       setSessions(nextSessions)
-      const first = nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:")) ?? nextSessions[0]
+      storeWorktreeSessions(project, worktree, nextSessions)
+      const first = nextSessions.find((candidate) => candidate.path === preferredSessionPath)
+        ?? nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:"))
+        ?? nextSessions[0]
       if (first) await openSession(project, worktree, first)
     } catch (cause) {
       if (requestId === projectRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not load project sessions")
       }
-    } finally {
-      if (requestId === projectRequestRef.current) setLoadingSessions(false)
     }
-  }, [openSession, refreshProjectGit])
+  }, [openSession, refreshProjectGit, storeWorktreeSessions])
 
   useEffect(() => {
     void desktopApi.projects.list().then((items) => {
       setProjects(items)
+      void loadSessionCatalog(items)
       const first = items[0]
       const worktree = first?.worktrees[0]
       if (first && worktree) void selectWorktree(first, worktree)
     }).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Could not load projects")
     })
-  }, [selectWorktree])
+  }, [loadSessionCatalog, selectWorktree])
 
   useEffect(() => {
     ++subagentRequestRef.current
@@ -258,7 +287,7 @@ export default function App() {
       const worktree = activeWorktreeRef.current
       if (!project || !worktree || worktree.path !== event.worktreePath) return
       const updateWorktree = (current: ProjectWorktree) => current.path === event.worktreePath
-        ? event.git ? { ...current, branch: event.git.branch, git: event.git } : { id: current.id, path: current.path, name: current.name, branch: current.branch, addedAt: current.addedAt }
+        ? event.git ? { ...current, branch: event.git.branch, git: event.git } : { ...current, git: undefined }
         : current
       const updateProject = (current: Project) => current.id === project.id ? { ...current, worktrees: current.worktrees.map(updateWorktree) } : current
       setProjects((current) => current.map(updateProject))
@@ -291,6 +320,15 @@ export default function App() {
         event.detail.summary,
         ...current.filter((item) => item.path !== event.detail.summary.path)
       ])
+      const project = activeProjectRef.current
+      const worktree = activeWorktreeRef.current
+      if (project && worktree) {
+        setSessionsByWorktree((current) => {
+          const key = worktreeKey(project, worktree)
+          const listing = current[key] ?? { sessions: [], loading: false }
+          return { ...current, [key]: { sessions: [event.detail.summary, ...listing.sessions.filter((item) => item.path !== event.detail.summary.path)], loading: false } }
+        })
+      }
       return
     }
     if (event.type === "assistant-start") {
@@ -314,7 +352,10 @@ export default function App() {
           if (!project || !worktree) return
           const contextKey = worktreeKey(project, worktree)
           void desktopApi.sessions.list(worktreeContext(project, worktree)).then((nextSessions) => {
-            if (activeWorktreeKeyRef.current === contextKey) setSessions(nextSessions)
+            if (activeWorktreeKeyRef.current === contextKey) {
+              setSessions(nextSessions)
+              storeWorktreeSessions(project, worktree, nextSessions)
+            }
           })
         }, 1200)
       }
@@ -323,7 +364,7 @@ export default function App() {
       if (!event.isStreaming) setLiveThinking(null)
     }
     setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
-  }), [gitPaneOpen, loadGitDiff])
+  }), [gitPaneOpen, loadGitDiff, storeWorktreeSessions])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: session?.isStreaming ? "instant" : "smooth", block: "end" })
@@ -345,6 +386,7 @@ export default function App() {
       const selection = await desktopApi.projects.add()
       if (!selection) return
       setProjects((current) => [...current.filter((item) => item.id !== selection.project.id), selection.project])
+      void loadSessionCatalog([...projects.filter((item) => item.id !== selection.project.id), selection.project])
       await selectWorktree(selection.project, selection.worktree)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not add project")
@@ -353,11 +395,40 @@ export default function App() {
     }
   }
 
-  const newSession = useCallback(async () => {
-    if (!activeProject || !activeWorktree) return
-    const project = activeProject
-    const worktree = activeWorktree
+  const newSession = useCallback(async (targetProject?: Project, targetWorktree?: ProjectWorktree) => {
+    const project = targetProject ?? activeProjectRef.current
+    const worktree = targetWorktree ?? activeWorktreeRef.current
+    if (!project || !worktree) return
     const contextKey = worktreeKey(project, worktree)
+    if (activeWorktreeKeyRef.current !== contextKey) {
+      ++projectRequestRef.current
+      ++sessionRequestRef.current
+      ++modelRequestRef.current
+      activeWorktreeKeyRef.current = contextKey
+      activeSessionPathRef.current = null
+      activeProjectRef.current = project
+      activeWorktreeRef.current = worktree
+      composerEpochRef.current += 1
+      draftRevisionRef.current += 1
+      attachmentRevisionRef.current += 1
+      setActiveProject(project)
+      setActiveWorktree(worktree)
+      setSessions(sessionsByWorktree[contextKey]?.sessions ?? [])
+      setSession(null)
+      setPendingAttachments([])
+      setLightboxImage(null)
+      setLiveThinking(null)
+      setDraft("")
+      setModelOptions([])
+      setInteractionRequest(null)
+      setInteractionSubmitting(false)
+      interactionSubmittingRef.current = false
+      ++gitDiffRequestRef.current
+      setGitPaneOpen(false)
+      setGitDiff(null)
+      setGitDiffLoading(false)
+      setError(null)
+    }
     const requestId = ++sessionRequestRef.current
     setError(null)
     try {
@@ -376,13 +447,17 @@ export default function App() {
       setInteractionSubmitting(false)
       interactionSubmittingRef.current = false
       setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
+      setSessionsByWorktree((current) => {
+        const listing = current[contextKey] ?? { sessions: [], loading: false }
+        return { ...current, [contextKey]: { sessions: [detail.summary, ...listing.sessions.filter((item) => item.path !== detail.summary.path)], loading: false } }
+      })
       void loadModels(worktreeContext(project, worktree), contextKey, detail.summary.path)
     } catch (cause) {
       if (requestId === sessionRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not create session")
       }
     }
-  }, [activeProject, activeWorktree, loadModels])
+  }, [loadModels, sessionsByWorktree])
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
@@ -557,15 +632,14 @@ export default function App() {
       <div className={`workspace-layout ${(gitPaneOpen || (subagentPaneOpen && linkedSubagents.length > 0) || (backgroundPaneOpen && backgroundProcesses.length > 0)) ? "with-subagents" : ""} ${gitPaneOpen ? "with-git" : ""}`}>
         <ProjectSidebar
           projects={projects}
-          sessions={sidebarSessions}
+          sessionsByWorktree={sessionsByWorktree}
           activeProject={activeProject}
           activeWorktree={activeWorktree}
           activeSessionPath={session?.summary.path ?? null}
-          isLoading={loadingSessions}
-          onSelectWorktree={(project, worktree) => void selectWorktree(project, worktree)}
-          onSelectSession={(summary) => activeProject && activeWorktree && void openSession(activeProject, activeWorktree, summary)}
+          activeSessionStreaming={session?.isStreaming ?? false}
+          onSelectSession={(project, worktree, summary) => void selectWorktree(project, worktree, summary.path)}
           onAddProject={() => void addProject()}
-          onNewSession={() => void newSession()}
+          onNewSession={(project, worktree) => void newSession(project, worktree)}
         />
 
         <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">

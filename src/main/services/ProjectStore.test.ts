@@ -49,7 +49,8 @@ describe("Project worktrees", () => {
       expect(selection.project.name).toBe("repo")
       expect(selection.project.worktrees).toHaveLength(2)
       expect(selection.project.worktrees.map((worktree) => worktree.branch).sort()).toEqual(["feature", "main"])
-      expect(selection.worktree).toMatchObject({ path: await realpath(sibling), branch: "feature" })
+      expect(selection.project.worktrees.find((worktree) => worktree.branch === "main")).toMatchObject({ kind: "local" })
+      expect(selection.worktree).toMatchObject({ path: await realpath(sibling), branch: "feature", kind: "linked" })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -60,7 +61,7 @@ describe("Project worktrees", () => {
     try {
       const selection = await Effect.runPromise(discoverRepository(folder))
       expect(selection.project.worktrees).toEqual([selection.worktree])
-      expect(selection.worktree).toMatchObject({ path: await realpath(folder), branch: "no Git branch" })
+      expect(selection.worktree).toMatchObject({ path: await realpath(folder), branch: "no Git branch", kind: "local" })
     } finally {
       await rm(folder, { recursive: true, force: true })
     }

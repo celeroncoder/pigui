@@ -130,34 +130,31 @@
   .mini-button:hover { color: var(--accent); }
   .project-list { flex: 1; overflow-y: auto; margin: 3px -2px 8px; }
   .project-group { margin: 1px 0; }
-  .project-row { width: 100%; height: 33px; padding: 0 7px; display: grid; grid-template-columns: 14px 16px minmax(0, 1fr) 18px; align-items: center; gap: 6px; border-radius: 6px; background: transparent; color: var(--text-2); text-align: left; font-size: 12.5px; }
-  .project-row:hover, .project-row.active { background: #151617; color: var(--text); }
+  .project-row { width: 100%; height: 38px; padding: 0 8px; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 9px; border-radius: 6px; background: transparent; color: var(--text-2); text-align: left; font-size: 13px; }
+  .project-group.active .project-row { color: var(--text); }
+  .project-row > svg { color: #b8b2ac; }
   .project-row > span { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; font-weight: 620; }
-  .project-row > small { color: var(--text-3); font: 9px var(--mono); text-align: center; }
-  .project-row .collapsed { transform: rotate(-90deg); }
-  .worktree-list { position: relative; margin: 2px 0 7px 20px; padding-left: 8px; }
-  .worktree-list::before { content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 1px; background: #352b24; }
-  .worktree-group { min-width: 0; }
-  .worktree-row { width: 100%; min-height: 36px; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 6px; background: transparent; color: #928b84; text-align: left; }
-  .worktree-row:hover { color: var(--text-2); background: #151617; }
-  .worktree-row.active { color: #e7d4c2; background: #1e1915; box-shadow: inset 0 0 0 1px rgba(233,168,104,.09); }
-  .worktree-row > svg { color: #b98559; }
-  .worktree-copy { min-width: 0; display: grid; gap: 1px; }
-  .worktree-copy strong, .worktree-copy small { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .worktree-copy strong { font: 8px var(--mono); font-weight: 620; }
-  .worktree-copy small { color: var(--text-3); font-size: 10px; }
-  .worktree-row em { color: #8e8378; font: 7.5px var(--mono); font-style: normal; }
-  .session-list { position: relative; margin: 1px 0 7px 13px; padding-left: 10px; }
-  .session-list::before { content: ""; position: absolute; left: 0; top: 2px; bottom: 2px; width: 1px; background: var(--line); }
+  .flat-session-list { min-width: 0; margin: 1px 0 10px; }
   .session-row { position: relative; width: 100%; height: 31px; padding: 0 7px 0 9px; display: flex; align-items: center; gap: 6px; border-radius: 5px; background: transparent; color: var(--text-3); text-align: left; font-size: 11.5px; transition: background .14s ease, color .14s ease; }
-  .session-row::before { content: ""; position: absolute; left: -10px; width: 2px; height: 0; background: var(--accent); border-radius: 2px; transition: height .14s ease; }
+  .session-row.flat { height: 36px; padding: 0 9px 0 28px; }
+  .session-row::before { content: ""; position: absolute; left: 2px; width: 2px; height: 0; background: var(--accent); border-radius: 2px; transition: height .14s ease; }
   .session-row:hover { color: var(--text-2); background: #151617; }
-  .session-row.active { color: var(--text); background: linear-gradient(180deg, #302319, #241a14); box-shadow: 0 1px 2px rgba(0,0,0,.24), inset 0 0 0 1px rgba(233,168,104,.1), inset 0 1px rgba(255,255,255,.035); }
+  .session-row.active { color: var(--text); background: #1a1817; box-shadow: inset 0 0 0 1px rgba(233,168,104,.08); }
   .session-row.active::before { height: 16px; }
-  .session-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-  .session-time { margin-left: auto; flex: 0 0 auto; font: 9.5px var(--mono); color: var(--text-3); }
-  .empty-session { width: 100%; padding: 8px; background: transparent; color: var(--text-3); text-align: left; font-size: 11px; }
+  .session-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent); }
+  .session-metadata { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; color: #777b7e; }
+  .session-metadata svg { flex: 0 0 auto; }
+  .git-status-dot, .session-state-dot { display: block; width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; }
+  .git-status-dot { width: 6px; height: 6px; flex-basis: 6px; margin-left: -5px; background: #4bd38a; box-shadow: 0 0 0 2px #101112; }
+  .git-status-dot.dirty { background: #d49a60; }
+  .session-state-dot { margin-left: 2px; background: #6c7072; }
+  .session-state-dot.streaming { background: #73baff; box-shadow: 0 0 0 3px rgba(115,186,255,.1); animation: pulse 1.8s infinite; }
+  .empty-worktree-row { width: 100%; height: 34px; padding: 0 9px 0 28px; display: flex; align-items: center; gap: 7px; border-radius: 5px; background: transparent; color: #777b7e; text-align: left; font-size: 11px; }
+  .empty-worktree-row:hover { color: var(--text-2); background: #151617; }
+  .empty-worktree-title { min-width: 0; flex: 1; font-style: italic; }
+  .unavailable-worktree-row { height: 34px; padding: 0 9px 0 28px; display: flex; align-items: center; color: #816f65; font-size: 11px; font-style: italic; }
   .session-skeleton { height: 70px; border-radius: 5px; background: linear-gradient(90deg, #121314 25%, #1a1b1c 50%, #121314 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+  .session-skeleton.compact { height: 34px; margin: 1px 8px 1px 28px; }
   .add-project { height: 34px; width: 100%; padding: 0 8px; display: flex; align-items: center; gap: 8px; border-radius: 6px; background: transparent; color: var(--text-3); text-align: left; font-size: 12px; }
   .add-project:hover { background: var(--panel-hover); color: var(--text-2); }
 

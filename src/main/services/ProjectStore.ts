@@ -15,7 +15,8 @@ const WorktreeSchema = Schema.Struct({
   path: Schema.String,
   name: Schema.String,
   branch: Schema.String,
-  addedAt: Schema.Number
+  addedAt: Schema.Number,
+  kind: Schema.optionalKey(Schema.Literals(["local", "linked"]))
 })
 
 const ProjectSchema = Schema.Struct({
@@ -102,7 +103,7 @@ export const parseWorktreeList = (output: string): ReadonlyArray<WorktreeRecord>
 
 const normalizeStoredProjects = (stored: typeof StoredProjectListSchema.Type): ReadonlyArray<Project> =>
   stored.map((project) => "worktrees" in project
-    ? project
+    ? { ...project, worktrees: project.worktrees.map((worktree, index) => ({ ...worktree, kind: worktree.kind ?? (index === 0 ? "local" : "linked") })) }
     : {
         id: project.id,
         name: project.name,
@@ -112,7 +113,8 @@ const normalizeStoredProjects = (stored: typeof StoredProjectListSchema.Type): R
           path: project.path,
           name: project.name,
           branch: "unknown",
-          addedAt: project.addedAt
+          addedAt: project.addedAt,
+          kind: "local"
         }]
       })
 
@@ -169,7 +171,8 @@ export const discoverRepository = Effect.fn("ProjectStore.discoverRepository")(f
       path: selectedPath,
       name: existing?.name ?? basename(selectedPath),
       branch: "no Git branch",
-      addedAt
+      addedAt,
+      kind: "local"
     } satisfies ProjectWorktree
     return {
       project: {
@@ -188,7 +191,7 @@ export const discoverRepository = Effect.fn("ProjectStore.discoverRepository")(f
   const previousWorktrees = new Map(previous?.worktrees.map((worktree) => [worktree.path, worktree]))
   const worktrees: ProjectWorktree[] = []
 
-  for (const record of listed) {
+  for (const [recordIndex, record] of listed.entries()) {
     const path = yield* Effect.tryPromise({ try: () => realpath(record.path), catch: toAppError("resolve linked Git worktree") }).pipe(Effect.match({
       onFailure: () => undefined,
       onSuccess: (resolved) => resolved
@@ -202,7 +205,8 @@ export const discoverRepository = Effect.fn("ProjectStore.discoverRepository")(f
       path,
       name: basename(path),
       branch: record.branch,
-      addedAt: existing?.addedAt ?? now
+      addedAt: existing?.addedAt ?? now,
+      kind: recordIndex === 0 ? "local" : "linked"
     })
   }
 

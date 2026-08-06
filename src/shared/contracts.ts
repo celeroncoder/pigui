@@ -31,6 +31,8 @@ export interface ProjectWorktree {
   readonly name: string
   readonly branch: string
   readonly addedAt: number
+  /** Explicit Git ownership; optional only for persisted projects created before worktree support. */
+  readonly kind?: "local" | "linked"
   readonly git?: GitStatus
 }
 
