@@ -1,0 +1,42 @@
+@layer layout {
+  .root { min-width: 0; min-height: 0; display: grid; grid-template-rows: 48px 42px minmax(0, 1fr); border-left: 1px solid var(--line); background: #0e0f10; overflow: hidden; }
+}
+
+@layer components {
+  .header { display: flex; align-items: center; justify-content: space-between; padding: 0 11px 0 14px; border-bottom: 1px solid var(--line-soft); }
+  .header > div { min-width: 0; display: flex; align-items: center; gap: 7px; color: #c3bfba; font: 8.5px var(--display); letter-spacing: .015em; }
+  .header > div > svg { color: #b98559; }
+  .header small { min-width: 18px; height: 18px; display: grid; place-items: center; border-radius: 9px; background: #202122; color: #aaa6a1; font: 8px var(--mono); }
+  .header > button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 7px; background: transparent; color: #9a9691; }
+  .header > button:hover { background: #1a1b1c; color: #e0dcd8; }
+  .summary { display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 0 14px; border-bottom: 1px solid var(--line-soft); color: #aaa6a1; font-size: 9.5px; }
+  .summary small { color: #85817d; font: 7.5px var(--mono); }
+  .pulse, .activePulse, .activeStatusPulse { width: 6px; height: 6px; border-radius: 50%; background: #646664; }
+  .activePulse { background: #d5965e; box-shadow: 0 0 0 3px rgba(213,150,94,.11); animation: global(pulse) 1.5s ease-in-out infinite; }
+  .activeStatusPulse { width: 5px; height: 5px; background: #d5965e; box-shadow: 0 0 0 3px rgba(213,150,94,.11); animation: global(pulse) 1.5s ease-in-out infinite; }
+  .list { min-height: 0; overflow-y: auto; padding: 9px 8px 24px; }
+  .process { overflow: hidden; margin-bottom: 6px; border: 1px solid #303234; border-radius: 9px; background: #121314; box-shadow: inset 0 1px rgba(255,255,255,.025); }
+  .process.running { border-color: #4b3a2d; }
+  .process.failed { border-color: #54312e; }
+  .trigger { width: 100%; min-height: 48px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto 14px; align-items: center; gap: 7px; padding: 6px 8px; background: transparent; text-align: left; }
+  .trigger:hover { background: rgba(255,255,255,.025); }
+  .icon { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid #37393b; border-radius: 7px; background: #191a1b; color: #b4865f; }
+  .title { min-width: 0; display: grid; gap: 3px; }
+  .title strong, .title small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .title strong { color: #d2cfcb; font-size: 10px; font-weight: 620; }
+  .title small, .elapsed { color: #8d8984; font: 7.5px var(--mono); }
+  .status { height: 19px; display: flex; align-items: center; gap: 4px; padding: 0 6px; border: 1px solid #393b3d; border-radius: 9px; color: #999590; font: 7px var(--mono); text-transform: uppercase; }
+  .status.running { border-color: #604832; background: #201810; color: #e2aa74; }
+  .status.done { border-color: #314438; color: #91b99c; }
+  .status.failed { border-color: #563531; color: #dc9189; }
+  .trigger > svg { color: #77736f; transition: transform .16s ease; }
+  .trigger > svg.open { transform: rotate(180deg); }
+  .detail { position: relative; display: grid; gap: 8px; padding: 9px 10px 11px 45px; border-top: 1px solid #282a2c; background: #0f1011; }
+  .detail > div { min-width: 0; display: grid; gap: 3px; }
+  .detail span { color: #85817d; font: 7px var(--mono); text-transform: uppercase; }
+  .detail code { overflow: hidden; color: #bbb7b2; white-space: nowrap; text-overflow: ellipsis; font: 8.5px var(--mono); }
+  .detail pre { max-height: 190px; overflow: auto; margin: 0; padding: 8px; border: 1px solid #2d2f31; border-radius: 7px; background: #0a0b0c; color: #bcb8b3; white-space: pre-wrap; font: 8px/1.55 var(--mono); user-select: none; }
+  .copy { justify-self: end; height: 25px; display: flex; align-items: center; gap: 5px; padding: 0 8px; border-radius: 7px; background: #202224; color: #b9b5b0; box-shadow: inset 0 0 0 1px #3a3c3e; font-size: 8px; }
+  .copy:hover { color: #e5e1dc; background: #292b2d; }
+  .empty { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; color: #8e8a86; text-align: center; font-size: 10px; }
+}
