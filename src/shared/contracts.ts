@@ -57,6 +57,16 @@ export interface GitHubPullRequestResult extends GitHubPullRequest {
   readonly action: "created" | "updated"
 }
 
+export type GitHubPullRequestState = "mergeable" | "conflict" | "pending" | "merged"
+
+export interface GitHubBranchPullRequest {
+  readonly number: number
+  readonly title: string
+  readonly url: string
+  readonly branch: string
+  readonly state: GitHubPullRequestState
+}
+
 export interface ProjectWorktree {
   readonly id: string
   readonly path: string
@@ -272,6 +282,7 @@ export interface PiDesktopApi {
     readonly preview: (path: string) => Promise<AttachmentPreview>
   }
   readonly github: {
+    readonly branchPullRequest: (context: WorktreeContext) => Promise<GitHubBranchPullRequest | null>
     readonly inspect: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<GitHubWorkflowContext>
     readonly comment: (context: WorktreeContext, sessionPath: string, messageId: string, target: string) => Promise<GitHubCommentResult>
     readonly createOrUpdateDraft: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<GitHubPullRequestResult>
@@ -317,6 +328,7 @@ export const IpcChannels = {
   saveAttachment: "attachments:save",
   previewAttachment: "attachments:preview",
   inspectGitHubWorkflow: "github:inspect-workflow",
+  inspectGitHubBranchPullRequest: "github:inspect-branch-pull-request",
   postGitHubComment: "github:comment",
   createOrUpdateGitHubDraft: "github:create-or-update-draft",
   sessionEvent: "sessions:event"

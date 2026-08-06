@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { resolve } from "node:path"
 import { Context, Effect, Layer, Schema, Semaphore } from "effect"
-import type { GitHubCommentResult, GitHubPullRequestResult, GitHubWorkflowContext } from "../../shared/contracts"
+import type { GitHubBranchPullRequest, GitHubCommentResult, GitHubPullRequestResult, GitHubPullRequestState, GitHubWorkflowContext } from "../../shared/contracts"
 
 const COMMAND_TIMEOUT_MS = 30_000
 const MAX_OUTPUT_BYTES = 1024 * 1024
@@ -112,6 +112,22 @@ const PullRequestListSchema = Schema.Array(Schema.Struct({
   headRepositoryOwner: Schema.NullOr(Schema.Struct({ login: Schema.String })),
   isCrossRepository: Schema.Boolean
 }))
+const BranchPullRequestListSchema = Schema.Array(Schema.Struct({
+  number: Schema.Number,
+  title: Schema.String,
+  url: Schema.String,
+  state: Schema.String,
+  mergedAt: Schema.NullOr(Schema.String),
+  mergeable: Schema.String,
+  mergeStateStatus: Schema.String,
+  isCrossRepository: Schema.Boolean,
+  statusCheckRollup: Schema.Array(Schema.Struct({
+    status: Schema.optionalKey(Schema.String),
+    conclusion: Schema.optionalKey(Schema.String),
+    state: Schema.optionalKey(Schema.String)
+  }))
+}))
+type BranchPullRequest = Schema.Schema.Type<typeof BranchPullRequestListSchema>[number]
 
 const decodeJson = <S extends Schema.Constraint>(operation: string, schema: S, value: string) => Effect.gen(function*() {
   const parsed = yield* Effect.try({
@@ -147,6 +163,19 @@ const parseNumstat = (value: string) => {
     deletions += deleted === "-" ? 0 : nonNegativeInteger(deleted ?? "")
   }
   return { committedFiles, additions, deletions }
+}
+
+const successfulCheckStates = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"])
+
+export const classifyBranchPullRequest = (pull: BranchPullRequest): GitHubPullRequestState => {
+  if (pull.state === "MERGED" || pull.mergedAt !== null) return "merged"
+  if (pull.mergeable === "CONFLICTING" || pull.mergeStateStatus === "DIRTY") return "conflict"
+  const checksNeedAttention = pull.statusCheckRollup.some((check) =>
+    (check.status !== undefined && check.status !== "COMPLETED")
+      || (check.conclusion !== undefined && !successfulCheckStates.has(check.conclusion))
+      || (check.state !== undefined && !successfulCheckStates.has(check.state))
+  )
+  return checksNeedAttention || pull.mergeable !== "MERGEABLE" ? "pending" : "mergeable"
 }
 
 export const normalizeGitHubTarget = (target: string, repository: string): string | undefined => {
@@ -205,6 +234,7 @@ const titleFromSession = (sessionName: string) => {
 
 export const makeGitHubWorkflow = (executor: GitHubCommandExecutor) => Effect.gen(function*() {
   const mutationLock = yield* Semaphore.make(1)
+  const queryLock = yield* Semaphore.make(4)
 
   const run = (cwd: string, executable: "git" | "gh", args: ReadonlyArray<string>, input?: string) => Effect.tryPromise({
     try: (signal) => executor.run(cwd, executable, args, input, signal),
@@ -212,6 +242,27 @@ export const makeGitHubWorkflow = (executor: GitHubCommandExecutor) => Effect.ge
   })
   const required = (cwd: string, executable: "git" | "gh", args: ReadonlyArray<string>, operation: string, input?: string) =>
     run(cwd, executable, args, input).pipe(Effect.flatMap((result) => requireSuccess(operation, result)))
+
+  const branchPullRequest = Effect.fn("GitHubWorkflow.branchPullRequest")(function*(cwd: string) {
+    return yield* queryLock.withPermit(Effect.gen(function*() {
+      const worktree = resolve(cwd)
+      const branchResult = yield* run(worktree, "git", ["symbolic-ref", "--quiet", "--short", "HEAD"])
+      const branch = branchResult.stdout.trim()
+      if (branchResult.exitCode !== 0 || !branch) return null
+      const pulls = yield* required(worktree, "gh", ["pr", "list", "--head", branch, "--state", "all", "--limit", "100", "--json", "number,title,url,state,mergedAt,mergeable,mergeStateStatus,isCrossRepository,statusCheckRollup"], "inspect branch pull request").pipe(
+        Effect.flatMap((json) => decodeJson("decode branch pull request", BranchPullRequestListSchema, json))
+      )
+      const pull = pulls.find((candidate) => !candidate.isCrossRepository && (candidate.state === "OPEN" || candidate.state === "MERGED" || candidate.mergedAt !== null))
+      if (!pull) return null
+      return {
+        number: pull.number,
+        title: pull.title,
+        url: pull.url,
+        branch,
+        state: classifyBranchPullRequest(pull)
+      } satisfies GitHubBranchPullRequest
+    }))
+  })
 
   const inspect = Effect.fn("GitHubWorkflow.inspect")(function*(cwd: string, summary: SessionShareSummary) {
     const worktree = resolve(cwd)
@@ -305,10 +356,11 @@ export const makeGitHubWorkflow = (executor: GitHubCommandExecutor) => Effect.ge
     }))
   })
 
-  return { inspect, comment: postComment, createOrUpdateDraft }
+  return { branchPullRequest, inspect, comment: postComment, createOrUpdateDraft }
 })
 
 export class GitHubWorkflow extends Context.Service<GitHubWorkflow, {
+  readonly branchPullRequest: (cwd: string) => Effect.Effect<GitHubBranchPullRequest | null, GitHubWorkflowError>
   readonly inspect: (cwd: string, summary: SessionShareSummary) => Effect.Effect<GitHubWorkflowContext, GitHubWorkflowError>
   readonly comment: (cwd: string, summary: SessionShareSummary, target: string) => Effect.Effect<GitHubCommentResult, GitHubWorkflowError>
   readonly createOrUpdateDraft: (cwd: string, summary: SessionShareSummary) => Effect.Effect<GitHubPullRequestResult, GitHubWorkflowError>

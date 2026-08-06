@@ -173,6 +173,12 @@ const registerIpc = () => {
     return yield* store.sessionDraft(context.projectId, context.worktreeId)
   })))
 
+  ipcMain.handle(IpcChannels.inspectGitHubBranchPullRequest, (_event, context: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
+    const github = yield* GitHubWorkflow
+    return yield* github.branchPullRequest(worktree.path)
+  })))
+
   ipcMain.handle(IpcChannels.inspectGitHubWorkflow, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
     const { cwd, summary } = yield* resolveGitHubSummary(context, sessionPath, messageId)
     const github = yield* GitHubWorkflow

@@ -8,6 +8,7 @@ const api: PiDesktopApi = {
     preview: (path) => ipcRenderer.invoke(IpcChannels.previewAttachment, path)
   },
   github: {
+    branchPullRequest: (context) => ipcRenderer.invoke(IpcChannels.inspectGitHubBranchPullRequest, context),
     inspect: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.inspectGitHubWorkflow, context, sessionPath, messageId),
     comment: (context, sessionPath, messageId, target) => ipcRenderer.invoke(IpcChannels.postGitHubComment, context, sessionPath, messageId, target),
     createOrUpdateDraft: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.createOrUpdateGitHubDraft, context, sessionPath, messageId)

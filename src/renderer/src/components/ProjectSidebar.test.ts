@@ -1,7 +1,7 @@
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it } from "vitest"
-import type { Project, SessionSummary } from "../../../shared/contracts"
+import type { GitHubPullRequestState, Project, SessionRuntimeStatus, SessionSummary } from "../../../shared/contracts"
 import { ProjectSidebar } from "./ProjectSidebar"
 
 const project = (id: string, name: string): Project => ({
@@ -26,21 +26,42 @@ const summary: SessionSummary = {
 const linkedSummary: SessionSummary = {
   ...summary,
   id: "linked-session",
-  path: "/sessions/linked-worktree.jsonl",
-  name: "Issue #19 — linked worktree status"
+  path: "/sessions/linked.jsonl",
+  name: "Linked session"
 }
 
-const renderSidebar = (projects: ReadonlyArray<Project>, activeProject: Project) => renderToStaticMarkup(createElement(ProjectSidebar, {
+const renderSidebar = (
+  projects: ReadonlyArray<Project>,
+  activeProject: Project,
+  options: {
+    readonly linkedSession?: SessionSummary
+    readonly pullRequestState?: GitHubPullRequestState
+    readonly unavailable?: boolean
+    readonly localRuntimeStatus?: SessionRuntimeStatus
+    readonly linkedRuntimeStatus?: SessionRuntimeStatus
+  } = {}
+) => renderToStaticMarkup(createElement(ProjectSidebar, {
   projects,
   sessionsByWorktree: {
-    [`${activeProject.id}:${activeProject.id}-local`]: { sessions: [summary], loading: false },
-    [`${activeProject.id}:${activeProject.id}-linked`]: { sessions: [linkedSummary], loading: false }
+    [`${activeProject.id}:${activeProject.id}-local`]: { sessions: options.unavailable ? [] : [summary], loading: false, unavailable: options.unavailable },
+    [`${activeProject.id}:${activeProject.id}-linked`]: { sessions: options.linkedSession ? [options.linkedSession] : [], loading: false, unavailable: options.unavailable }
   },
-  runtimeStatuses: { [summary.path]: "running", [linkedSummary.path]: "failed" },
+  runtimeStatuses: {
+    [summary.path]: options.localRuntimeStatus ?? "running",
+    [linkedSummary.path]: options.linkedRuntimeStatus ?? "failed"
+  },
+  pullRequestsByWorktree: options.pullRequestState ? {
+    [`${activeProject.id}:${activeProject.id}-linked`]: {
+      number: 35,
+      title: "Worktree support",
+      url: "https://github.com/celeroncoder/pigui/pull/35",
+      branch: "issue-14",
+      state: options.pullRequestState
+    }
+  } : {},
   activeProject,
   activeWorktree: activeProject.worktrees.find((worktree) => worktree.kind === "local") ?? null,
-  activeSessionPath: summary.path,
-  activeSessionStreaming: true,
+  activeSessionPath: options.unavailable ? null : summary.path,
   onSelectProject: () => undefined,
   onSelectSession: () => undefined,
   onAddProject: () => undefined,
@@ -48,17 +69,42 @@ const renderSidebar = (projects: ReadonlyArray<Project>, activeProject: Project)
 }))
 
 describe("ProjectSidebar", () => {
-  it("renders live statuses in the same flat local and linked-worktree rows", () => {
+  it("combines worktree, pull-request, and runtime status in the same flat Pi-backed rows", () => {
     const alpha = project("alpha", "Alpha")
-    const markup = renderSidebar([alpha], alpha)
+    const markup = renderSidebar([alpha], alpha, { linkedSession: linkedSummary, pullRequestState: "mergeable" })
 
     expect(markup).toContain("Issue #14 — full worktree support. local checkout, branch main, 1 changed file, path /repo/alpha. Session working.")
-    expect(markup).toContain("Issue #19 — linked worktree status. linked worktree, branch issue-14, Git status not loaded, path /repo/alpha-linked. Session failed.")
+    expect(markup).toContain("Linked session. linked worktree, branch issue-14, Git status not loaded, path /repo/alpha-linked. PR #35 is mergeable. Session failed.")
     expect(markup).toContain('role="img" aria-label="Session status: Working"')
     expect(markup).toContain('role="img" aria-label="Session status: Failed"')
+    expect(markup.match(/data-worktree-kind-icon="linked"/g)).toHaveLength(1)
+    expect(markup).toContain("pull-request-state mergeable")
     expect(markup).toContain('aria-current="page"')
     expect(markup).not.toContain("empty-worktree-row")
     expect(markup).not.toContain("worktree-list")
+  })
+
+  it.each(["mergeable", "conflict", "pending", "merged"] as const)("renders the %s pull-request treatment", (state) => {
+    const alpha = project("alpha", "Alpha")
+    const markup = renderSidebar([alpha], alpha, { linkedSession: linkedSummary, pullRequestState: state })
+
+    expect(markup).toContain(`pull-request-state ${state}`)
+    expect(markup).toContain(state === "merged" ? "lucide-git-merge" : "lucide-git-pull-request")
+    expect(markup.match(/data-worktree-kind-icon="linked"/g)).toHaveLength(1)
+  })
+
+  it.each([
+    ["running", "Working"],
+    ["input-required", "Needs input"],
+    ["waiting", "Waiting"],
+    ["done", "Done"],
+    ["failed", "Failed"]
+  ] as const)("renders the %s runtime treatment", (runtimeStatus, label) => {
+    const alpha = project("alpha", "Alpha")
+    const markup = renderSidebar([alpha], alpha, { localRuntimeStatus: runtimeStatus })
+
+    expect(markup).toContain(`session-status ${runtimeStatus}`)
+    expect(markup).toContain(`aria-label="Session status: ${label}"`)
   })
 
   it("keeps each project action scoped and the active project independently collapsible", () => {
@@ -75,28 +121,13 @@ describe("ProjectSidebar", () => {
     expect(markup).not.toContain("project-panel-label")
   })
 
-  it("keeps the project action available when session discovery fails", () => {
+  it("keeps creation available but omits pseudo-session rows when discovery fails", () => {
     const alpha = project("alpha", "Alpha")
-    const markup = renderToStaticMarkup(createElement(ProjectSidebar, {
-      projects: [alpha],
-      sessionsByWorktree: {
-        "alpha:alpha-local": { sessions: [], loading: false, unavailable: true },
-        "alpha:alpha-linked": { sessions: [], loading: false, unavailable: true }
-      },
-      runtimeStatuses: {},
-      activeProject: alpha,
-      activeWorktree: alpha.worktrees[1] ?? null,
-      activeSessionPath: null,
-      activeSessionStreaming: false,
-      onSelectProject: () => undefined,
-      onSelectSession: () => undefined,
-      onAddProject: () => undefined,
-      onNewSession: () => undefined
-    }))
+    const markup = renderSidebar([alpha], alpha, { unavailable: true })
 
-    expect(markup).toContain("Sessions unavailable for local checkout, branch main, /repo/alpha")
-    expect(markup).toContain("Sessions unavailable for linked worktree, branch issue-14, /repo/alpha-linked")
     expect(markup).toContain("New session in Alpha, local checkout Alpha")
+    expect(markup).not.toContain("Sessions unavailable")
+    expect(markup).not.toContain("session-row flat")
     expect(markup).not.toContain("No sessions yet")
   })
 })

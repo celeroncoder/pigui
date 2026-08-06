@@ -1,6 +1,6 @@
 import { CircleDashed, FolderPlus, GitBranch, GitPullRequest, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AskUserPanel } from "./components/AskUserPanel"
@@ -29,6 +29,7 @@ export default function App() {
   const [sessions, setSessions] = useState<ReadonlyArray<SessionSummary>>([])
   const [sessionsByWorktree, setSessionsByWorktree] = useState<Readonly<Record<string, WorktreeSessionList | undefined>>>({})
   const [sessionRuntimeStatuses, setSessionRuntimeStatuses] = useState<Readonly<Record<string, SessionRuntimeStatus>>>({})
+  const [pullRequestsByWorktree, setPullRequestsByWorktree] = useState<Readonly<Record<string, GitHubBranchPullRequest | null | undefined>>>({})
   const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [activeWorktree, setActiveWorktree] = useState<ProjectWorktree | null>(null)
   const [session, setSession] = useState<SessionDetail | null>(null)
@@ -73,6 +74,32 @@ export default function App() {
   const sessionStartSequenceRef = useRef(0)
   const pendingSessionStartRef = useRef<string | null>(null)
   const startedSessionRequestRef = useRef<string | null>(null)
+  const pullRequestRequestsRef = useRef(new Map<string, number>())
+  const projectsRef = useRef<ReadonlyArray<Project>>([])
+  const sessionsByWorktreeRef = useRef<Readonly<Record<string, WorktreeSessionList | undefined>>>({})
+
+  const refreshPullRequests = useCallback(async (contexts: ReadonlyArray<{ readonly project: Project; readonly worktree: ProjectWorktree; readonly key: string }>) => {
+    if (contexts.length === 0) return
+    const requests = contexts.map(({ project, worktree, key }) => {
+      const requestId = (pullRequestRequestsRef.current.get(key) ?? 0) + 1
+      pullRequestRequestsRef.current.set(key, requestId)
+      return { project, worktree, key, requestId }
+    })
+    const results = await Promise.all(requests.map(async ({ project, worktree, key, requestId }) => {
+      try {
+        return { key, requestId, pullRequest: await desktopApi.github.branchPullRequest(worktreeContext(project, worktree)) }
+      } catch {
+        return undefined
+      }
+    }))
+    setPullRequestsByWorktree((current) => {
+      const next = { ...current }
+      for (const result of results) {
+        if (result && pullRequestRequestsRef.current.get(result.key) === result.requestId) next[result.key] = result.pullRequest
+      }
+      return next
+    })
+  }, [])
 
   const storeWorktreeSessions = useCallback((project: Project, worktree: ProjectWorktree, nextSessions: ReadonlyArray<SessionSummary>) => {
     const key = worktreeKey(project, worktree)
@@ -96,8 +123,30 @@ export default function App() {
         for (const [key, listing] of results) if (current[key]?.loading) next[key] = listing
         return next
       })
+      const listings = Object.fromEntries(results)
+      const pullRequestContexts = contexts.filter(({ key }) => listings[key]?.sessions.some((session) => !session.parentSessionPath))
+      void refreshPullRequests(pullRequestContexts)
     }
-  }, [])
+  }, [refreshPullRequests])
+
+  useEffect(() => {
+    projectsRef.current = projects
+  }, [projects])
+
+  useEffect(() => {
+    sessionsByWorktreeRef.current = sessionsByWorktree
+  }, [sessionsByWorktree])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const contexts = projectsRef.current.flatMap((project) => project.worktrees.flatMap((worktree) => {
+        const key = worktreeKey(project, worktree)
+        return sessionsByWorktreeRef.current[key]?.sessions.some((candidate) => !candidate.parentSessionPath) ? [{ project, worktree, key }] : []
+      }))
+      void refreshPullRequests(contexts)
+    }, 60_000)
+    return () => window.clearInterval(interval)
+  }, [refreshPullRequests])
 
   useEffect(() => {
     activeSessionPathRef.current = session?.summary.path ?? null
@@ -383,11 +432,13 @@ export default function App() {
       const project = activeProjectRef.current
       const worktree = activeWorktreeRef.current
       if (project && worktree) {
+        const key = worktreeKey(project, worktree)
+        const alreadyCataloged = sessionsByWorktreeRef.current[key]?.sessions.some((item) => !item.parentSessionPath) ?? false
         setSessionsByWorktree((current) => {
-          const key = worktreeKey(project, worktree)
           const listing = current[key] ?? { sessions: [], loading: false }
           return { ...current, [key]: { sessions: [event.detail.summary, ...listing.sessions.filter((item) => item.path !== event.detail.summary.path)], loading: false } }
         })
+        if (!alreadyCataloged) void refreshPullRequests([{ project, worktree, key }])
       }
       return
     }
@@ -424,7 +475,7 @@ export default function App() {
       if (!event.isStreaming) setLiveThinking(null)
     }
     setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
-  }), [gitPaneOpen, loadGitDiff, loadModels, storeWorktreeSessions])
+  }), [gitPaneOpen, loadGitDiff, loadModels, refreshPullRequests, storeWorktreeSessions])
 
   useEffect(() => {
     if (!lightboxImage) return
@@ -739,7 +790,7 @@ export default function App() {
           activeProject={activeProject}
           activeWorktree={activeWorktree}
           activeSessionPath={session?.summary.path ?? null}
-          activeSessionStreaming={session?.isStreaming ?? false}
+          pullRequestsByWorktree={pullRequestsByWorktree}
           onSelectProject={selectProject}
           onSelectSession={(project, worktree, summary) => void selectWorktree(project, worktree, summary.path)}
           onAddProject={() => void addProject()}
@@ -1015,6 +1066,7 @@ export default function App() {
           sessionPath={session.summary.path}
           messageId={githubMessageId}
           onClose={() => setGitHubMessageId(null)}
+          onPullRequestChanged={() => void refreshPullRequests([{ project: activeProject, worktree: activeWorktree, key: worktreeKey(activeProject, activeWorktree) }])}
         />
       )}
     </div>

@@ -1,6 +1,6 @@
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
-import { makeGitHubWorkflow, normalizeGitHubTarget, replaceSessionSummarySection, type GitHubCommandExecutor } from "./GitHubWorkflow"
+import { classifyBranchPullRequest, makeGitHubWorkflow, normalizeGitHubTarget, replaceSessionSummarySection, type GitHubCommandExecutor } from "./GitHubWorkflow"
 
 const summary = { content: "Implemented the complete workflow and added regression coverage.", sessionName: "Add GitHub workflow" }
 
@@ -13,6 +13,11 @@ const executor = (options?: { readonly existing?: boolean; readonly commits?: nu
     if (command === "git symbolic-ref --quiet --short HEAD") return { exitCode: 0, stdout: "codex/issue-17-github-workflow\n", stderr: "" }
     if (command === "git rev-parse --short=12 HEAD") return { exitCode: 0, stdout: "123456789abc\n", stderr: "" }
     if (command.startsWith("gh repo view")) return { exitCode: 0, stdout: JSON.stringify({ nameWithOwner: "celeroncoder/pigui", url: "https://github.com/celeroncoder/pigui", defaultBranchRef: { name: "main" } }), stderr: "" }
+    if (command.startsWith("gh pr list") && command.includes("--state all")) return {
+      exitCode: 0,
+      stdout: JSON.stringify([{ number: 37, title: "GitHub workflow", url: "https://github.com/celeroncoder/pigui/pull/37", state: "OPEN", mergedAt: null, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", isCrossRepository: false, statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }]),
+      stderr: ""
+    }
     if (command.startsWith("gh pr list")) return {
       exitCode: 0,
       stdout: JSON.stringify(options?.existing
@@ -37,6 +42,42 @@ const executor = (options?: { readonly existing?: boolean; readonly commits?: nu
 }
 
 describe("GitHubWorkflow", () => {
+  it.each([
+    [{ state: "OPEN", mergedAt: null, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN", statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }] }, "mergeable"],
+    [{ state: "OPEN", mergedAt: null, mergeable: "CONFLICTING", mergeStateStatus: "DIRTY", statusCheckRollup: [] }, "conflict"],
+    [{ state: "OPEN", mergedAt: null, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", statusCheckRollup: [{ status: "IN_PROGRESS", conclusion: "" }] }, "pending"],
+    [{ state: "MERGED", mergedAt: "2026-08-06T12:00:00Z", mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN", statusCheckRollup: [] }, "merged"]
+  ] as const)("classifies branch pull request state as %s", (status, expected) => {
+    expect(classifyBranchPullRequest({ number: 37, title: "PR", url: "https://github.com/pull/37", isCrossRepository: false, ...status })).toBe(expected)
+  })
+
+  it("reads the current worktree branch pull request without session data", async () => {
+    const fake = executor()
+    const service = await Effect.runPromise(makeGitHubWorkflow(fake.executor))
+    await expect(Effect.runPromise(service.branchPullRequest("/worktrees/issue-17"))).resolves.toMatchObject({ number: 37, state: "mergeable" })
+    const call = fake.calls.find((candidate) => candidate.executable === "gh" && candidate.args[1] === "list" && candidate.args.includes("all"))
+    expect(call?.cwd).toBe("/worktrees/issue-17")
+    expect(call?.args).toContain("codex/issue-17-github-workflow")
+  })
+
+  it("bounds concurrent GitHub branch queries", async () => {
+    let active = 0
+    let maximum = 0
+    const service = await Effect.runPromise(makeGitHubWorkflow({
+      run: async (_cwd, executable) => {
+        if (executable === "git") return { exitCode: 0, stdout: "codex/concurrency\n", stderr: "" }
+        active += 1
+        maximum = Math.max(maximum, active)
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+        active -= 1
+        return { exitCode: 0, stdout: "[]", stderr: "" }
+      }
+    }))
+
+    await Promise.all(Array.from({ length: 12 }, (_, index) => Effect.runPromise(service.branchPullRequest(`/worktrees/${index}`))))
+    expect(maximum).toBe(4)
+  })
+
   it("normalizes only issue and PR targets from the active repository", () => {
     expect(normalizeGitHubTarget("#17", "celeroncoder/pigui")).toBe("17")
     expect(normalizeGitHubTarget("https://github.com/celeroncoder/pigui/pull/19", "celeroncoder/pigui")).toBe("19")

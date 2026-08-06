@@ -9,11 +9,12 @@ interface GitHubWorkflowDialogProps {
   readonly sessionPath: string
   readonly messageId: string
   readonly onClose: () => void
+  readonly onPullRequestChanged?: () => void
 }
 
 type Success = { readonly label: string; readonly url: string }
 
-export function GitHubWorkflowDialog({ worktreeContext, sessionPath, messageId, onClose }: GitHubWorkflowDialogProps) {
+export function GitHubWorkflowDialog({ worktreeContext, sessionPath, messageId, onClose, onPullRequestChanged }: GitHubWorkflowDialogProps) {
   const projectId = worktreeContext.projectId
   const worktreeId = worktreeContext.worktreeId
   const [context, setContext] = useState<GitHubWorkflowContext | null>(null)
@@ -90,6 +91,7 @@ export function GitHubWorkflowDialog({ worktreeContext, sessionPath, messageId, 
     void desktopApi.github.createOrUpdateDraft({ projectId, worktreeId }, sessionPath, messageId).then((result) => {
       setContext((current) => current ? { ...current, existingPullRequest: result } : current)
       setSuccess({ label: result.action === "created" ? `Draft PR #${result.number} created` : `PR #${result.number} updated`, url: result.url })
+      onPullRequestChanged?.()
     }).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Could not create or update the pull request")
     }).finally(() => setOperation(null))

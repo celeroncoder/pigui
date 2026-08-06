@@ -1,6 +1,6 @@
-import { CircleAlert, CircleCheck, CircleDashed, CirclePause, ChevronDown, FolderGit2, FolderPlus, GitBranch, GitFork, HardDrive, MessageCircleQuestionMark, Plus } from "lucide-react"
+import { ChevronDown, CircleAlert, CircleCheck, CircleDashed, CirclePause, FolderGit2, FolderPlus, GitFork, GitMerge, GitPullRequest, MessageCircleQuestionMark, Plus } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
-import type { Project, ProjectWorktree, SessionRuntimeStatus, SessionSummary } from "../../../shared/contracts"
+import type { GitHubBranchPullRequest, Project, ProjectWorktree, SessionRuntimeStatus, SessionSummary } from "../../../shared/contracts"
 import { isProjectExpanded, preserveProjectExpansionOnSelection, toggleProjectExpansion } from "./projectSidebarState"
 
 export interface WorktreeSessionList {
@@ -16,8 +16,8 @@ interface ProjectSidebarProps {
   readonly activeProject: Project | null
   readonly activeWorktree: ProjectWorktree | null
   readonly activeSessionPath: string | null
-  readonly activeSessionStreaming: boolean
   readonly onSelectProject: (project: Project) => void
+  readonly pullRequestsByWorktree: Readonly<Record<string, GitHubBranchPullRequest | null | undefined>>
   readonly onSelectSession: (project: Project, worktree: ProjectWorktree, session: SessionSummary) => void
   readonly onAddProject: () => void
   readonly onNewSession: (project: Project, worktree?: ProjectWorktree) => void
@@ -25,6 +25,13 @@ interface ProjectSidebarProps {
 
 const worktreeKey = (project: Project, worktree: ProjectWorktree) => `${project.id}:${worktree.id}`
 const sessionTitle = (session: SessionSummary) => session.name || session.firstMessage || "Untitled session"
+const pullRequestStateLabel = (pullRequest: GitHubBranchPullRequest) => pullRequest.state === "mergeable"
+  ? `PR #${pullRequest.number} is mergeable`
+  : pullRequest.state === "conflict"
+    ? `PR #${pullRequest.number} has conflicts`
+    : pullRequest.state === "merged"
+      ? `PR #${pullRequest.number} is merged`
+      : `PR #${pullRequest.number} has checks pending or failing`
 
 const sessionStatusPresentation: Record<SessionRuntimeStatus, { readonly label: string; readonly Icon: typeof CircleCheck }> = {
   running: { label: "Working", Icon: CircleDashed },
@@ -42,8 +49,8 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     activeProject,
     activeWorktree,
     activeSessionPath,
-    activeSessionStreaming,
     onSelectProject,
+    pullRequestsByWorktree,
     onSelectSession,
     onAddProject,
     onNewSession
@@ -76,12 +83,6 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
           const targetWorktree = projectActive
             ? activeWorktree ?? project.worktrees.find((worktree) => worktree.kind === "local") ?? project.worktrees[0]
             : project.worktrees.find((worktree) => worktree.kind === "local") ?? project.worktrees[0]
-          const visibleSessionCount = project.worktrees.reduce((count, worktree) => (
-            count + (sessionsByWorktree[worktreeKey(project, worktree)]?.sessions.filter((session) => !session.parentSessionPath).length ?? 0)
-          ), 0)
-          const anyLoading = project.worktrees.some((worktree) => sessionsByWorktree[worktreeKey(project, worktree)]?.loading)
-          const anyUnavailable = project.worktrees.some((worktree) => sessionsByWorktree[worktreeKey(project, worktree)]?.unavailable)
-
           return (
             <section className={`project-group ${projectActive ? "active" : ""}`} key={project.id} aria-labelledby={`project-${project.id}`}>
               <button
@@ -130,25 +131,20 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                     const isLocal = worktree.kind ? worktree.kind === "local" : worktreeIndex === 0
                     const kindLabel = isLocal ? "local checkout" : "linked worktree"
                     const branch = worktree.git?.branch ?? worktree.branch
+                    const candidatePullRequest = pullRequestsByWorktree[contextKey]
+                    const pullRequest = candidatePullRequest?.branch === branch ? candidatePullRequest : null
                     const dirty = !!worktree.git && worktree.git.changedFiles > 0
                     const gitState = dirty
                       ? `${worktree.git?.changedFiles ?? 0} changed ${worktree.git?.changedFiles === 1 ? "file" : "files"}`
                       : worktree.git ? "Git clean" : "Git status not loaded"
 
-                    if (listing?.loading) {
-                      return [<div className="session-skeleton compact" aria-label={`Loading sessions for ${kindLabel} ${branch}`} key={`${contextKey}:loading`} />]
-                    }
-                    if (listing?.unavailable) {
-                      const label = `Sessions unavailable for ${kindLabel}, branch ${branch}, ${worktree.path}`
-                      return [<div className="unavailable-worktree-row" role="status" aria-label={label} title={label} key={`${contextKey}:unavailable`}>Sessions unavailable</div>]
-                    }
-
                     return sessions.map((candidate) => {
                       const title = sessionTitle(candidate)
                       const active = projectActive && activeWorktree?.id === worktree.id && activeSessionPath === candidate.path
-                      const runtimeStatus = runtimeStatuses[candidate.path] ?? (active && activeSessionStreaming ? "running" : "done")
+                      const runtimeStatus = runtimeStatuses[candidate.path] ?? "done"
                       const { label: statusLabel, Icon } = sessionStatusPresentation[runtimeStatus]
-                      const label = `${title}. ${kindLabel}, branch ${branch}, ${gitState}, path ${worktree.path}. Session ${statusLabel.toLocaleLowerCase()}.`
+                      const pullRequestLabel = pullRequest ? ` ${pullRequestStateLabel(pullRequest)}.` : ""
+                      const label = `${title}. ${kindLabel}, branch ${branch}, ${gitState}, path ${worktree.path}.${pullRequestLabel} Session ${statusLabel.toLocaleLowerCase()}.`
                       return (
                         <button
                           className={`session-row flat ${active ? "active" : ""}`}
@@ -160,19 +156,22 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                           title={label}
                         >
                           <span className="session-title">{title}</span>
+                          <span className="session-metadata" aria-hidden="true">
+                            {!isLocal && <GitFork data-worktree-kind-icon="linked" size={14} />}
+                            {pullRequest && (
+                              <span className={`pull-request-state ${pullRequest.state}`}>
+                                {pullRequest.state === "merged" ? <GitMerge size={14} /> : <GitPullRequest size={14} />}
+                                <i />
+                              </span>
+                            )}
+                          </span>
                           <span className={`session-status ${runtimeStatus}`} role="img" aria-label={`Session status: ${statusLabel}`} title={`Session status: ${statusLabel}`}>
                             <Icon size={13} aria-hidden="true" />
-                          </span>
-                          <span className="session-metadata" aria-hidden="true">
-                            {isLocal ? <HardDrive size={13} /> : <GitFork size={13} />}
-                            <GitBranch size={13} />
-                            <i className={`git-status-dot ${dirty ? "dirty" : ""}`} />
                           </span>
                         </button>
                       )
                     })
                   })}
-                  {!anyLoading && !anyUnavailable && visibleSessionCount === 0 && <span className="empty-session">No sessions yet. Start one above.</span>}
                 </div>
               )}
             </section>

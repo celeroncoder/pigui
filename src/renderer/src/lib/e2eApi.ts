@@ -163,6 +163,12 @@ export const createE2eApi = (): PiDesktopApi => {
       preview: async () => Promise.reject(new Error("Local image previews are unavailable in the browser review harness"))
     },
     github: {
+      branchPullRequest: async (context) => {
+        const data = await loadFixture()
+        const worktree = data.projects.find((project) => project.id === context.projectId)?.worktrees.find((candidate) => candidate.id === context.worktreeId)
+        if (!worktree || worktree.kind !== "linked") return null
+        return { number: 37, title: "Browser review PR", url: "https://github.com/celeroncoder/pigui/pull/37", branch: worktree.git?.branch ?? worktree.branch, state: "mergeable" }
+      },
       inspect: async (_context, sessionPath, messageId) => {
         const detail = (await loadFixture()).details.find((candidate) => candidate.summary.path === sessionPath)
         const message = detail?.messages.find((candidate) => candidate.id === messageId)
