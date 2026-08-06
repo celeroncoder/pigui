@@ -219,6 +219,11 @@
   .preview-rail-item:has(+ .preview-rail-item + .preview-rail-item:hover) .preview-rail-node, .preview-rail-item:hover + .preview-rail-item + .preview-rail-item .preview-rail-node,
   .preview-rail-item:has(+ .preview-rail-item + .preview-rail-item:focus-within) .preview-rail-node, .preview-rail-item:focus-within + .preview-rail-item + .preview-rail-item .preview-rail-node { transform: scaleX(.44); color: #76685d; }
   .message-list { width: min(760px, calc(100% - 112px)); margin: 0 auto; padding: 38px 0 120px; }
+  .history-pagination { min-height: 46px; display: flex; align-items: center; justify-content: center; gap: 9px; padding-bottom: 18px; color: #77736f; font: 8.5px var(--mono); }
+  .history-pagination button { min-height: 29px; padding: 0 10px; border: 1px solid #373431; border-radius: 8px; background: linear-gradient(180deg, #202122, #171819); color: #c5b7aa; font-size: 10px; }
+  .history-pagination button:hover { border-color: #594737; color: #efbd8a; }
+  .virtual-message-list { position: relative; width: 100%; margin: 0; padding: 0; list-style: none; }
+  .virtual-message-row { position: absolute; top: 0; left: 0; width: 100%; min-width: 0; display: flow-root; }
   .message, .activity-group, .compaction-separator { scroll-margin-top: 24px; }
   .compaction-separator { min-height: 32px; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 10px; margin: 13px 0 28px; color: #89847f; font: 7.5px var(--display); letter-spacing: .08em; text-transform: uppercase; }
   .compaction-separator::before, .compaction-separator::after { content: ""; height: 1px; background: linear-gradient(90deg, transparent, #393b3d); }
