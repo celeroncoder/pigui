@@ -1,7 +1,7 @@
 import { CircleDashed } from "lucide-react"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { flushSync } from "react-dom"
-import type { AttachmentPreview, SessionRecovery, SessionRecoveryAction } from "../../../shared/contracts"
+import type { AttachmentPreview, ChatMessage, SessionRecovery, SessionRecoveryAction } from "../../../shared/contracts"
 import { ActivityGroup } from "./ActivityGroup"
 import { MessagePreviewRail } from "./MessagePreviewRail"
 import { MessageView } from "./MessageView"
@@ -22,6 +22,8 @@ type ConversationTimelineProps = {
   readonly queuedRecoveryCount: number
   readonly recoveryBusy: boolean
   readonly onRecover: (action: SessionRecoveryAction) => void
+  readonly onFork?: (message: ChatMessage) => void
+  readonly forkingMessageId?: string | null
 }
 
 type PendingScroll = { readonly type: "target"; readonly id: string }
@@ -34,7 +36,7 @@ const setScrollTopImmediately = (root: HTMLDivElement, top: number) => {
   root.style.scrollBehavior = previousBehavior
 }
 
-export function ConversationTimeline({ items, landmarks, previewLandmarks, previewTotalCount, isStreaming, liveStatus, onOpenImage, recovery, recoveryTurnIndex, queuedRecoveryCount, recoveryBusy, onRecover }: ConversationTimelineProps) {
+export function ConversationTimeline({ items, landmarks, previewLandmarks, previewTotalCount, isStreaming, liveStatus, onOpenImage, recovery, recoveryTurnIndex, queuedRecoveryCount, recoveryBusy, onRecover, onFork, forkingMessageId }: ConversationTimelineProps) {
   const [historyStart, setHistoryStart] = useState(() => initialHistoryStart(items.length))
   const [viewport, setViewport] = useState({ top: 0, height: 0 })
   const [surfaceOffset, setSurfaceOffset] = useState(0)
@@ -261,8 +263,8 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
                   style={{ transform: `translateY(${virtualItem.start}px)` }}
                 >
                   {item.type === "message"
-                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={onOpenImage} />
-                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={isStreaming && absoluteIndex === lastActivityIndex} onOpenImage={onOpenImage} />}
+                    ? <MessageView message={item.message} anchorId={landmark?.targetId} onOpenImage={onOpenImage} onFork={onFork} isForking={forkingMessageId === item.message.id} />
+                    : <ActivityGroup messages={item.messages} anchorId={landmark?.targetId} isLive={isStreaming && absoluteIndex === lastActivityIndex} onOpenImage={onOpenImage} onFork={onFork} forkingMessageId={forkingMessageId} />}
                   {recovery && absoluteIndex === recoveryTurnIndex && (
                     <TransportRecoveryPanel recovery={recovery} queuedCount={queuedRecoveryCount} busy={recoveryBusy} onRecover={onRecover} />
                   )}

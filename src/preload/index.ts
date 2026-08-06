@@ -23,6 +23,7 @@ const api: PiDesktopApi = {
   sessions: {
     list: (context) => ipcRenderer.invoke(IpcChannels.listSessions, context),
     start: (context, requestId, text, baseBranch, attachmentPaths) => ipcRenderer.invoke(IpcChannels.startSession, context, requestId, text, baseBranch, attachmentPaths),
+    fork: (context, sessionPath, messageId) => ipcRenderer.invoke(IpcChannels.forkSession, context, sessionPath, messageId),
     open: (context, sessionPath) => ipcRenderer.invoke(IpcChannels.openSession, context, sessionPath),
     inspect: (context, parentSessionPath, sessionPath) => ipcRenderer.invoke(IpcChannels.inspectSession, context, parentSessionPath, sessionPath),
     prompt: (context, sessionPath, text, delivery, attachmentPaths) => ipcRenderer.invoke(IpcChannels.promptSession, context, sessionPath, text, delivery, attachmentPaths),

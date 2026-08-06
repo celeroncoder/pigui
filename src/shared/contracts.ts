@@ -101,6 +101,16 @@ export interface SessionSummary {
   readonly updatedAt: number
   readonly messageCount: number
   readonly parentSessionPath?: string
+  readonly forkedFrom?: SessionForkMetadata
+}
+
+export interface SessionForkMetadata {
+  readonly sourceSessionId: string
+  readonly sourceSessionPath: string
+  readonly sourceSessionName: string
+  /** One-based position among the source branch's user and assistant entries. */
+  readonly sourceMessageIndex: number
+  readonly sourceMessageId: string
 }
 
 /** A concise, renderer-safe projection of Pi's current session lifecycle. */
@@ -291,6 +301,7 @@ export interface PiDesktopApi {
   readonly sessions: {
     readonly list: (context: WorktreeContext) => Promise<ReadonlyArray<SessionSummary>>
     readonly start: (context: WorktreeContext, requestId: string, text: string, baseBranch?: string, attachmentPaths?: ReadonlyArray<string>) => Promise<SessionDetail>
+    readonly fork: (context: WorktreeContext, sessionPath: string, messageId: string) => Promise<SessionDetail>
     readonly open: (context: WorktreeContext, sessionPath: string) => Promise<SessionDetail>
     readonly inspect: (context: WorktreeContext, parentSessionPath: string, sessionPath: string) => Promise<SessionDetail>
     readonly prompt: (context: WorktreeContext, sessionPath: string, text: string, delivery?: QueueDelivery, attachmentPaths?: ReadonlyArray<string>) => Promise<void>
@@ -316,6 +327,7 @@ export const IpcChannels = {
   sessionDraft: "projects:session-draft",
   listSessions: "sessions:list",
   startSession: "sessions:start",
+  forkSession: "sessions:fork",
   openSession: "sessions:open",
   inspectSession: "sessions:inspect",
   promptSession: "sessions:prompt",

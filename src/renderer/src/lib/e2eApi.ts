@@ -25,7 +25,14 @@ const SessionSummarySchema = Schema.Struct({
   firstMessage: Schema.String,
   updatedAt: Schema.Number,
   messageCount: Schema.Number,
-  parentSessionPath: Schema.optionalKey(Schema.String)
+  parentSessionPath: Schema.optionalKey(Schema.String),
+  forkedFrom: Schema.optionalKey(Schema.Struct({
+    sourceSessionId: Schema.String,
+    sourceSessionPath: Schema.String,
+    sourceSessionName: Schema.String,
+    sourceMessageIndex: Schema.Number,
+    sourceMessageId: Schema.String
+  }))
 })
 const ThinkingLevelSchema = Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
 const QueueDeliverySchema = Schema.Literals(["follow-up", "steer"])
@@ -119,6 +126,7 @@ export const createE2eApi = (): PiDesktopApi => {
   let interactionDispatchPending = false
   const isActiveFixtureContext = (data: E2eFixture, context: { readonly projectId: string; readonly worktreeId: string }) =>
     data.projects.some((project) => project.id === context.projectId) && context.worktreeId === data.activeWorktreeId
+  let forkedDetail: SessionDetail | undefined
 
   const interactionEvent = (): SessionEvent | undefined => interaction
     ? { type: "interaction-request", sessionPath: interaction.sessionPath, request: interaction.request }
@@ -225,12 +233,50 @@ export const createE2eApi = (): PiDesktopApi => {
     sessions: {
       list: async (context) => {
         const data = await loadFixture()
-        return isActiveFixtureContext(data, context) ? data.sessions : []
+        return isActiveFixtureContext(data, context) ? (forkedDetail ? [forkedDetail.summary, ...data.sessions] : data.sessions) : []
       },
       start: async () => Promise.reject(new Error("Session creation is tested in Electron, not the browser review harness")),
+      fork: async (context, sessionPath, messageId) => {
+        const data = await loadFixture()
+        if (!isActiveFixtureContext(data, context)) throw new Error("The generated worktree snapshot is unavailable")
+        const source = forkedDetail?.summary.path === sessionPath
+          ? forkedDetail
+          : data.details.find((item) => item.summary.path === sessionPath)
+        if (!source) throw new Error("The generated Pi session snapshot is unavailable")
+        const messageIndex = source.messages.filter((message) => message.role === "user" || message.role === "assistant").findIndex((message) => message.id === messageId)
+        if (messageIndex < 0) throw new Error("The selected fixture message cannot be forked")
+        const retainedIds = new Set(source.messages.slice(0, source.messages.findIndex((message) => message.id === messageId) + 1).map((message) => message.id))
+        const forkPath = `${sessionPath}.fork-${messageId}`
+        forkedDetail = {
+          ...source,
+          summary: {
+            ...source.summary,
+            id: `fork-${source.summary.id}-${messageId}`,
+            path: forkPath,
+            updatedAt: Date.now(),
+            messageCount: retainedIds.size,
+            forkedFrom: {
+              sourceSessionId: source.summary.id,
+              sourceSessionPath: source.summary.path,
+              sourceSessionName: source.summary.name,
+              sourceMessageIndex: messageIndex + 1,
+              sourceMessageId: messageId
+            }
+          },
+          messages: source.messages.filter((message) => retainedIds.has(message.id)),
+          backgroundProcesses: [],
+          queuedMessages: [],
+          runtimeStatus: "done",
+          isStreaming: false,
+          isCompacting: false
+        }
+        return forkedDetail
+      },
       open: async (context, sessionPath) => {
         const data = await loadFixture()
-        const detail = isActiveFixtureContext(data, context) ? data.details.find((item) => item.summary.path === sessionPath) : undefined
+        const detail = isActiveFixtureContext(data, context)
+          ? (forkedDetail?.summary.path === sessionPath ? forkedDetail : data.details.find((item) => item.summary.path === sessionPath))
+          : undefined
         if (!detail) throw new Error("The generated Pi session snapshot is unavailable")
         await seedInteraction()
         announceInteraction(sessionPath)

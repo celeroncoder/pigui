@@ -9,9 +9,11 @@ interface ActivityGroupProps {
   readonly isLive: boolean
   readonly anchorId?: string
   readonly onOpenImage?: (preview: AttachmentPreview) => void
+  readonly onFork?: (message: ChatMessage) => void
+  readonly forkingMessageId?: string | null
 }
 
-export function ActivityGroup({ messages, isLive, anchorId, onOpenImage }: ActivityGroupProps) {
+export function ActivityGroup({ messages, isLive, anchorId, onOpenImage, onFork, forkingMessageId }: ActivityGroupProps) {
   const [open, setOpen] = useState(isLive)
   const toolNames = new Set(messages.flatMap((message) => message.blocks.flatMap((block) => block.type === "tool-call" ? [block.name] : [])))
   const toolCallCount = messages.reduce((total, message) => total + message.blocks.filter((block) => block.type === "tool-call").length, 0)
@@ -35,7 +37,7 @@ export function ActivityGroup({ messages, isLive, anchorId, onOpenImage }: Activ
       </button>
       {open && (
         <div className="activity-group-content">
-          {messages.map((message) => <MessageView message={message} onOpenImage={onOpenImage} key={message.id} />)}
+          {messages.map((message) => <MessageView message={message} onOpenImage={onOpenImage} onFork={onFork} isForking={forkingMessageId === message.id} key={message.id} />)}
         </div>
       )}
     </section>

@@ -12,7 +12,7 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
@@ -31,6 +31,7 @@ import {
   updateQueuedMessageText
 } from "./PromptQueue"
 import { WindowBus } from "./WindowBus"
+import { createSessionFork, sessionForkMetadata } from "./SessionFork"
 
 const canonicalPath = (value: string) => resolve(value)
 
@@ -373,15 +374,40 @@ const inferSubagentParents = (cwd: string, infos: ReadonlyArray<PiSessionInfo>) 
   return matches
 }
 
-const summaryFromInfo = (info: PiSessionInfo, parentSessionPath?: string): SessionSummary => ({
-  id: info.id,
-  path: info.path,
-  name: info.name || info.firstMessage || "Untitled session",
-  firstMessage: info.firstMessage,
-  updatedAt: info.modified.getTime(),
-  messageCount: info.messageCount,
-  ...(parentSessionPath ? { parentSessionPath } : {})
-})
+const summaryFromInfo = (info: PiSessionInfo, parentSessionPath?: string): SessionSummary => {
+  let forkedFrom: SessionForkMetadata | undefined
+  if (info.parentSessionPath) {
+    try {
+      forkedFrom = sessionForkMetadata(SessionManager.open(info.path, undefined, info.cwd || undefined))
+    } catch {
+      // Listing remains resilient to malformed or concurrently-written metadata.
+    }
+  }
+  return {
+    id: info.id,
+    path: info.path,
+    name: info.name || info.firstMessage || "Untitled session",
+    firstMessage: info.firstMessage,
+    updatedAt: info.modified.getTime(),
+    messageCount: info.messageCount,
+    ...(parentSessionPath ? { parentSessionPath } : {}),
+    ...(forkedFrom ? { forkedFrom } : {})
+  }
+}
+
+const summaryFromManager = (manager: SessionManager, messages: ReadonlyArray<ChatMessage>): SessionSummary => {
+  const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
+  const forkedFrom = sessionForkMetadata(manager)
+  return {
+    id: manager.getSessionId(),
+    path: manager.getSessionFile() ?? "",
+    name: manager.getSessionName() || firstUserText || "New session",
+    firstMessage: firstUserText ?? "",
+    updatedAt: Date.now(),
+    messageCount: messages.filter((message) => message.blocks.some((block) => block.type !== "compaction")).length,
+    ...(forkedFrom ? { forkedFrom } : {})
+  }
+}
 
 const detailFromManager = (manager: SessionManager, summary: SessionSummary, contextUsage?: ContextUsage): SessionDetail => {
   const context = manager.buildSessionContext()
@@ -417,18 +443,10 @@ const historicalRecovery = (manager: SessionManager): SessionRecovery | undefine
 
 const snapshotFromActive = (active: ActiveSession): SessionDetail => {
   const messages = historyToChat(active.session.sessionManager)
-  const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
   const interactionRequest = active.interaction.pendingRequest()
   const contextUsage = projectContextUsage(active.session)
   return {
-    summary: {
-      id: active.session.sessionId,
-      path: active.session.sessionFile ?? "",
-      name: active.session.sessionManager.getSessionName() || firstUserText || "New session",
-      firstMessage: firstUserText ?? "",
-      updatedAt: Date.now(),
-      messageCount: messages.filter((message) => message.blocks.some((block) => block.type !== "compaction")).length
-    },
+    summary: summaryFromManager(active.session.sessionManager, messages),
     messages,
     model: active.session.model ? `${active.session.model.provider}/${active.session.model.id}` : "No model configured",
     thinkingLevel: active.session.thinkingLevel,
@@ -468,6 +486,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
 export class PiSessions extends Context.Service<PiSessions, {
   readonly list: (cwd: string) => Effect.Effect<ReadonlyArray<SessionSummary>, AppError>
   readonly create: (cwd: string, baseBranch?: string) => Effect.Effect<SessionDetail, AppError>
+  readonly fork: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly prompt: (cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
@@ -990,6 +1009,32 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             catch: toAppError("persist worktree session context")
           })
         }
+        const active = yield* attach(projectCwd, manager)
+        return detailFromActive(active)
+      })))
+    }),
+    fork: Effect.fn("PiSessions.fork")(function*(cwd: string, sessionPath: string, messageId: string) {
+      return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("fork Pi session")
+        const projectCwd = canonicalPath(cwd)
+        const requestedSessionPath = canonicalPath(sessionPath)
+        const activeSource = activeSessions.get(requestedSessionPath)
+        if (activeSource?.session.isStreaming || activeSource?.session.isCompacting || (activeSource?.pendingPromptStarts ?? 0) > 0) {
+          return yield* Effect.fail(AppError.make({ operation: "fork Pi session", message: "Wait for Pi to finish before forking this session" }))
+        }
+        const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session fork") })
+        const source = listed.find((info) => canonicalPath(info.path) === requestedSessionPath && canonicalPath(info.cwd || projectCwd) === projectCwd)
+        if (!source) {
+          return yield* Effect.fail(AppError.make({ operation: "fork Pi session", message: "Session does not belong to this project" }))
+        }
+        const manager = yield* Effect.try({
+          try: () => SessionManager.open(source.path, undefined, projectCwd),
+          catch: toAppError("read Pi session fork")
+        })
+        yield* Effect.try({
+          try: () => createSessionFork(manager, source.name || source.firstMessage || "Untitled session", messageId),
+          catch: toAppError("fork Pi session")
+        })
         const active = yield* attach(projectCwd, manager)
         return detailFromActive(active)
       })))
