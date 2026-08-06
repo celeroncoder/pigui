@@ -282,16 +282,16 @@ const addTokens = (target, usage) => ({
 
 const metricTelemetry = orderedInfos.map((info) => {
   const manager = SessionManager.open(info.path)
-  const branchMessages = manager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : [])
-  const latestUserIndex = branchMessages.findLastIndex((message) => message.role === "user")
+  const branchMessages = manager.getBranch().filter((entry) => entry.type === "message")
+  const latestUserIndex = branchMessages.findLastIndex((entry) => entry.message.role === "user")
   const latestUser = branchMessages[latestUserIndex]
-  const terminal = latestUserIndex >= 0
-    ? branchMessages.slice(latestUserIndex + 1).filter((message) => message.role === "assistant")
-      .findLast((message) => message.stopReason !== "pending" && message.stopReason !== "toolUse")
+  const latestAssistant = latestUserIndex >= 0
+    ? branchMessages.slice(latestUserIndex + 1).filter((entry) => entry.message.role === "assistant")
+      .at(-1)
     : undefined
-  const outcome = !latestUser || !terminal
+  const outcome = !latestUser || !latestAssistant || latestAssistant.message.stopReason === "pending" || latestAssistant.message.stopReason === "toolUse"
     ? "incomplete"
-    : terminal.stopReason === "error" || terminal.stopReason === "aborted" ? "failure" : "success"
+    : latestAssistant.message.stopReason === "error" || latestAssistant.message.stopReason === "aborted" ? "failure" : "success"
   const usage = manager.getEntries().flatMap((entry) => {
     if (entry.type === "message" && entry.message.role === "assistant") {
       return [{ model: `${entry.message.provider}/${entry.message.responseModel ?? entry.message.model}`, usage: entry.message.usage }]
@@ -307,8 +307,8 @@ const metricTelemetry = orderedInfos.map((info) => {
   return {
     id: info.id,
     outcome,
-    ...(latestUser && terminal ? { completionMs: Math.max(0, terminal.timestamp - latestUser.timestamp) } : {}),
-    ...(outcome === "failure" ? { failureReason: terminal.errorMessage?.trim() || (terminal.stopReason === "aborted" ? "Aborted" : "Provider error") } : {}),
+    ...(latestUser && outcome !== "incomplete" ? { completionMs: Math.max(0, new Date(latestAssistant.timestamp).getTime() - new Date(latestUser.timestamp).getTime()) } : {}),
+    ...(outcome === "failure" ? { failureReason: latestAssistant.message.errorMessage?.trim() || (latestAssistant.message.stopReason === "aborted" ? "Aborted" : "Provider error") } : {}),
     usage
   }
 })

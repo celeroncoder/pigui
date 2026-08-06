@@ -1030,10 +1030,12 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("list Pi session metrics") })
       const infos = listed.filter((info) => canonicalPath(info.cwd || projectCwd) === projectCwd)
       const telemetry = yield* Effect.forEach(infos, (info) => Effect.try({
-        try: () => telemetryFromSession(
-          SessionManager.open(info.path, undefined, projectCwd),
-          activeSessions.get(canonicalPath(info.path))?.session.isStreaming ?? false
-        ),
+        try: () => {
+          const active = activeSessions.get(canonicalPath(info.path))
+          const manager = active?.session.sessionManager ?? SessionManager.open(info.path, undefined, projectCwd)
+          const inProgress = active ? active.session.isStreaming || active.pendingPromptStarts > 0 : false
+          return telemetryFromSession(manager, inProgress)
+        },
         catch: toAppError("read Pi session metrics")
       }), { concurrency: 4 })
       return aggregateProjectMetrics(telemetry)

@@ -11,7 +11,7 @@ const tokens = (input: number, output: number, cacheRead = 0, cacheWrite = 0) =>
 })
 
 describe("project metrics aggregation", () => {
-  it("uses only the latest user turn for a session outcome while retaining lifetime usage", () => {
+  it("uses the latest persisted turn and message-end timestamps while retaining lifetime usage", () => {
     const usage = (input: number, output: number) => ({
       input,
       output,
@@ -66,7 +66,8 @@ describe("project metrics aggregation", () => {
           responseModel: "claude-sonnet-4",
           usage: usage(20, 4),
           stopReason: "stop",
-          timestamp: 5_500
+          // Provider timestamps mark response start and must not drive turnaround.
+          timestamp: 3_100
         }
       }
     ] satisfies SessionEntry[]
@@ -78,7 +79,7 @@ describe("project metrics aggregation", () => {
     })).toEqual({
       id: "session-1",
       outcome: "success",
-      completionMs: 2_500,
+      completionMs: 2_000,
       usage: [
         { model: "openai/gpt-5", tokens: tokens(10, 2) },
         { model: "anthropic/claude-sonnet-4", tokens: tokens(20, 4) }
@@ -128,6 +129,63 @@ describe("project metrics aggregation", () => {
       { model: "Tools & summaries", sessions: 1, ...tokens(5, 2) }
     ])
     expect(metrics.failureReasons).toEqual([{ reason: "Rate limit exceeded", count: 1 }])
+  })
+
+  it("does not reuse an older failure after a newer tool-use response or during an active retry", () => {
+    const usage = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+    }
+    const entries = [
+      {
+        type: "message",
+        id: "user",
+        parentId: null,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        message: { role: "user", content: "retry", timestamp: 1_000 }
+      },
+      {
+        type: "message",
+        id: "error",
+        parentId: "user",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "failed" }],
+          api: "openai-responses",
+          provider: "openai",
+          model: "gpt-5",
+          usage,
+          stopReason: "error",
+          errorMessage: "Transient failure",
+          timestamp: 1_100
+        }
+      },
+      {
+        type: "message",
+        id: "tool-use",
+        parentId: "error",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "call", name: "read", arguments: { path: "README.md" } }],
+          api: "openai-responses",
+          provider: "openai",
+          model: "gpt-5",
+          usage,
+          stopReason: "toolUse",
+          timestamp: 1_500
+        }
+      }
+    ] satisfies SessionEntry[]
+    const manager = { getSessionId: () => "retry", getEntries: () => entries, getBranch: () => entries }
+
+    expect(telemetryFromSession(manager)).toMatchObject({ outcome: "incomplete" })
+    expect(telemetryFromSession({ ...manager, getBranch: () => entries.slice(0, 2) }, true)).toMatchObject({ outcome: "incomplete" })
   })
 
   it("reports null rates and turnaround when no session has completed", () => {

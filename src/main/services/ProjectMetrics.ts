@@ -9,6 +9,12 @@ interface SessionTelemetry {
   readonly usage: ReadonlyArray<{ readonly model: string; readonly tokens: TokenUsageTotals }>
 }
 
+type MessageEntry = Extract<SessionEntry, { readonly type: "message" }>
+type AssistantEntry = MessageEntry & { readonly message: Extract<MessageEntry["message"], { readonly role: "assistant" }> }
+
+const isMessageEntry = (entry: SessionEntry): entry is MessageEntry => entry.type === "message"
+const isAssistantEntry = (entry: MessageEntry): entry is AssistantEntry => entry.message.role === "assistant"
+
 const emptyTokens = (): TokenUsageTotals => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 })
 
 const addTokens = (target: TokenUsageTotals, source: Omit<TokenUsageTotals, "total">): TokenUsageTotals => ({
@@ -42,27 +48,35 @@ const failureReason = (stopReason: "error" | "aborted", errorMessage?: string): 
   return stopReason === "aborted" ? "Aborted" : "Provider error"
 }
 
-export const telemetryFromSession = (manager: Pick<SessionManager, "getSessionId" | "getEntries" | "getBranch">): SessionTelemetry => {
-  const branchMessages = manager.getBranch().flatMap((entry) => entry.type === "message" ? [entry.message] : [])
-  const latestUserIndex = branchMessages.findLastIndex((message) => message.role === "user")
+export const telemetryFromSession = (
+  manager: Pick<SessionManager, "getSessionId" | "getEntries" | "getBranch">,
+  inProgress = false
+): SessionTelemetry => {
+  const branchMessages = manager.getBranch().filter(isMessageEntry)
+  const latestUserIndex = branchMessages.findLastIndex((entry) => entry.message.role === "user")
   const latestUser = latestUserIndex >= 0 ? branchMessages[latestUserIndex] : undefined
   const subsequentAssistants = latestUserIndex >= 0
-    ? branchMessages.slice(latestUserIndex + 1).filter((message) => message.role === "assistant")
+    ? branchMessages.slice(latestUserIndex + 1).filter(isAssistantEntry)
     : []
-  const terminal = subsequentAssistants.findLast((message) => message.stopReason !== "pending" && message.stopReason !== "toolUse")
+  const latestAssistant = subsequentAssistants.at(-1)
   const usage = manager.getEntries().flatMap((entry) => {
     const projected = usageFromEntry(entry)
     return projected ? [projected] : []
   })
 
-  if (!latestUser || !terminal) return { id: manager.getSessionId(), outcome: "incomplete", usage }
-  const completionMs = Math.max(0, terminal.timestamp - latestUser.timestamp)
-  if (terminal.stopReason === "error" || terminal.stopReason === "aborted") {
+  if (inProgress || !latestUser || !latestAssistant || latestAssistant.message.stopReason === "pending" || latestAssistant.message.stopReason === "toolUse") {
+    return { id: manager.getSessionId(), outcome: "incomplete", usage }
+  }
+  // Provider message timestamps mark response start. Session entry timestamps are
+  // persisted at message_end, so they measure the complete user-to-settlement turn.
+  const completionMs = Math.max(0, new Date(latestAssistant.timestamp).getTime() - new Date(latestUser.timestamp).getTime())
+  const terminalMessage = latestAssistant.message
+  if (terminalMessage.stopReason === "error" || terminalMessage.stopReason === "aborted") {
     return {
       id: manager.getSessionId(),
       outcome: "failure",
       completionMs,
-      failureReason: failureReason(terminal.stopReason, terminal.errorMessage),
+      failureReason: failureReason(terminalMessage.stopReason, terminalMessage.errorMessage),
       usage
     }
   }

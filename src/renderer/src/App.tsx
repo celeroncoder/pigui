@@ -393,7 +393,6 @@ export default function App() {
     setSubagentPaneOpen(false)
     setBackgroundPaneOpen(false)
     setGitPaneOpen(false)
-    setMetricsPaneOpen(false)
     setGitDiff(null)
     setGitDiffLoading(false)
     setSelectedSubagent(null)
