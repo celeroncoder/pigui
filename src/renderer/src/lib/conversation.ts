@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../../../shared/contracts"
+import { compactLabel } from "./text"
 
 export const latestTransientStatus = (text: string) => text
   .split(/\n+/)
@@ -16,11 +17,6 @@ export type MessagePreviewLandmark = {
   readonly kind: "user" | "assistant" | "activity" | "compaction"
   readonly label: string
   readonly detail: string
-}
-
-const compactPreviewLabel = (value: string, maxLength: number) => {
-  const normalized = value.replace(/\s+/g, " ").trim()
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized
 }
 
 export const buildConversationItems = (messages: ReadonlyArray<ChatMessage>): ReadonlyArray<ConversationItem> => {
@@ -102,7 +98,7 @@ export const buildConversationPreviewLandmarks = (items: ReadonlyArray<Conversat
     id: `preview-${item.id}`,
     targetId,
     kind: item.message.role === "user" ? "user" : "assistant",
-    label: compactPreviewLabel(text || (item.message.role === "user" ? "New prompt" : "Pi response"), 43),
+    label: compactLabel(text || (item.message.role === "user" ? "New prompt" : "Pi response"), 43),
     detail: item.message.role === "user" ? "Your message" : "Assistant response"
   }
 })

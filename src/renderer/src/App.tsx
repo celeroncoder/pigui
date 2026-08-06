@@ -15,11 +15,7 @@ import { SubagentAvatarGroup } from "./components/SubagentAvatars"
 import { SubagentPane } from "./components/SubagentPane"
 import { desktopApi } from "./lib/api"
 import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
-
-const compactLabel = (value: string, maxLength: number) => {
-  const normalized = value.replace(/\s+/g, " ").trim()
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength - 1).trimEnd()}…` : normalized
-}
+import { compactLabel } from "./lib/text"
 
 const appendTextDelta = (detail: SessionDetail, messageId: string, delta: string): SessionDetail => {
   const found = detail.messages.some((message) => message.id === messageId)
