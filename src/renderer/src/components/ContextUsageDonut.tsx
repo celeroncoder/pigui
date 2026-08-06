@@ -18,7 +18,11 @@ export function ContextUsageDonut({ contextUsage }: ContextUsageDonutProps) {
     <div
       className={`context-usage-control ${presentation.tone} ${detailsOpen ? "is-open" : ""}`}
       onMouseEnter={() => setDetailsOpen(true)}
-      onMouseLeave={() => setDetailsOpen(false)}
+      onMouseLeave={(event) => {
+        // Keep details open while keyboard focus remains inside the control.
+        if (event.currentTarget.contains(document.activeElement)) return
+        setDetailsOpen(false)
+      }}
     >
       <button
         type="button"

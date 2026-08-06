@@ -250,8 +250,13 @@ for (const [index, info] of orderedInfos.entries()) {
   // The browser fixture uses the same AgentSession source as the desktop app.
   // Do not estimate historical usage from session entries here.
   const contextSession = await createAgentSessionFromServices({ services, sessionManager: manager })
-  const contextUsage = contextSession.session.getContextUsage()
-  contextSession.session.dispose()
+  let contextUsage
+  try {
+    contextUsage = contextSession.session.getContextUsage()
+  } finally {
+    // AgentSession owns listeners/resources; always dispose even if usage lookup throws.
+    contextSession.session.dispose()
+  }
   details.push({
     summary,
     messages: projectEntries(manager.getBranch()),
