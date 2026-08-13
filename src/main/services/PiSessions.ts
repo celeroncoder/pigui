@@ -800,6 +800,9 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         }))
       } else if (event.type === "agent_end") {
         active.pendingTransportFailure = interruptedTransportReason(event.messages, event.willRetry, active.abortRequested)
+        if (!event.willRetry && agentEndedWithError(event.messages)) {
+          void Effect.runPromise(emitRuntimeStatus(active, "failed"))
+        }
       } else if (event.type === "message_start" && event.message.role === "user") {
         active.liveUserMessageIndex += 1
         void Effect.runPromise(emitActiveEvent(active, {
@@ -901,8 +904,6 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         }))
       } else if (event.type === "thinking_level_changed") {
         void Effect.runPromise(emitSnapshot(active))
-      } else if (event.type === "agent_end" && !event.willRetry && agentEndedWithError(event.messages)) {
-        void Effect.runPromise(emitRuntimeStatus(active, "failed"))
       } else if (event.type === "auto_retry_start") {
         void Effect.runPromise(emitRuntimeStatus(active, "waiting"))
       } else if (event.type === "auto_retry_end" && !event.success) {

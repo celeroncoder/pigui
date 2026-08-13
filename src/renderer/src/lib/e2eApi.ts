@@ -243,7 +243,7 @@ export const createE2eApi = (): PiDesktopApi => {
         return detail
       },
       prompt: async () => Promise.reject(new Error("Live prompting is tested in Electron, not the browser review harness")),
-      recover: async (sessionPath) => {
+      recover: async (_context, sessionPath, _action) => {
         const data = await loadFixture()
         const current = data.details.find((item) => item.summary.path === sessionPath)
         if (!current) throw new Error("The generated Pi session snapshot is unavailable")
