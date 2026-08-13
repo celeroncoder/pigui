@@ -12,15 +12,16 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
 import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import { projectToolOutput } from "./PiEventProjection"
-import { releaseInactiveEntriesExcept } from "./PiSessionLifecycle"
+import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
 import { ProviderAvailability } from "./ProviderAvailability"
+import { interruptedTransportReason, lastUserPrompt, recoveryAfterReopen, recoveryPrompt } from "./SessionRecovery"
 import {
   type NativePromptQueue,
   prioritizeQueuedMessageForSteering,
@@ -47,6 +48,9 @@ interface ActiveSession {
   queuedMessages: ReadonlyArray<QueuedMessage>
   queueUpdatesSuspended: number
   pendingPromptStarts: number
+  abortRequested: boolean
+  pendingTransportFailure: string | undefined
+  recovery: SessionRecovery | undefined
   liveMessageId: string | null
   liveMessageStarted: boolean
   liveDetail: SessionDetail | undefined
@@ -397,6 +401,20 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary, con
   }
 }
 
+const historicalRecovery = (manager: SessionManager): SessionRecovery | undefined => {
+  const branch = manager.getBranch()
+  const messages = branch.flatMap((entry) => entry.type === "message" ? [entry.message] : [])
+  const reason = interruptedTransportReason(messages, false, false)
+  if (!reason) return undefined
+  const lastEntry = branch.findLast((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))
+  const prompt = lastUserPrompt(messages)
+  return {
+    reason,
+    interruptedAt: lastEntry ? timestampValue(lastEntry.timestamp) : Date.now(),
+    ...(prompt ? { lastPrompt: prompt } : {})
+  }
+}
+
 const snapshotFromActive = (active: ActiveSession): SessionDetail => {
   const messages = historyToChat(active.session.sessionManager)
   const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
@@ -417,6 +435,7 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
+    ...(active.recovery ? { recovery: active.recovery } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
     runtimeStatus: active.runtimeStatus,
@@ -427,7 +446,7 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
 
 const detailFromActive = (active: ActiveSession): SessionDetail => {
   const detail = active.liveDetail ?? snapshotFromActive(active)
-  const { contextUsage: _previousContextUsage, interactionRequest: _previousInteraction, ...base } = detail
+  const { contextUsage: _previousContextUsage, interactionRequest: _previousInteraction, recovery: _previousRecovery, ...base } = detail
   const contextUsage = projectContextUsage(active.session)
   const interactionRequest = active.interaction.pendingRequest()
   return {
@@ -437,6 +456,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
+    ...(active.recovery ? { recovery: active.recovery } : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(interactionRequest ? { interactionRequest } : {}),
     runtimeStatus: active.runtimeStatus,
@@ -451,6 +471,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly prompt: (cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
+  readonly recover: (cwd: string, sessionPath: string, action: SessionRecoveryAction) => Effect.Effect<SessionDetail, AppError>
   readonly editQueuedMessage: (cwd: string, sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
   readonly removeQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
   readonly steerQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
@@ -459,7 +480,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly setModel: (cwd: string, sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
   readonly setThinkingLevel: (cwd: string, sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
   readonly answerInteraction: (cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
-  readonly dispose: () => Effect.Effect<void>
+  readonly dispose: () => Effect.Effect<void, AppError>
 }>()("PiSessions") {}
 
 const createPiRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
@@ -478,6 +499,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const sessionLifecycleLock = yield* Semaphore.make(1)
   const queueMutationLock = yield* Semaphore.make(1)
   const activeSessions = new Map<string, ActiveSession>()
+  const lifecycleGate = new PiSessionLifecycleGate()
 
   const emitActiveEvent = (active: ActiveSession, event: SessionEvent) => {
     // The renderer intentionally ignores offscreen session paths. Mirror the
@@ -533,9 +555,17 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     active.disposed = true
     cancelGitRefresh(active)
     active.providerAvailability.dispose()
-    active.interaction.dispose()
-    active.unsubscribe()
-    await active.runtime.dispose()
+    try {
+      await releaseSessionResources({
+        disposeInteraction: () => active.interaction.dispose(),
+        unsubscribe: () => active.unsubscribe(),
+        disposeRuntime: () => active.runtime.dispose(),
+        disposeSession: () => active.session.dispose()
+      })
+    } catch (cause) {
+      const sessionPath = active.session.sessionFile ?? "unknown session"
+      throw new Error(`Failed to release ${sessionPath}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+    }
   }
 
   const releaseInactiveSessionsExcept = (keepKey: string) => releaseInactiveEntriesExcept(
@@ -728,6 +758,9 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       queuedMessages: reconcileQueuedMessages([], nativePromptQueue(runtime.session)),
       queueUpdatesSuspended: 0,
       pendingPromptStarts: 0,
+      abortRequested: false,
+      pendingTransportFailure: undefined,
+      recovery: historicalRecovery(manager),
       liveMessageId: null,
       liveMessageStarted: false,
       liveDetail: undefined,
@@ -747,17 +780,29 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     active.liveDetail = snapshotFromActive(active)
 
     active.unsubscribe = runtime.session.subscribe((event) => {
+      // Runtime disposal can synchronously emit abort/settled events. Ignore
+      // teardown events even if the SDK unsubscribe callback itself failed so
+      // normal quit, signals, and crash cleanup never become recovery state.
+      if (active.disposed) return
       if (event.type === "queue_update") {
         if (active.queueUpdatesSuspended === 0 && refreshQueuedMessages(active)) {
           void Effect.runPromise(emitQueuedMessages(active))
           void Effect.runPromise(refreshRuntimeStatus(active))
         }
       } else if (event.type === "agent_start") {
+        active.abortRequested = false
+        active.pendingTransportFailure = undefined
+        active.recovery = undefined
         void Effect.runPromise(Effect.gen(function*() {
           yield* emitRuntimeStatus(active, "running")
           yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: true })
           yield* emitContextUsage(active)
         }))
+      } else if (event.type === "agent_end") {
+        active.pendingTransportFailure = interruptedTransportReason(event.messages, event.willRetry, active.abortRequested)
+        if (!event.willRetry && agentEndedWithError(event.messages)) {
+          void Effect.runPromise(emitRuntimeStatus(active, "failed"))
+        }
       } else if (event.type === "message_start" && event.message.role === "user") {
         active.liveUserMessageIndex += 1
         void Effect.runPromise(emitActiveEvent(active, {
@@ -859,8 +904,6 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         }))
       } else if (event.type === "thinking_level_changed") {
         void Effect.runPromise(emitSnapshot(active))
-      } else if (event.type === "agent_end" && !event.willRetry && agentEndedWithError(event.messages)) {
-        void Effect.runPromise(emitRuntimeStatus(active, "failed"))
       } else if (event.type === "auto_retry_start") {
         void Effect.runPromise(emitRuntimeStatus(active, "waiting"))
       } else if (event.type === "auto_retry_end" && !event.success) {
@@ -868,6 +911,16 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       } else if (event.type === "agent_settled") {
         active.liveMessageId = null
         active.liveMessageStarted = false
+        if (active.pendingTransportFailure) {
+          const prompt = lastUserPrompt(active.session.messages)
+          active.recovery = {
+            reason: active.pendingTransportFailure,
+            interruptedAt: Date.now(),
+            ...(prompt ? { lastPrompt: prompt } : {})
+          }
+        }
+        active.pendingTransportFailure = undefined
+        active.abortRequested = false
         void Effect.runPromise(Effect.gen(function*() {
           if (active.runtimeStatus !== "failed") yield* refreshRuntimeStatus(active)
           yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: false })
@@ -879,7 +932,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
 
     const sessionKey = canonicalPath(sessionPath)
     activeSessions.set(sessionKey, active)
-    yield* Effect.promise(() => releaseInactiveSessionsExcept(sessionKey))
+    yield* Effect.tryPromise({
+      try: () => releaseInactiveSessionsExcept(sessionKey),
+      catch: toAppError("release inactive Pi sessions")
+    })
     return active
   })
 
@@ -888,7 +944,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     const requestedSessionPath = canonicalPath(sessionPath)
     const existing = activeSessions.get(requestedSessionPath)
     if (existing && canonicalPath(existing.cwd) === projectCwd) {
-      yield* Effect.promise(() => releaseInactiveSessionsExcept(requestedSessionPath))
+      yield* Effect.tryPromise({
+        try: () => releaseInactiveSessionsExcept(requestedSessionPath),
+        catch: toAppError("release inactive Pi sessions")
+      })
       return existing
     }
 
@@ -922,6 +981,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     create: Effect.fn("PiSessions.create")(function*(cwd: string, baseBranch?: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("create Pi session")
         const projectCwd = canonicalPath(cwd)
         const manager = yield* Effect.try({ try: () => SessionManager.create(projectCwd), catch: toAppError("create Pi session") })
         if (baseBranch) {
@@ -936,31 +996,38 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     open: Effect.fn("PiSessions.open")(function*(cwd: string, sessionPath: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("open Pi session")
         const active = yield* getOrOpen(cwd, sessionPath)
         return detailFromActive(active)
       })))
     }),
     inspect: Effect.fn("PiSessions.inspect")(function*(cwd: string, parentSessionPath: string, sessionPath: string) {
-      const projectCwd = canonicalPath(cwd)
-      const requestedPath = canonicalPath(sessionPath)
-      const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
-      const infos = listed.filter((candidate) => canonicalPath(candidate.cwd || projectCwd) === projectCwd)
-      const info = infos.find((candidate) => canonicalPath(candidate.path) === requestedPath)
-      const parentByChild = inferSubagentParents(projectCwd, infos)
-      const inferredParentPath = info ? parentByChild.get(info.path) : undefined
-      if (!info || !inferredParentPath || canonicalPath(inferredParentPath) !== canonicalPath(parentSessionPath)) {
-        return yield* Effect.fail(AppError.make({ operation: "inspect Pi session", message: "Session is not linked to this parent" }))
-      }
-      const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
-      const runtime = yield* Effect.tryPromise({
-        try: () => createAgentSessionRuntime(createPiRuntime, { cwd: projectCwd, agentDir: getAgentDir(), sessionManager: manager }),
-        catch: toAppError("inspect Pi context usage")
-      })
-      try {
-        return detailFromManager(manager, summaryFromInfo(info), projectContextUsage(runtime.session))
-      } finally {
-        yield* Effect.promise(() => runtime.dispose())
-      }
+      return yield* sessionLifecycleLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("inspect Pi session")
+        const projectCwd = canonicalPath(cwd)
+        const requestedPath = canonicalPath(sessionPath)
+        const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
+        const infos = listed.filter((candidate) => canonicalPath(candidate.cwd || projectCwd) === projectCwd)
+        const info = infos.find((candidate) => canonicalPath(candidate.path) === requestedPath)
+        const parentByChild = inferSubagentParents(projectCwd, infos)
+        const inferredParentPath = info ? parentByChild.get(info.path) : undefined
+        if (!info || !inferredParentPath || canonicalPath(inferredParentPath) !== canonicalPath(parentSessionPath)) {
+          return yield* Effect.fail(AppError.make({ operation: "inspect Pi session", message: "Session is not linked to this parent" }))
+        }
+        const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
+        const runtime = yield* Effect.tryPromise({
+          try: () => createAgentSessionRuntime(createPiRuntime, { cwd: projectCwd, agentDir: getAgentDir(), sessionManager: manager }),
+          catch: toAppError("inspect Pi context usage")
+        })
+        try {
+          return detailFromManager(manager, summaryFromInfo(info), projectContextUsage(runtime.session))
+        } finally {
+          yield* Effect.tryPromise({
+            try: () => runtime.dispose(),
+            catch: toAppError("dispose inspected Pi session")
+          })
+        }
+      }))
     }),
     prompt: Effect.fn("PiSessions.prompt")(function*(cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
       const requestedPath = canonicalPath(sessionPath)
@@ -1006,10 +1073,13 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           }
 
           const run = yield* Effect.try({
-            try: () => active.session.prompt(prompt, {
-              ...(images.length > 0 ? { images } : {}),
-              preflightResult: finishPromptStart
-            }),
+            try: () => {
+              active.recovery = undefined
+              return active.session.prompt(prompt, {
+                ...(images.length > 0 ? { images } : {}),
+                preflightResult: finishPromptStart
+              })
+            },
             catch: toAppError("prompt Pi")
           })
           return { kind: "started", run } as const
@@ -1018,6 +1088,57 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         if (operation.kind === "queued") return
         yield* Effect.tryPromise({ try: () => operation.run, catch: toAppError("prompt Pi") })
       }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
+    }),
+    recover: Effect.fn("PiSessions.recover")(function*(cwd: string, sessionPath: string, action: SessionRecoveryAction) {
+      const requestedPath = canonicalPath(sessionPath)
+      const prepared = yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("recover Pi session")
+        const current = yield* activeForWorktree(cwd, requestedPath, "recover Pi session")
+        const recovery = current.recovery
+        if (!recovery) return yield* Effect.fail(AppError.make({ operation: "recover Pi session", message: "This Pi session is no longer interrupted" }))
+        const prompt = recoveryPrompt(action, recovery)
+        if (action === "restart" && !prompt) {
+          return yield* Effect.fail(AppError.make({ operation: "recover Pi session", message: "The interrupted session has no preserved user prompt to restart" }))
+        }
+
+        const preservedQueue = current.queuedMessages
+        const preservedImages = new Map(current.queuedImages)
+        activeSessions.delete(requestedPath)
+        yield* Effect.promise(() => releaseActiveSession(current))
+        const manager = yield* Effect.try({
+          try: () => SessionManager.open(requestedPath, undefined, current.cwd),
+          catch: toAppError("reopen Pi session")
+        })
+        const next = yield* attach(current.cwd, manager)
+        // Continue/restart only clears recovery once Pi accepts the prompt. If
+        // preflight fails, the renderer can reopen this same active runtime and
+        // offer the preserved choices again instead of losing the recovery path.
+        next.recovery = recoveryAfterReopen(action, recovery)
+        for (const [id, images] of preservedImages) next.queuedImages.set(id, images)
+        if (preservedQueue.length > 0) yield* replaceNativeQueue(next, preservedQueue)
+        if (prompt) next.pendingPromptStarts += 1
+        yield* emitSnapshot(next)
+        return { active: next, prompt, recovery }
+      })))
+
+      if (prepared.prompt) {
+        const prompt = prepared.prompt
+        let promptStartPending = true
+        const finishPromptStart = () => {
+          if (!promptStartPending) return
+          promptStartPending = false
+          prepared.active.pendingPromptStarts -= 1
+        }
+        yield* Effect.tryPromise({
+          try: () => prepared.active.session.prompt(prompt, { preflightResult: finishPromptStart }),
+          catch: toAppError("continue recovered Pi session")
+        }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
+        if (prepared.active.recovery === prepared.recovery) {
+          prepared.active.recovery = undefined
+          yield* emitSnapshot(prepared.active)
+        }
+      }
+      return detailFromActive(prepared.active)
     }),
     editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(cwd: string, sessionPath: string, messageId: string, text: string) {
       const requestedPath = canonicalPath(sessionPath)
@@ -1065,6 +1186,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     abort: Effect.fn("PiSessions.abort")(function*(cwd: string, sessionPath: string) {
       const active = yield* activeForWorktree(cwd, sessionPath, "abort Pi")
+      active.abortRequested = true
       active.interaction.cancelPending()
       yield* Effect.tryPromise({ try: () => active.session.abort(), catch: toAppError("abort Pi") })
     }),
@@ -1100,9 +1222,13 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     dispose: Effect.fn("PiSessions.dispose")(function*() {
       yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = [...activeSessions.values()]
-        activeSessions.clear()
-        yield* Effect.promise(() => Promise.all(active.map(releaseActiveSession)).then(() => undefined))
+        yield* Effect.sync(() => {
+          lifecycleGate.close()
+        })
+        yield* Effect.tryPromise({
+          try: () => releaseAllEntries(activeSessions, releaseActiveSession),
+          catch: toAppError("dispose Pi sessions")
+        })
       })))
     })
   }

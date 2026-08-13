@@ -1,0 +1,97 @@
+.root {
+  position: relative;
+  width: min(580px, 86%);
+  min-width: 0;
+  display: grid;
+  justify-items: end;
+  gap: 7px;
+  margin: -27px 0 34px auto;
+  padding-right: 5px;
+}
+
+.root::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  right: 10px;
+  width: 18px;
+  height: 9px;
+  border-right: 1px solid #4b4037;
+  border-bottom: 1px solid #4b4037;
+  border-radius: 0 0 7px;
+}
+
+.status {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: #a7a09a;
+  font-size: 10px;
+}
+
+.marker {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(225, 157, 94, .28);
+  border-radius: 50%;
+  background: #211a15;
+  color: #d99a5f;
+}
+
+.status strong { color: #d8c6b5; font-weight: 650; white-space: nowrap; }
+.reason { min-width: 0; overflow: hidden; color: #817b76; text-overflow: ellipsis; white-space: nowrap; }
+
+.actions {
+  max-width: 100%;
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.actions button {
+  min-width: 142px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 11px;
+  border: 1px solid #343230;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #1b1c1d, #151617);
+  color: #aaa49e;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .16), inset 0 1px rgba(255, 255, 255, .035);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .18s ease, background-color .18s ease, color .18s ease;
+}
+
+.actions button > svg { flex: 0 0 auto; color: #b47c4f; }
+.actions button > span { display: grid; gap: 1px; }
+.actions button strong { color: #d8d2cc; font-size: 10.5px; font-weight: 600; }
+.actions button small { color: #77736f; font: 8px var(--mono); white-space: nowrap; }
+.actions button:hover:not(:disabled) { border-color: #66503e; background: #20201f; color: #e7b17d; }
+.actions button:hover:not(:disabled) > svg { color: #e0a16a; }
+.actions button:focus-visible { outline: 2px solid #e3a666; outline-offset: 2px; }
+.actions button:disabled { cursor: not-allowed; opacity: .42; }
+
+.note {
+  color: #9b7556;
+  font: 8px var(--mono);
+  letter-spacing: .01em;
+}
+
+@media (max-width: 1080px) {
+  .root { width: min(520px, 92%); }
+  .actions button { min-width: 132px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .actions button { transition: none; }
+}

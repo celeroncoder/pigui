@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
+import { Effect } from "effect"
 import type { SessionDetail, SessionEvent } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
-import { releaseInactiveEntriesExcept } from "./PiSessionLifecycle"
+import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
 
 interface FakeSession {
   readonly path: string
@@ -39,6 +40,19 @@ const apply = (current: SessionDetail, activePath: string, event: SessionEvent):
 }
 
 describe("Pi session lifecycle", () => {
+  it("permanently rejects new runtime creation after shutdown begins", async () => {
+    const gate = new PiSessionLifecycleGate()
+    await expect(Effect.runPromise(gate.ensureAvailable("open Pi session"))).resolves.toBeUndefined()
+
+    gate.close()
+
+    await expect(Effect.runPromise(gate.ensureAvailable("open Pi session"))).rejects.toMatchObject({
+      _tag: "AppError",
+      operation: "open Pi session",
+      message: "Pi Desktop is shutting down"
+    })
+  })
+
   it("keeps a running session alive while another session is selected", async () => {
     const sessionA: FakeSession = { path: "session-a", running: true, promptStartsPending: 0 }
     const sessionB: FakeSession = { path: "session-b", running: false, promptStartsPending: 0 }
@@ -93,6 +107,76 @@ describe("Pi session lifecycle", () => {
     sessionA.backgroundRunning = false
     await releaseInactiveEntriesExcept(sessions, "session-c", retained, async () => undefined)
     expect(sessions.size).toBe(0)
+  })
+
+  it("attempts every inactive release and reports all failures", async () => {
+    const sessionA: FakeSession = { path: "session-a", running: false, promptStartsPending: 0 }
+    const sessionB: FakeSession = { path: "session-b", running: false, promptStartsPending: 0 }
+    const sessions = new Map([[sessionA.path, sessionA], [sessionB.path, sessionB]])
+    const released: string[] = []
+
+    const release = releaseInactiveEntriesExcept(sessions, "session-c", retained, (session) => {
+      released.push(session.path)
+      throw new Error(`failed-${session.path}`)
+    })
+
+    await expect(release).rejects.toMatchObject({
+      errors: [expect.objectContaining({ message: "failed-session-a" }), expect.objectContaining({ message: "failed-session-b" })]
+    })
+    expect(released).toEqual([sessionA.path, sessionB.path])
+    expect(sessions.size).toBe(0)
+  })
+
+  it("clears all tracked sessions while attempting every shutdown", async () => {
+    const sessionA: FakeSession = { path: "session-a", running: true, promptStartsPending: 0 }
+    const sessionB: FakeSession = { path: "session-b", running: true, promptStartsPending: 0 }
+    const sessions = new Map([[sessionA.path, sessionA], [sessionB.path, sessionB]])
+    const released: string[] = []
+
+    await expect(releaseAllEntries(sessions, (session) => {
+      released.push(session.path)
+      if (session === sessionA) throw new Error("first session failed")
+      return Promise.resolve()
+    })).rejects.toThrow("Failed to dispose Pi sessions")
+
+    expect(released).toEqual([sessionA.path, sessionB.path])
+    expect(sessions.size).toBe(0)
+  })
+
+  it("disposes the Pi runtime even when host-owned cleanup fails", async () => {
+    const disposed: string[] = []
+    const release = releaseSessionResources({
+      disposeInteraction: () => {
+        disposed.push("interaction")
+        throw new Error("interaction failed")
+      },
+      unsubscribe: () => {
+        disposed.push("unsubscribe")
+        throw new Error("unsubscribe failed")
+      },
+      disposeRuntime: async () => {
+        disposed.push("runtime")
+      },
+      disposeSession: () => disposed.push("session-fallback")
+    })
+
+    await expect(release).rejects.toThrow("interaction failed")
+    expect(disposed).toEqual(["interaction", "unsubscribe", "runtime"])
+  })
+
+  it("falls back to synchronous Pi session disposal when runtime disposal fails", async () => {
+    const disposed: string[] = []
+    await expect(releaseSessionResources({
+      disposeInteraction: () => disposed.push("interaction"),
+      unsubscribe: () => disposed.push("unsubscribe"),
+      disposeRuntime: async () => {
+        disposed.push("runtime")
+        throw new Error("runtime failed")
+      },
+      disposeSession: () => disposed.push("session-fallback")
+    })).rejects.toThrow("runtime failed")
+
+    expect(disposed).toEqual(["interaction", "unsubscribe", "runtime", "session-fallback"])
   })
 
   it("preserves session A activity while B is visible and restores it when A is reopened", async () => {

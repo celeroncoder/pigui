@@ -105,3 +105,6 @@ export const buildConversationPreviewLandmarks = (items: ReadonlyArray<Conversat
 
 export const filterUserMessagePreviewLandmarks = (landmarks: ReadonlyArray<MessagePreviewLandmark>): ReadonlyArray<MessagePreviewLandmark> =>
   landmarks.filter((landmark) => landmark.kind === "user")
+
+export const findLastUserTurnIndex = (items: ReadonlyArray<ConversationItem>): number =>
+  items.findLastIndex((item) => item.type === "message" && item.message.role === "user")

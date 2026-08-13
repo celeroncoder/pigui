@@ -1,6 +1,6 @@
-import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AskUserPanel } from "./components/AskUserPanel"
@@ -17,7 +17,7 @@ import { SubagentPane } from "./components/SubagentPane"
 import styles from "./App.module.css"
 import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
-import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, latestTransientStatus } from "./lib/conversation"
+import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, findLastUserTurnIndex, latestTransientStatus } from "./lib/conversation"
 import { applySessionRuntimeStatus } from "./lib/runtimeStatuses"
 import { compactLabel } from "./lib/text"
 
@@ -56,6 +56,7 @@ export default function App() {
   const [lightboxImage, setLightboxImage] = useState<AttachmentPreview | null>(null)
   const [interactionRequest, setInteractionRequest] = useState<AskUserInteractionRequest | null>(null)
   const [interactionSubmitting, setInteractionSubmitting] = useState(false)
+  const [recoverySubmitting, setRecoverySubmitting] = useState(false)
   const interactionSubmittingRef = useRef(false)
   const draftRevisionRef = useRef(0)
   const attachmentRevisionRef = useRef(0)
@@ -208,6 +209,7 @@ export default function App() {
     setError(null)
     setInteractionRequest(null)
     setInteractionSubmitting(false)
+    setRecoverySubmitting(false)
     interactionSubmittingRef.current = false
     try {
       const detail = await desktopApi.sessions.open(worktreeContext(project, worktree), summary.path)
@@ -312,6 +314,7 @@ export default function App() {
     setModelAvailability("ready")
     setInteractionRequest(null)
     setInteractionSubmitting(false)
+    setRecoverySubmitting(false)
     interactionSubmittingRef.current = false
     setError(null)
     void refreshProjectGit(project, worktree)
@@ -434,6 +437,7 @@ export default function App() {
     if (event.type === "interaction-cleared") {
       setInteractionRequest((current) => current?.requestId === event.requestId ? null : current)
       setInteractionSubmitting(false)
+      setRecoverySubmitting(false)
       interactionSubmittingRef.current = false
       return
     }
@@ -693,6 +697,39 @@ export default function App() {
     })
   }
 
+  const recoverSession = (action: SessionRecoveryAction) => {
+    if (!session || !activeProject || !activeWorktree || recoverySubmitting) return
+    const sessionPath = session.summary.path
+    const context = worktreeContext(activeProject, activeWorktree)
+    const contextKey = worktreeKey(activeProject, activeWorktree)
+    const requestId = sessionRequestRef.current
+    const isCurrentRecovery = () => activeSessionPathRef.current === sessionPath
+      && activeWorktreeKeyRef.current === contextKey
+      && sessionRequestRef.current === requestId
+    setRecoverySubmitting(true)
+    setError(null)
+    if (action !== "resume") setSession((current) => current ? { ...current, recovery: undefined, isStreaming: true } : current)
+    void desktopApi.sessions.recover(context, sessionPath, action).then((detail) => {
+      if (!isCurrentRecovery()) return
+      setSession(detail)
+      setInteractionRequest(detail.interactionRequest ?? null)
+    }).catch(async (cause: unknown) => {
+      if (!isCurrentRecovery()) return
+      setError(cause instanceof Error ? cause.message : "Pi could not recover this session")
+      if (action !== "resume") {
+        try {
+          const detail = await desktopApi.sessions.open(context, sessionPath)
+          if (isCurrentRecovery()) setSession(detail)
+        } catch {
+          // Keep the original recovery failure visible; a later explicit reopen
+          // can retry loading the preserved Pi state.
+        }
+      }
+    }).finally(() => {
+      if (isCurrentRecovery()) setRecoverySubmitting(false)
+    })
+  }
+
   const addPastedImage = async (image: File) => {
     if ((!session && !sessionDraft) || !activeProject || !activeWorktree) return
     const sessionPath = session?.summary.path ?? null
@@ -779,6 +816,7 @@ export default function App() {
       previewLandmarks: allPreviews.filter((_landmark, index) => index === 0 || index === allPreviews.length - 1 || index % previewStride === 0)
     }
   }, [displayMessages])
+  const recoveryTurnIndex = session?.recovery ? findLastUserTurnIndex(conversationItems) : -1
   const linkedSubagents = sessions.filter((candidate) => candidate.parentSessionPath === session?.summary.path)
   const backgroundProcesses = (session?.backgroundProcesses ?? []).filter((process) => process.status === "running")
   const runningProcesses = backgroundProcesses.length
@@ -916,11 +954,9 @@ export default function App() {
           </div>
 
           {interactionRequest && (
-            <AskUserPanel
-              request={interactionRequest}
-              submitting={interactionSubmitting}
-              onAnswer={answerInteraction}
-            />
+            <div className={styles.sessionNotices}>
+              <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
+            </div>
           )}
 
           {displayMessages.length ? (
@@ -933,6 +969,11 @@ export default function App() {
               isStreaming={session?.isStreaming ?? false}
               liveStatus={liveStatus}
               onOpenImage={setLightboxImage}
+              recovery={session?.recovery}
+              recoveryTurnIndex={recoveryTurnIndex}
+              queuedRecoveryCount={session?.queuedMessages.length ?? 0}
+              recoveryBusy={recoverySubmitting}
+              onRecover={recoverSession}
             />
           ) : (
             <div className="message-scroll-shell">
@@ -966,8 +1007,8 @@ export default function App() {
           <Composer
             key={session?.summary.path ?? (sessionDraft ? `draft:${activeWorktree?.id ?? "worktree"}` : "no-session")}
             value={draft}
-            disabled={(!session && (!sessionDraft || draftContextLoading || draftStarting)) || interactionRequest !== null}
-            disabledReason={interactionRequest ? "Answer Pi above to continue…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
+            disabled={(!session && (!sessionDraft || draftContextLoading || draftStarting)) || interactionRequest !== null || session?.recovery !== undefined || recoverySubmitting}
+            disabledReason={interactionRequest ? "Answer Pi above to continue…" : session?.recovery ? "Choose how to recover below your last message…" : recoverySubmitting ? "Recovering Pi session…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
             model={session?.model.split("/").at(-1) ?? (sessionDraft ? "Pi default" : modelAvailability === "pending" ? "Checking providers…" : "Choose model")}

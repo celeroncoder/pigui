@@ -9,6 +9,7 @@ import { GitContext, GitContextLive } from "./services/GitContext"
 import { GitHubWorkflow, GitHubWorkflowLive } from "./services/GitHubWorkflow"
 import { PiSessions, PiSessionsLive } from "./services/PiSessions"
 import { ProjectStore, ProjectStoreLive } from "./services/ProjectStore"
+import { ShutdownCoordinator, type ShutdownReason } from "./services/ShutdownCoordinator"
 import { WindowBus, WindowBusLive } from "./services/WindowBus"
 
 const NonEmptyString = Schema.NonEmptyString
@@ -24,6 +25,7 @@ const WorktreeContextSchema = Schema.Struct({
   projectId: NonEmptyString,
   worktreeId: NonEmptyString
 })
+const SessionRecoveryActionSchema = Schema.Literals(["resume", "continue", "restart"])
 
 const invalidIpcInput = (error: { readonly message: string }) => AppError.make({ operation: "validate IPC input", message: error.message })
 const decodeString = (input: unknown) => Schema.decodeUnknownEffect(NonEmptyString)(input).pipe(Effect.mapError(invalidIpcInput))
@@ -32,6 +34,7 @@ const decodeThinkingLevel = (input: unknown) => Schema.decodeUnknownEffect(Think
 const decodeAttachmentSave = (input: unknown) => Schema.decodeUnknownEffect(AttachmentSaveSchema)(input).pipe(Effect.mapError(invalidIpcInput))
 const decodeAttachmentPaths = (input: unknown) => Schema.decodeUnknownEffect(Schema.Union([AttachmentPathsSchema, Schema.Undefined]))(input).pipe(Effect.mapError(invalidIpcInput))
 const decodeQueueDelivery = (input: unknown) => Schema.decodeUnknownEffect(QueueDeliverySchema)(input).pipe(Effect.mapError(invalidIpcInput))
+const decodeSessionRecoveryAction = (input: unknown) => Schema.decodeUnknownEffect(SessionRecoveryActionSchema)(input).pipe(Effect.mapError(invalidIpcInput))
 const decodeMessageText = Effect.fn("decodeMessageText")(function*(input: unknown) {
   const text = yield* decodeString(input)
   const normalized = text.trim()
@@ -43,12 +46,26 @@ const AppDependencies = Layer.mergeAll(WindowBusLive, GitContextLive, Attachment
 const AppServices = Layer.mergeAll(ProjectStoreLive, PiSessionsLive)
 const AppLayer = Layer.provideMerge(AppServices, AppDependencies)
 const runtime = ManagedRuntime.make(AppLayer)
-let isShuttingDown = false
+
+const disposeSessions = async (): Promise<void> => {
+  const exit = await runtime.runPromiseExit(Effect.gen(function*() {
+    const sessions = yield* PiSessions
+    yield* sessions.dispose()
+  }))
+  if (Exit.isFailure(exit)) throw Cause.squash(exit.cause)
+}
+
+const shutdown = new ShutdownCoordinator({
+  disposeSessions,
+  disposeRuntime: () => runtime.dispose(),
+  exit: (code) => app.exit(code),
+  logError: (message, cause) => console.error(message, cause)
+})
 
 const run = async <A, E>(effect: Effect.Effect<A, E, ProjectStore | PiSessions | GitContext | GitHubWorkflow | AttachmentStore | WindowBus>): Promise<A> => {
   const exit = await runtime.runPromiseExit(effect)
   if (Exit.isSuccess(exit)) return exit.value
-  if (isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) {
+  if (shutdown.isShuttingDown && Cause.hasInterruptsOnly(exit.cause)) {
     throw AppError.make({ operation: "application", message: "Pi Desktop is shutting down" })
   }
   throw Cause.squash(exit.cause)
@@ -108,6 +125,11 @@ const createWindow = () => {
     return { action: "deny" }
   })
   window.webContents.on("will-navigate", (event) => event.preventDefault())
+  window.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit" || shutdown.isShuttingDown) return
+    console.error("[pi-desktop] renderer process terminated unexpectedly", details)
+    void shutdown.shutdown("renderer-crash", 1)
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
@@ -248,6 +270,14 @@ const registerIpc = () => {
     yield* sessions.prompt(worktree.path, path, prompt, queueDelivery, paths ?? [])
   })))
 
+  ipcMain.handle(IpcChannels.recoverSession, (_event, context: unknown, sessionPath: unknown, action: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
+    const path = yield* decodeString(sessionPath)
+    const selectedAction = yield* decodeSessionRecoveryAction(action)
+    const sessions = yield* PiSessions
+    return yield* sessions.recover(worktree.path, path, selectedAction)
+  })))
+
   ipcMain.handle(IpcChannels.editQueuedMessage, (_event, context: unknown, sessionPath: unknown, messageId: unknown, text: unknown) => run(Effect.gen(function*() {
     const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)
@@ -343,11 +373,27 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit()
 })
 
-app.on("before-quit", () => {
-  if (isShuttingDown) return
-  isShuttingDown = true
-  void runtime.runPromise(Effect.gen(function*() {
-    const sessions = yield* PiSessions
-    yield* sessions.dispose()
-  })).finally(() => runtime.dispose())
+app.on("before-quit", (event) => {
+  event.preventDefault()
+  void shutdown.shutdown("application-quit", 0)
 })
+
+const signalExitCodes: ReadonlyArray<readonly [NodeJS.Signals, number]> = process.platform === "win32"
+  ? [["SIGINT", 130], ["SIGTERM", 143]]
+  : [["SIGHUP", 129], ["SIGINT", 130], ["SIGTERM", 143]]
+
+for (const [signal, exitCode] of signalExitCodes) {
+  // Keep handling repeated signals until cleanup finishes so a second signal
+  // cannot restore Node's default behavior and cut runtime disposal short.
+  process.on(signal, () => {
+    void shutdown.shutdown(signal, exitCode)
+  })
+}
+
+const shutdownAfterFatalError = (reason: ShutdownReason, cause: unknown) => {
+  console.error(`[pi-desktop] ${reason}`, cause)
+  void shutdown.shutdown(reason, 1)
+}
+
+process.once("uncaughtException", (error) => shutdownAfterFatalError("uncaught-exception", error))
+process.once("unhandledRejection", (reason) => shutdownAfterFatalError("unhandled-rejection", reason))
