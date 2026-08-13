@@ -162,6 +162,7 @@
   .session-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: clip; mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent); }
   .session-metadata { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; color: #777b7e; }
   .session-metadata svg { flex: 0 0 auto; }
+  .session-fork-icon { color: #b67e50; }
   .session-status { width: 19px; height: 19px; display: grid; place-items: center; flex: 0 0 19px; border: 1px solid transparent; border-radius: 6px; background: #191a1b; color: #88837d; }
   .session-status.running { border-color: #5c4330; background: #251c16; color: #e9a868; }
   .session-status.running svg { animation: spin 1.1s linear infinite; }
@@ -186,6 +187,9 @@
   .git-branch { min-width: 0; display: flex; align-items: center; gap: 5px; margin-top: 1px; overflow: hidden; color: #958c84; font: 8px/1.2 var(--mono); }
   .git-branch svg { flex: 0 0 auto; color: #aa7e59; }
   .git-branch > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .session-fork-source { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 5px; margin-top: 3px; overflow: hidden; color: #9c8f84; font: 8px/1.25 var(--mono); }
+  .session-fork-source svg { flex: 0 0 auto; color: #b67e50; }
+  .session-fork-source > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .conversation-header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
   .subagent-toggle, .background-toggle { font-size: 10px; }
   .ask-user-panel { position: sticky; z-index: 4; display: grid; gap: 10px; padding: 14px 24px 13px; border-bottom: 1px solid #4a392e; background: linear-gradient(180deg, rgba(35,27,21,.98), rgba(20,17,15,.98)); box-shadow: 0 10px 24px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.04); user-select: text; }
@@ -256,7 +260,9 @@
   .message, .activity-group { content-visibility: auto; contain-intrinsic-size: auto 96px; }
   .message { animation: message-in .28s cubic-bezier(.2,.8,.2,1) both; }
   .user-message { display: flex; justify-content: flex-end; margin: 0 0 35px; }
-  .user-bubble { max-width: min(580px, 86%); padding: 11px 14px; border: 1px solid #2c2d2e; border-radius: 13px 13px 4px 13px; background: #191a1b; color: #dfddda; font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
+  .user-turn { max-width: min(580px, 86%); display: grid; justify-items: end; }
+  .user-bubble { max-width: 100%; padding: 11px 14px; border: 1px solid #2c2d2e; border-radius: 13px 13px 4px 13px; background: #191a1b; color: #dfddda; font-size: 13.5px; line-height: 1.55; overflow-wrap: anywhere; user-select: text; }
+  .user-message-actions { height: 24px; display: flex; justify-content: flex-end; margin-top: 3px; }
   .user-markdown { display: grid; gap: 8px; white-space: pre-wrap; }
   .user-markdown p { margin: 0 0 9px; }
   .user-markdown > :last-child { margin-bottom: 0; }
@@ -293,9 +299,10 @@
   .markdown a { color: #efb57b; text-decoration-thickness: 1px; text-underline-offset: 3px; }
   .message-meta { height: 24px; display: flex; align-items: center; gap: 7px; margin-top: 8px; color: var(--text-3); font: 9.5px var(--mono); }
   .message-meta .provider-logo { filter: saturate(.72) brightness(.9); }
-  .message-meta button { width: 25px; height: 24px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--text-3); opacity: 0; }
-  .assistant-message:hover .message-meta button, .message-meta button:focus-visible { opacity: 1; }
-  .message-meta button:hover { color: var(--text-2); background: var(--panel-hover); }
+  .message-meta button, .user-message-actions button { width: 25px; height: 24px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--text-3); opacity: 0; }
+  .assistant-message:hover .message-meta button, .user-message:hover .user-message-actions button, .message-meta button:focus-visible, .user-message-actions button:focus-visible { opacity: 1; }
+  .message-meta button:hover, .user-message-actions button:hover { color: var(--text-2); background: var(--panel-hover); }
+  .message-meta button:disabled, .user-message-actions button:disabled { opacity: 1; cursor: wait; }
   .thinking-block { min-width: 0; margin: 0 0 9px; color: var(--text-3); font-size: 11.5px; }
   .thinking-block summary { min-width: 0; display: grid; grid-template-columns: 17px max-content minmax(0, 1fr); align-items: center; gap: 6px; cursor: pointer; color: #a19a94; list-style: none; }
   .thinking-block summary::-webkit-details-marker { display: none; }

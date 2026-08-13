@@ -245,6 +245,14 @@ const registerIpc = () => {
     return detail
   })))
 
+  ipcMain.handle(IpcChannels.forkSession, (_event, context: unknown, sessionPath: unknown, messageId: unknown) => run(Effect.gen(function*() {
+    const { worktree } = yield* resolveKnownWorktree(context)
+    const path = yield* decodeString(sessionPath)
+    const id = yield* decodeString(messageId)
+    const sessions = yield* PiSessions
+    return yield* sessions.fork(worktree.path, path, id)
+  })))
+
   ipcMain.handle(IpcChannels.openSession, (_event, context: unknown, sessionPath: unknown) => run(Effect.gen(function*() {
     const { worktree } = yield* resolveKnownWorktree(context)
     const path = yield* decodeString(sessionPath)

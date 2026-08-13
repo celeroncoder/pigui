@@ -1,4 +1,4 @@
-import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
+import { FolderPlus, GitBranch, GitFork, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
@@ -57,7 +57,9 @@ export default function App() {
   const [interactionRequest, setInteractionRequest] = useState<AskUserInteractionRequest | null>(null)
   const [interactionSubmitting, setInteractionSubmitting] = useState(false)
   const [recoverySubmitting, setRecoverySubmitting] = useState(false)
+  const [forkingMessageId, setForkingMessageId] = useState<string | null>(null)
   const interactionSubmittingRef = useRef(false)
+  const forkingMessageRef = useRef<string | null>(null)
   const draftRevisionRef = useRef(0)
   const attachmentRevisionRef = useRef(0)
   const composerEpochRef = useRef(0)
@@ -598,6 +600,52 @@ export default function App() {
     }
   }, [sessionsByWorktree])
 
+  const forkSession = useCallback(async (message: ChatMessage) => {
+    const project = activeProjectRef.current
+    const worktree = activeWorktreeRef.current
+    const sourcePath = activeSessionPathRef.current
+    if (!project || !worktree || !sourcePath || forkingMessageRef.current) return
+    const context = worktreeContext(project, worktree)
+    const contextKey = worktreeKey(project, worktree)
+    forkingMessageRef.current = message.id
+    setForkingMessageId(message.id)
+    setError(null)
+    try {
+      const detail = await desktopApi.sessions.fork(context, sourcePath, message.id)
+      if (activeWorktreeKeyRef.current !== contextKey || activeSessionPathRef.current !== sourcePath) return
+      sessionRequestRef.current += 1
+      activeSessionPathRef.current = detail.summary.path
+      composerEpochRef.current += 1
+      draftRevisionRef.current += 1
+      attachmentRevisionRef.current += 1
+      setSession(detail)
+      setSessionRuntimeStatuses((current) => ({ ...current, [detail.summary.path]: detail.runtimeStatus }))
+      setSessions((current) => [detail.summary, ...current.filter((item) => item.path !== detail.summary.path)])
+      setSessionsByWorktree((current) => {
+        const listing = current[contextKey] ?? { sessions: [], loading: false }
+        return { ...current, [contextKey]: { sessions: [detail.summary, ...listing.sessions.filter((item) => item.path !== detail.summary.path)], loading: false } }
+      })
+      setPendingAttachments([])
+      setLightboxImage(null)
+      setLiveThinking(null)
+      setDraft("")
+      setInteractionRequest(detail.interactionRequest ?? null)
+      setInteractionSubmitting(false)
+      interactionSubmittingRef.current = false
+      setRecoverySubmitting(false)
+      void loadModels(context, contextKey, detail.summary.path)
+    } catch (cause) {
+      if (activeWorktreeKeyRef.current === contextKey && activeSessionPathRef.current === sourcePath) {
+        setError(cause instanceof Error ? cause.message : "Could not fork this session")
+      }
+    } finally {
+      if (forkingMessageRef.current === message.id) {
+        forkingMessageRef.current = null
+        setForkingMessageId(null)
+      }
+    }
+  }, [loadModels])
+
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
@@ -891,6 +939,12 @@ export default function App() {
                 )}
               </div>
               {git && <span className="git-branch" title={`Current branch: ${git.branch}`}><GitBranch size={11} aria-hidden="true" /><span>{git.branch}</span></span>}
+              {session?.summary.forkedFrom && (
+                <span className="session-fork-source" title={`Source message ${session.summary.forkedFrom.sourceMessageId} in ${session.summary.forkedFrom.sourceSessionPath}`}>
+                  <GitFork size={11} aria-hidden="true" />
+                  <span>Forked from {compactLabel(session.summary.forkedFrom.sourceSessionName, 34)} · message {session.summary.forkedFrom.sourceMessageIndex} · {session.summary.forkedFrom.sourceMessageId}</span>
+                </span>
+              )}
             </div>
             <div className="conversation-header-actions">
               {activeProject && activeWorktree && (
@@ -980,6 +1034,8 @@ export default function App() {
               queuedRecoveryCount={session?.queuedMessages.length ?? 0}
               recoveryBusy={recoverySubmitting}
               onRecover={recoverSession}
+              onFork={session && !session.isStreaming && !session.isCompacting && !session.recovery && !recoverySubmitting ? forkSession : undefined}
+              forkingMessageId={forkingMessageId}
             />
           ) : (
             <div className="message-scroll-shell">

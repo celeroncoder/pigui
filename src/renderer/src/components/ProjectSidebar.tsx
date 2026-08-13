@@ -241,6 +241,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
                           <span className="session-title">{title}</span>
                           <span className="session-metadata" aria-hidden="true">
                             {!isLocal && <GitFork data-worktree-kind-icon="linked" size={14} />}
+                            {candidate.forkedFrom && <GitFork className="session-fork-icon" size={14} />}
                             {pullRequest && (
                               <span className={`pull-request-state ${pullRequest.state}`}>
                                 {pullRequest.state === "merged" ? <GitMerge size={14} /> : <GitPullRequest size={14} />}
