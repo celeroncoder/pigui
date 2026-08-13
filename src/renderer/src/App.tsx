@@ -2,7 +2,6 @@ import { FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTermi
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
-import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AskUserPanel } from "./components/AskUserPanel"
 import { BackgroundProcessesPane } from "./components/BackgroundProcessesPane"
 import { BrandMark } from "./components/BrandMark"
@@ -19,6 +18,7 @@ import gitDiffStyles from "./components/GitDiffPane.module.css"
 import { desktopApi } from "./lib/api"
 import { buildConversationItems, buildConversationPreviewLandmarks, filterUserMessagePreviewLandmarks, findLastUserTurnIndex, latestTransientStatus } from "./lib/conversation"
 import { applySessionRuntimeStatus } from "./lib/runtimeStatuses"
+import { createSessionEventBatcher, hasSessionDetailUpdate, latestSessionSummary, reduceInteractionRequestBatch, reduceLiveThinkingBatch, reduceSessionEventBatch, resetsInteractionSubmitting, shouldRefreshSubagents } from "./lib/sessionEventBatcher"
 import { compactLabel } from "./lib/text"
 
 const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
@@ -66,6 +66,9 @@ export default function App() {
   const activeProjectRef = useRef<Project | null>(null)
   const activeWorktreeRef = useRef<ProjectWorktree | null>(null)
   const activeWorktreeKeyRef = useRef<string | null>(null)
+  const gitPaneOpenRef = useRef(gitPaneOpen)
+  const sessionEventProcessorRef = useRef<(events: ReadonlyArray<SessionEvent>) => void>(() => undefined)
+  const subagentRefreshTimerRef = useRef<number | undefined>(undefined)
   const projectRequestRef = useRef(0)
   const gitRequestRef = useRef(0)
   const gitDiffRequestRef = useRef(0)
@@ -164,6 +167,10 @@ export default function App() {
   useEffect(() => {
     activeWorktreeRef.current = activeWorktree
   }, [activeWorktree])
+
+  useEffect(() => {
+    gitPaneOpenRef.current = gitPaneOpen
+  }, [gitPaneOpen])
 
   const loadModels = useCallback(async (context: WorktreeContext, contextKey: string, sessionPath: string) => {
     const requestId = ++modelRequestRef.current
@@ -377,84 +384,28 @@ export default function App() {
     return () => window.clearInterval(interval)
   }, [activeProject, activeWorktree, inspectSubagent, selectedSubagent, subagentPaneOpen])
 
-  useEffect(() => desktopApi.onSessionEvent((event: SessionEvent) => {
-    setSessionRuntimeStatuses((current) => applySessionRuntimeStatus(current, event))
-
-    if (event.type === "error") {
-      if (event.sessionPath && event.sessionPath !== activeSessionPathRef.current) return
-      setError(event.message)
-      return
-    }
-    if (event.type === "project-git") {
-      gitRequestRef.current += 1
-      const project = activeProjectRef.current
-      const worktree = activeWorktreeRef.current
-      if (!project || !worktree || worktree.path !== event.worktreePath) return
-      const updateWorktree = (current: ProjectWorktree) => current.path === event.worktreePath
-        ? event.git ? { ...current, branch: event.git.branch, git: event.git } : { ...current, git: undefined }
-        : current
-      const updateProject = (current: Project) => current.id === project.id ? { ...current, worktrees: current.worktrees.map(updateWorktree) } : current
-      setProjects((current) => current.map(updateProject))
-      setActiveProject((current) => current ? updateProject(current) : current)
-      setActiveWorktree((current) => current ? updateWorktree(current) : current)
-      if (gitPaneOpen) void loadGitDiff(project, worktree)
-      return
-    }
-    if (event.type === "session-started") {
-      const contextKey = `${event.context.projectId}:${event.context.worktreeId}`
-      if (activeWorktreeKeyRef.current !== contextKey || activeSessionPathRef.current !== null || pendingSessionStartRef.current !== event.requestId) return
-      const project = activeProjectRef.current
-      const worktree = activeWorktreeRef.current
-      pendingSessionStartRef.current = null
-      startedSessionRequestRef.current = event.requestId
-      activeSessionPathRef.current = event.detail.summary.path
-      setSession(event.detail)
-      setSessionRuntimeStatuses((current) => ({ ...current, [event.detail.summary.path]: event.detail.runtimeStatus }))
-      setSessionDraft(null)
-      setDraftBaseBranch(undefined)
-      setDraftContextLoading(false)
-      setDraftStarting(false)
-      setInteractionRequest(event.detail.interactionRequest ?? null)
-      setSessions((current) => [event.detail.summary, ...current.filter((item) => item.path !== event.detail.summary.path)])
-      if (project && worktree) {
-        setSessionsByWorktree((current) => {
-          const listing = current[contextKey] ?? { sessions: [], loading: false }
-          return { ...current, [contextKey]: { sessions: [event.detail.summary, ...listing.sessions.filter((item) => item.path !== event.detail.summary.path)], loading: false } }
-        })
-        void loadModels(event.context, contextKey, event.detail.summary.path)
-      }
-      return
-    }
+  const processSessionEvents = useCallback((events: ReadonlyArray<SessionEvent>) => {
     const activeSessionPath = activeSessionPathRef.current
-    if (event.sessionPath !== activeSessionPath) return
+    if (!activeSessionPath) return
 
-    if (event.type === "interaction-request") {
-      setInteractionRequest(event.request)
-      setInteractionSubmitting(false)
-      interactionSubmittingRef.current = false
-      return
-    }
-    if (event.type === "interaction-cleared") {
-      setInteractionRequest((current) => current?.requestId === event.requestId ? null : current)
+    setSessionRuntimeStatuses((current) => events.reduce(applySessionRuntimeStatus, current))
+    if (resetsInteractionSubmitting(activeSessionPath, events)) {
       setInteractionSubmitting(false)
       setRecoverySubmitting(false)
       interactionSubmittingRef.current = false
-      return
     }
-    if (event.type === "model-availability") {
-      setModelOptions(event.availability.models)
-      setModelAvailability(event.availability.status)
-      return
+    setLiveThinking((current) => reduceLiveThinkingBatch(current, activeSessionPath, events))
+    setInteractionRequest((current) => reduceInteractionRequestBatch(current, activeSessionPath, events))
+
+    const availability = events.findLast((event) => event.type === "model-availability" && event.sessionPath === activeSessionPath)
+    if (availability?.type === "model-availability") {
+      setModelOptions(availability.availability.models)
+      setModelAvailability(availability.availability.status)
     }
 
-    if (event.type === "session-state") {
-      setLiveThinking(null)
-      setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
-      setInteractionRequest(event.detail.interactionRequest ?? null)
-      setSessions((current) => [
-        event.detail.summary,
-        ...current.filter((item) => item.path !== event.detail.summary.path)
-      ])
+    const summary = latestSessionSummary(activeSessionPath, events)
+    if (summary) {
+      setSessions((current) => [summary, ...current.filter((item) => item.path !== summary.path)])
       const project = activeProjectRef.current
       const worktree = activeWorktreeRef.current
       if (project && worktree) {
@@ -462,46 +413,101 @@ export default function App() {
         const alreadyCataloged = sessionsByWorktreeRef.current[key]?.sessions.some((item) => !item.parentSessionPath) ?? false
         setSessionsByWorktree((current) => {
           const listing = current[key] ?? { sessions: [], loading: false }
-          return { ...current, [key]: { sessions: [event.detail.summary, ...listing.sessions.filter((item) => item.path !== event.detail.summary.path)], loading: false } }
+          return { ...current, [key]: { sessions: [summary, ...listing.sessions.filter((item) => item.path !== summary.path)], loading: false } }
         })
         if (!alreadyCataloged) void refreshPullRequests([{ project, worktree, key }])
       }
-      return
     }
-    if (event.type === "assistant-start") {
-      setLiveThinking(null)
+    if (hasSessionDetailUpdate(activeSessionPath, events)) {
+      setSession((current) => reduceSessionEventBatch(current, activeSessionPath, events))
     }
-    if (event.type === "text-delta") {
-      setLiveThinking(null)
+    if (shouldRefreshSubagents(activeSessionPath, events)) {
+      if (subagentRefreshTimerRef.current !== undefined) window.clearTimeout(subagentRefreshTimerRef.current)
+      subagentRefreshTimerRef.current = window.setTimeout(() => {
+        subagentRefreshTimerRef.current = undefined
+        const project = activeProjectRef.current
+        const worktree = activeWorktreeRef.current
+        if (!project || !worktree) return
+        const contextKey = worktreeKey(project, worktree)
+        void desktopApi.sessions.list(worktreeContext(project, worktree)).then((nextSessions) => {
+          if (activeWorktreeKeyRef.current === contextKey) {
+            setSessions(nextSessions)
+            storeWorktreeSessions(project, worktree, nextSessions)
+          }
+        })
+      }, 1200)
     }
-    if (event.type === "thinking-delta") {
-      setLiveThinking((current) => ({
-        messageId: event.messageId,
-        text: `${current?.messageId === event.messageId ? current.text : ""}${event.delta}`
-      }))
-      return
-    }
-    if (event.type === "tool-start") {
-      if (event.tool.name === "subagent_spawn") {
-        window.setTimeout(() => {
-          const project = activeProjectRef.current
-          const worktree = activeWorktreeRef.current
-          if (!project || !worktree) return
-          const contextKey = worktreeKey(project, worktree)
-          void desktopApi.sessions.list(worktreeContext(project, worktree)).then((nextSessions) => {
-            if (activeWorktreeKeyRef.current === contextKey) {
-              setSessions(nextSessions)
-              storeWorktreeSessions(project, worktree, nextSessions)
-            }
-          })
-        }, 1200)
+  }, [refreshPullRequests, storeWorktreeSessions])
+
+  sessionEventProcessorRef.current = processSessionEvents
+
+  useEffect(() => {
+    const batcher = createSessionEventBatcher(
+      (events) => sessionEventProcessorRef.current(events),
+      (callback) => window.requestAnimationFrame(callback),
+      (handle) => window.cancelAnimationFrame(handle)
+    )
+    const unsubscribe = desktopApi.onSessionEvent((event: SessionEvent) => {
+      setSessionRuntimeStatuses((current) => applySessionRuntimeStatus(current, event))
+      if (event.type === "error") {
+        if (event.sessionPath && event.sessionPath !== activeSessionPathRef.current) return
+        setError(event.message)
+        return
       }
+      if (event.type === "project-git") {
+        gitRequestRef.current += 1
+        const project = activeProjectRef.current
+        const worktree = activeWorktreeRef.current
+        if (!project || !worktree || worktree.path !== event.worktreePath) return
+        const updateWorktree = (current: ProjectWorktree) => current.path === event.worktreePath
+          ? event.git ? { ...current, branch: event.git.branch, git: event.git } : { ...current, git: undefined }
+          : current
+        const updateProject = (current: Project) => current.id === project.id ? { ...current, worktrees: current.worktrees.map(updateWorktree) } : current
+        setProjects((current) => current.map(updateProject))
+        setActiveProject((current) => current ? updateProject(current) : current)
+        setActiveWorktree((current) => current ? updateWorktree(current) : current)
+        if (gitPaneOpenRef.current) void loadGitDiff(project, worktree)
+        return
+      }
+      if (event.type === "session-started") {
+        const contextKey = `${event.context.projectId}:${event.context.worktreeId}`
+        if (activeWorktreeKeyRef.current !== contextKey || activeSessionPathRef.current !== null || pendingSessionStartRef.current !== event.requestId) return
+        const project = activeProjectRef.current
+        const worktree = activeWorktreeRef.current
+        pendingSessionStartRef.current = null
+        startedSessionRequestRef.current = event.requestId
+        activeSessionPathRef.current = event.detail.summary.path
+        setSession(event.detail)
+        setSessionRuntimeStatuses((current) => ({ ...current, [event.detail.summary.path]: event.detail.runtimeStatus }))
+        setSessionDraft(null)
+        setDraftBaseBranch(undefined)
+        setDraftContextLoading(false)
+        setDraftStarting(false)
+        setInteractionRequest(event.detail.interactionRequest ?? null)
+        setSessions((current) => [event.detail.summary, ...current.filter((item) => item.path !== event.detail.summary.path)])
+        if (project && worktree) {
+          setSessionsByWorktree((current) => {
+            const listing = current[contextKey] ?? { sessions: [], loading: false }
+            return { ...current, [contextKey]: { sessions: [event.detail.summary, ...listing.sessions.filter((item) => item.path !== event.detail.summary.path)], loading: false } }
+          })
+          void loadModels(event.context, contextKey, event.detail.summary.path)
+        }
+        return
+      }
+      // Avoid queueing irrelevant or stale events; the batch reducer also
+      // checks the active path after the next animation frame.
+      if (!("sessionPath" in event) || event.sessionPath !== activeSessionPathRef.current) return
+      batcher.enqueue(event)
+    })
+    return () => {
+      batcher.cancel()
+      unsubscribe()
     }
-    if (event.type === "agent-status") {
-      if (!event.isStreaming) setLiveThinking(null)
-    }
-    setSession((current) => reduceSessionEvent(current, activeSessionPathRef.current, event))
-  }), [gitPaneOpen, loadGitDiff, loadModels, refreshPullRequests, storeWorktreeSessions])
+  }, [loadGitDiff])
+
+  useEffect(() => () => {
+    if (subagentRefreshTimerRef.current !== undefined) window.clearTimeout(subagentRefreshTimerRef.current)
+  }, [])
 
   useEffect(() => {
     if (!lightboxImage) return
