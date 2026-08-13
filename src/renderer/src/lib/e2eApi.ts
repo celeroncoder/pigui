@@ -91,6 +91,13 @@ const SessionDetailSchema = Schema.Struct({
   isCompacting: Schema.Boolean
 })
 const ModelOptionSchema = Schema.Struct({ provider: Schema.String, id: Schema.String, name: Schema.String })
+const PiCommandSchema = Schema.Struct({
+  kind: Schema.Literals(["prompt", "skill"]),
+  name: Schema.String,
+  description: Schema.String,
+  argumentHint: Schema.optionalKey(Schema.String),
+  scope: Schema.Literals(["user", "project", "other"])
+})
 const FixtureSchema = Schema.Struct({
   generatedAt: Schema.Number,
   activeWorktreeId: Schema.String,
@@ -98,6 +105,7 @@ const FixtureSchema = Schema.Struct({
   sessions: Schema.Array(SessionSummarySchema),
   details: Schema.Array(SessionDetailSchema),
   models: Schema.Array(ModelOptionSchema),
+  commands: Schema.Array(PiCommandSchema),
   interaction: Schema.optionalKey(Schema.Struct({
     sessionPath: Schema.String,
     request: AskUserInteractionRequestSchema
@@ -302,6 +310,7 @@ export const createE2eApi = (): PiDesktopApi => {
       steerQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
       abort: async () => undefined,
       models: async () => ({ models: (await loadFixture()).models, status: "ready" }),
+      commands: async () => (await loadFixture()).commands,
       setModel: async (_context, sessionPath, provider, modelId) => {
         const data = await loadFixture()
         const current = data.details.find((item) => item.summary.path === sessionPath)
