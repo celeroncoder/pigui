@@ -241,7 +241,7 @@ export const createE2eApi = (): PiDesktopApi => {
       removeQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
       steerQueuedMessage: async () => Promise.reject(new Error("Queue controls are tested in Electron, not the browser review harness")),
       abort: async () => undefined,
-      models: async () => (await loadFixture()).models,
+      models: async () => ({ models: (await loadFixture()).models, status: "ready" }),
       setModel: async (_context, sessionPath, provider, modelId) => {
         const data = await loadFixture()
         const current = data.details.find((item) => item.summary.path === sessionPath)

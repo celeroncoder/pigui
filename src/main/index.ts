@@ -73,12 +73,6 @@ const enrichProject = Effect.fn("enrichProject")(function*(project: Project) {
   return { ...project, worktrees }
 })
 
-const listProjectsWithGit = Effect.fn("listProjectsWithGit")(function*() {
-  const store = yield* ProjectStore
-  const projects = yield* store.list()
-  return yield* Effect.forEach(projects, enrichProject, { concurrency: 4 })
-})
-
 const appIconPath = join(__dirname, "../renderer/pi-icon.png")
 
 const createWindow = () => {
@@ -123,7 +117,13 @@ const createWindow = () => {
 }
 
 const registerIpc = () => {
-  ipcMain.handle(IpcChannels.listProjects, () => run(listProjectsWithGit()))
+  // Project records are local persisted state. Return them before auxiliary Git
+  // inspection so startup can paint the workspace shell without waiting on a
+  // project probe; the renderer refreshes the active project's Git state later.
+  ipcMain.handle(IpcChannels.listProjects, () => run(Effect.gen(function*() {
+    const store = yield* ProjectStore
+    return yield* store.list()
+  })))
 
   ipcMain.handle(IpcChannels.addProject, () => run(Effect.gen(function*() {
     const result = yield* Effect.tryPromise({

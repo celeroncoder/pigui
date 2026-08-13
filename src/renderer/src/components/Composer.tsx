@@ -1,7 +1,7 @@
 import { ArrowUp, Check, ChevronDown, Folder, GitBranch, GitFork, HardDrive, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { parseImagePathReferences } from "../../../shared/attachments"
-import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelOption, QueueDelivery, QueuedMessage, SessionDraftContext, ThinkingLevel } from "../../../shared/contracts"
+import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelAvailability, ModelOption, QueueDelivery, QueuedMessage, SessionDraftContext, ThinkingLevel } from "../../../shared/contracts"
 import { ContextUsageDonut } from "./ContextUsageDonut"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
@@ -156,6 +156,7 @@ interface ComposerProps {
   readonly model: string
   readonly modelProvider?: string
   readonly modelOptions: ReadonlyArray<ModelOption>
+  readonly modelAvailability: ModelAvailability["status"]
   readonly thinkingLevel: ThinkingLevel
   readonly availableThinkingLevels: ReadonlyArray<ThinkingLevel>
   readonly queuedMessages: ReadonlyArray<QueuedMessage>
@@ -187,6 +188,7 @@ export function Composer({
   model,
   modelProvider,
   modelOptions,
+  modelAvailability,
   thinkingLevel,
   availableThinkingLevels,
   queuedMessages,
@@ -345,13 +347,16 @@ export function Composer({
             </button>
             {openPicker === "model" && (
               <div className="model-menu" role="menu" aria-label="Available models">
-                <span className="model-menu-label">Available models</span>
-                {modelOptions.length === 0 && <span className="model-menu-empty">No authenticated models found</span>}
+                <span className="model-menu-label">{modelAvailability === "pending" ? "Checking providers…" : "Available models"}</span>
+                {modelAvailability === "pending" && <span className="model-menu-empty">Using cached models while Pi checks provider availability.</span>}
+                {modelAvailability === "error" && <span className="model-menu-empty">Provider availability could not be refreshed. Cached models remain available.</span>}
+                {modelAvailability === "ready" && modelOptions.length === 0 && <span className="model-menu-empty">No authenticated models found</span>}
                 {modelOptions.map((option) => (
                   <button
                     type="button"
                     role="menuitem"
                     key={`${option.provider}/${option.id}`}
+                    disabled={modelAvailability === "pending"}
                     onClick={() => {
                       onModelChange(option)
                       setOpenPicker(null)

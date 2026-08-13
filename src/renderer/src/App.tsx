@@ -1,6 +1,6 @@
 import { CircleDashed, FolderPlus, GitBranch, PanelRightOpen, RefreshCw, Sparkles, SquareTerminal, X } from "lucide-react"
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
+import type { AskUserInteractionAnswer, AskUserInteractionRequest, AttachmentPreview, ChatMessage, GitDiff, GitHubBranchPullRequest, GitStatus, ImageAttachment, ModelAvailability, ModelOption, Project, ProjectWorktree, QueueDelivery, QueuedMessage, SessionDetail, SessionDraftContext, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, WorktreeContext } from "../../shared/contracts"
 import { normalizeImageReferences } from "../../shared/attachments"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AskUserPanel } from "./components/AskUserPanel"
@@ -24,6 +24,7 @@ import { compactLabel } from "./lib/text"
 const GitDiffPane = lazy(() => import("./components/GitDiffPane").then(({ GitDiffPane: Pane }) => ({ default: Pane })))
 const worktreeContext = (project: Project, worktree: ProjectWorktree): WorktreeContext => ({ projectId: project.id, worktreeId: worktree.id })
 const worktreeKey = (project: Project, worktree: ProjectWorktree) => `${project.id}:${worktree.id}`
+const afterFirstPaint = () => new Promise<void>((resolve) => window.requestAnimationFrame(() => window.setTimeout(resolve, 0)))
 
 export default function App() {
   const [projects, setProjects] = useState<ReadonlyArray<Project>>([])
@@ -49,6 +50,7 @@ export default function App() {
   const [subagentDetail, setSubagentDetail] = useState<SessionDetail | null>(null)
   const [subagentLoading, setSubagentLoading] = useState(false)
   const [modelOptions, setModelOptions] = useState<ReadonlyArray<ModelOption>>([])
+  const [modelAvailability, setModelAvailability] = useState<ModelAvailability["status"]>("ready")
   const [draft, setDraft] = useState("")
   const [pendingAttachments, setPendingAttachments] = useState<ReadonlyArray<ImageAttachment>>([])
   const [lightboxImage, setLightboxImage] = useState<AttachmentPreview | null>(null)
@@ -165,11 +167,18 @@ export default function App() {
   const loadModels = useCallback(async (context: WorktreeContext, contextKey: string, sessionPath: string) => {
     const requestId = ++modelRequestRef.current
     setModelOptions([])
+    setModelAvailability("pending")
     try {
-      const options = await desktopApi.sessions.models(context, sessionPath)
-      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setModelOptions(options)
+      const availability = await desktopApi.sessions.models(context, sessionPath)
+      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
+        setModelOptions(availability.models)
+        setModelAvailability(availability.status)
+      }
     } catch {
-      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) setModelOptions([])
+      if (requestId === modelRequestRef.current && activeSessionPathRef.current === sessionPath && activeWorktreeKeyRef.current === contextKey) {
+        setModelOptions([])
+        setModelAvailability("error")
+      }
     }
   }, [])
 
@@ -195,6 +204,7 @@ export default function App() {
     setLiveThinking(null)
     setDraft("")
     setModelOptions([])
+    setModelAvailability("ready")
     setError(null)
     setInteractionRequest(null)
     setInteractionSubmitting(false)
@@ -266,7 +276,7 @@ export default function App() {
     }
   }, [])
 
-  const selectWorktree = useCallback(async (project: Project, worktree: ProjectWorktree, preferredSessionPath?: string) => {
+  const selectWorktree = useCallback(async (project: Project, worktree: ProjectWorktree, preferredSessionPath?: string, deferSessionOpen = false) => {
     const contextKey = worktreeKey(project, worktree)
     const requestId = ++projectRequestRef.current
     ++draftContextRequestRef.current
@@ -299,6 +309,7 @@ export default function App() {
     setDraft("")
     setSessions([])
     setModelOptions([])
+    setModelAvailability("ready")
     setInteractionRequest(null)
     setInteractionSubmitting(false)
     interactionSubmittingRef.current = false
@@ -312,7 +323,11 @@ export default function App() {
       const first = nextSessions.find((candidate) => candidate.path === preferredSessionPath)
         ?? nextSessions.find((candidate) => !candidate.name.toLocaleLowerCase().startsWith("subagent:"))
         ?? nextSessions[0]
-      if (first) await openSession(project, worktree, first)
+      if (first) {
+        if (deferSessionOpen) await afterFirstPaint()
+        if (requestId !== projectRequestRef.current || activeWorktreeKeyRef.current !== contextKey) return
+        await openSession(project, worktree, first)
+      }
     } catch (cause) {
       if (requestId === projectRequestRef.current && activeWorktreeKeyRef.current === contextKey) {
         setError(cause instanceof Error ? cause.message : "Could not load project sessions")
@@ -333,7 +348,7 @@ export default function App() {
       void loadSessionCatalog(items)
       const first = items[0]
       const worktree = first?.worktrees[0]
-      if (first && worktree) void selectWorktree(first, worktree)
+      if (first && worktree) void selectWorktree(first, worktree, undefined, true)
     }).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Could not load projects")
     })
@@ -420,6 +435,11 @@ export default function App() {
       setInteractionRequest((current) => current?.requestId === event.requestId ? null : current)
       setInteractionSubmitting(false)
       interactionSubmittingRef.current = false
+      return
+    }
+    if (event.type === "model-availability") {
+      setModelOptions(event.availability.models)
+      setModelAvailability(event.availability.status)
       return
     }
 
@@ -950,9 +970,10 @@ export default function App() {
             disabledReason={interactionRequest ? "Answer Pi above to continue…" : draftStarting ? "Creating the Pi session…" : draftContextLoading ? "Preparing worktree context…" : undefined}
             attachments={pendingAttachments}
             isStreaming={session?.isStreaming ?? false}
-            model={session?.model.split("/").at(-1) ?? (sessionDraft ? "Pi default" : "Choose model")}
+            model={session?.model.split("/").at(-1) ?? (sessionDraft ? "Pi default" : modelAvailability === "pending" ? "Checking providers…" : "Choose model")}
             modelProvider={session?.model.includes("/") ? session.model.split("/")[0] : undefined}
             modelOptions={modelOptions}
+            modelAvailability={modelAvailability}
             thinkingLevel={session?.thinkingLevel ?? "off"}
             availableThinkingLevels={session?.availableThinkingLevels ?? []}
             queuedMessages={session?.queuedMessages ?? []}

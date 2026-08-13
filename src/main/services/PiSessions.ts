@@ -12,7 +12,7 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
@@ -20,6 +20,7 @@ import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
 import { projectToolOutput } from "./PiEventProjection"
 import { releaseInactiveEntriesExcept } from "./PiSessionLifecycle"
+import { ProviderAvailability } from "./ProviderAvailability"
 import {
   type NativePromptQueue,
   prioritizeQueuedMessageForSteering,
@@ -38,6 +39,8 @@ interface ActiveSession {
   readonly session: AgentSession
   unsubscribe: () => void
   readonly interaction: AskUserInteractionBridge
+  readonly providerAvailability: ProviderAvailability
+  modelAvailability: ModelAvailability
   readonly backgroundProcesses: Map<string, BackgroundProcess>
   readonly pendingTools: Map<string, { readonly name: string; readonly args: unknown }>
   readonly queuedImages: Map<string, ReadonlyArray<PiImageAttachment>>
@@ -452,7 +455,7 @@ export class PiSessions extends Context.Service<PiSessions, {
   readonly removeQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
   readonly steerQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
   readonly abort: (cwd: string, sessionPath: string) => Effect.Effect<void, AppError>
-  readonly models: (cwd: string, sessionPath: string) => Effect.Effect<ReadonlyArray<ModelOption>, AppError>
+  readonly models: (cwd: string, sessionPath: string) => Effect.Effect<ModelAvailability, AppError>
   readonly setModel: (cwd: string, sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
   readonly setThinkingLevel: (cwd: string, sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
   readonly answerInteraction: (cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
@@ -529,6 +532,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const releaseActiveSession = async (active: ActiveSession) => {
     active.disposed = true
     cancelGitRefresh(active)
+    active.providerAvailability.dispose()
     active.interaction.dispose()
     active.unsubscribe()
     await active.runtime.dispose()
@@ -710,11 +714,14 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       return yield* Effect.fail(AppError.make({ operation: "open Pi session", message: "Pi did not create a persistent session file" }))
     }
 
+    const providerAvailability = new ProviderAvailability(runtime.session.modelRuntime)
     const active: ActiveSession = {
       cwd,
       runtime,
       session: runtime.session,
       interaction,
+      providerAvailability,
+      modelAvailability: providerAvailability.current,
       backgroundProcesses: historicalBackgroundProcesses(manager),
       pendingTools: new Map(),
       queuedImages: new Map(),
@@ -732,6 +739,11 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       runtimeStatus: runtime.session.isStreaming ? "running" : "done",
       unsubscribe: () => undefined
     }
+    providerAvailability.setOnUpdate((availability) => {
+      active.modelAvailability = availability
+      void Effect.runPromise(bus.emit({ type: "model-availability", sessionPath, availability })).catch(() => undefined)
+    })
+    void providerAvailability.refresh()
     active.liveDetail = snapshotFromActive(active)
 
     active.unsubscribe = runtime.session.subscribe((event) => {
@@ -1058,8 +1070,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     models: Effect.fn("PiSessions.models")(function*(cwd: string, sessionPath: string) {
       const active = yield* activeForWorktree(cwd, sessionPath, "list models")
-      const models = yield* Effect.tryPromise({ try: () => active.session.modelRuntime.getAvailable(), catch: toAppError("list models") })
-      return models.map((model) => ({ provider: model.provider, id: model.id, name: model.name }))
+      return active.modelAvailability
     }),
     setModel: Effect.fn("PiSessions.setModel")(function*(cwd: string, sessionPath: string, provider: string, modelId: string) {
       const active = yield* activeForWorktree(cwd, sessionPath, "set model")
