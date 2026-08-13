@@ -8,6 +8,7 @@ import { BrandMark } from "./components/BrandMark"
 import { Composer } from "./components/Composer"
 import { ConversationTimeline } from "./components/ConversationTimeline"
 import { GitHubWorkflowDialog } from "./components/GitHubWorkflowDialog"
+import { HomeDashboard, type ProjectHomeData } from "./components/HomeDashboard"
 // import { Inspector } from "./components/Inspector"
 import { ProjectSidebar, type WorktreeSessionList } from "./components/ProjectSidebar"
 import { ProviderLogo } from "./components/ProviderLogo"
@@ -43,6 +44,8 @@ export default function App() {
   const [subagentPaneOpen, setSubagentPaneOpen] = useState(false)
   const [backgroundPaneOpen, setBackgroundPaneOpen] = useState(false)
   const [gitPaneOpen, setGitPaneOpen] = useState(false)
+  const [homeData, setHomeData] = useState<Readonly<Record<string, ProjectHomeData>>>({})
+  const [loadingProjects, setLoadingProjects] = useState(true)
   const [gitDiff, setGitDiff] = useState<GitDiff | null>(null)
   const [gitDiffLoading, setGitDiffLoading] = useState(false)
   const [githubOpen, setGitHubOpen] = useState(false)
@@ -75,6 +78,7 @@ export default function App() {
   const projectRequestRef = useRef(0)
   const gitRequestRef = useRef(0)
   const gitDiffRequestRef = useRef(0)
+  const homeRequestRef = useRef(0)
   const sessionRequestRef = useRef(0)
   const modelRequestRef = useRef(0)
   const commandRequestRef = useRef(0)
@@ -310,6 +314,7 @@ export default function App() {
     ++sessionRequestRef.current
     ++modelRequestRef.current
     ++commandRequestRef.current
+    ++homeRequestRef.current
     activeWorktreeKeyRef.current = contextKey
     activeProjectRef.current = project
     activeWorktreeRef.current = worktree
@@ -372,17 +377,74 @@ export default function App() {
     if (worktree) void selectWorktree(project, worktree)
   }, [selectWorktree])
 
+  const loadHomeDashboard = useCallback(async (items: ReadonlyArray<Project>) => {
+    const requestId = ++homeRequestRef.current
+    const contexts = items.flatMap((project) => project.worktrees.map((worktree) => ({ project, worktree, key: worktreeKey(project, worktree) })))
+    setHomeData(Object.fromEntries(contexts.map(({ project, worktree, key }) => [key, { project, worktree, sessions: [], metrics: null, loading: true }])))
+    await Promise.all(contexts.map(async ({ project, worktree, key }) => {
+      try {
+        const context = worktreeContext(project, worktree)
+        const [nextSessions, metrics] = await Promise.all([
+          desktopApi.sessions.list(context),
+          desktopApi.projects.metrics(context)
+        ])
+        if (requestId !== homeRequestRef.current || activeWorktreeKeyRef.current !== null) return
+        setHomeData((current) => ({
+          ...current,
+          [key]: { project, worktree, sessions: nextSessions.filter((candidate) => !candidate.parentSessionPath), metrics, loading: false }
+        }))
+      } catch (cause) {
+        if (requestId !== homeRequestRef.current || activeWorktreeKeyRef.current !== null) return
+        setHomeData((current) => ({
+          ...current,
+          [key]: { project, worktree, sessions: [], metrics: null, loading: false, error: cause instanceof Error ? cause.message : "Could not load worktree activity" }
+        }))
+      }
+    }))
+  }, [])
+
+  const openHome = useCallback(() => {
+    ++projectRequestRef.current
+    ++sessionRequestRef.current
+    ++modelRequestRef.current
+    ++commandRequestRef.current
+    ++draftContextRequestRef.current
+    activeProjectRef.current = null
+    activeWorktreeRef.current = null
+    activeWorktreeKeyRef.current = null
+    activeSessionPathRef.current = null
+    setActiveProject(null)
+    setActiveWorktree(null)
+    setSession(null)
+    setSessionDraft(null)
+    setSessions([])
+    setModelOptions([])
+    setCommands([])
+    setPendingAttachments([])
+    setLightboxImage(null)
+    setInteractionRequest(null)
+    setSubagentPaneOpen(false)
+    setBackgroundPaneOpen(false)
+    setGitPaneOpen(false)
+    setGitDiff(null)
+    setError(null)
+    void loadHomeDashboard(projectsRef.current)
+  }, [loadHomeDashboard])
+
   useEffect(() => {
     void desktopApi.projects.list().then((items) => {
       setProjects(items)
       void loadSessionCatalog(items)
-      const first = items[0]
-      const worktree = first?.worktrees[0]
-      if (first && worktree) void selectWorktree(first, worktree, undefined, true)
+      activeProjectRef.current = null
+      activeWorktreeRef.current = null
+      activeWorktreeKeyRef.current = null
+      void loadHomeDashboard(items)
     }).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Could not load projects")
+    }).finally(() => {
+      setLoadingProjects(false)
     })
-  }, [loadSessionCatalog, selectWorktree])
+  }, [loadHomeDashboard, loadSessionCatalog])
 
   useEffect(() => {
     ++subagentRequestRef.current
@@ -911,7 +973,7 @@ export default function App() {
         <div className="titlebar-leading" aria-hidden="true" />
         <div className="titlebar-dither" aria-hidden="true" />
         <div className="titlebar-brand"><BrandMark size={20} /><span>Pi</span></div>
-        <div className="titlebar-center">{activeProject && activeWorktree ? `${activeProject.name} · ${activeWorktree.branch}` : "Desktop"}</div>
+        <div className="titlebar-center">{activeProject && activeWorktree ? `${activeProject.name} · ${activeWorktree.branch}` : "Home"}</div>
         <div className="titlebar-actions" />
       </header>
 
@@ -925,12 +987,13 @@ export default function App() {
           activeSessionPath={session?.summary.path ?? null}
           pullRequestsByWorktree={pullRequestsByWorktree}
           onSelectProject={selectProject}
+          onOpenHome={openHome}
           onSelectSession={(project, worktree, summary) => void selectWorktree(project, worktree, summary.path)}
           onAddProject={() => void addProject()}
           onNewSession={(project, worktree) => void newSession(project, worktree)}
         />
 
-        <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
+        {activeProject ? <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject && activeWorktree ? `${activeProject.name} / ${activeWorktree.name}` : "Workspace"}</span>
@@ -1169,7 +1232,16 @@ export default function App() {
             onSteerQueuedMessage={steerQueuedMessage}
             onAbort={abort}
           />
-        </main>
+        </main> : (
+          <HomeDashboard
+            data={Object.values(homeData)}
+            loadingProjects={loadingProjects}
+            onRefresh={() => void loadHomeDashboard(projects)}
+            onAddProject={() => void addProject()}
+            onOpenProject={(project, worktree) => void selectWorktree(project, worktree)}
+            onOpenSession={(project, worktree, summary) => void selectWorktree(project, worktree, summary.path)}
+          />
+        )}
 
         {subagentPaneOpen && !backgroundPaneOpen && linkedSubagents.length > 0 && activeProject && activeWorktree && (
           <SubagentPane

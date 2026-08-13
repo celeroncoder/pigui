@@ -25,6 +25,38 @@ export interface GitDiff {
   readonly omittedFiles: number
 }
 
+export interface TokenUsageTotals {
+  readonly input: number
+  readonly output: number
+  readonly cacheRead: number
+  readonly cacheWrite: number
+  readonly total: number
+}
+
+export interface ModelUsageMetric extends TokenUsageTotals {
+  readonly model: string
+  readonly sessions: number
+}
+
+export interface FailureReasonMetric {
+  readonly reason: string
+  readonly count: number
+}
+
+export interface ProjectMetrics {
+  readonly generatedAt: number
+  readonly sessionCount: number
+  readonly completedSessions: number
+  readonly successfulSessions: number
+  readonly failedSessions: number
+  readonly incompleteSessions: number
+  readonly successRate: number | null
+  readonly averageCompletionMs: number | null
+  readonly tokenUsage: TokenUsageTotals
+  readonly modelUsage: ReadonlyArray<ModelUsageMetric>
+  readonly failureReasons: ReadonlyArray<FailureReasonMetric>
+}
+
 export type GitHubPullRequestState = "mergeable" | "conflict" | "pending" | "merged"
 
 export interface GitHubBranchPullRequest {
@@ -298,6 +330,7 @@ export interface PiDesktopApi {
     readonly refreshGit: (context: WorktreeContext) => Promise<GitStatus | undefined>
     readonly diff: (context: WorktreeContext) => Promise<GitDiff | undefined>
     readonly sessionDraft: (context: WorktreeContext) => Promise<SessionDraftContext>
+    readonly metrics: (context: WorktreeContext) => Promise<ProjectMetrics>
   }
   readonly attachments: {
     readonly save: (bytes: Uint8Array, name?: string, mimeType?: string) => Promise<ImageAttachment>
@@ -336,6 +369,7 @@ export const IpcChannels = {
   refreshProjectGit: "projects:refresh-git",
   gitDiff: "projects:git-diff",
   sessionDraft: "projects:session-draft",
+  projectMetrics: "projects:metrics",
   listSessions: "sessions:list",
   startSession: "sessions:start",
   forkSession: "sessions:fork",

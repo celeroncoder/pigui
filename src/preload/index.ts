@@ -18,7 +18,8 @@ const api: PiDesktopApi = {
     remove: (projectId) => ipcRenderer.invoke(IpcChannels.removeProject, projectId),
     refreshGit: (context) => ipcRenderer.invoke(IpcChannels.refreshProjectGit, context),
     diff: (context) => ipcRenderer.invoke(IpcChannels.gitDiff, context),
-    sessionDraft: (context) => ipcRenderer.invoke(IpcChannels.sessionDraft, context)
+    sessionDraft: (context) => ipcRenderer.invoke(IpcChannels.sessionDraft, context),
+    metrics: (context) => ipcRenderer.invoke(IpcChannels.projectMetrics, context)
   },
   sessions: {
     list: (context) => ipcRenderer.invoke(IpcChannels.listSessions, context),

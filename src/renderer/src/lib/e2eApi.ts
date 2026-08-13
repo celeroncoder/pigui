@@ -98,6 +98,28 @@ const PiCommandSchema = Schema.Struct({
   argumentHint: Schema.optionalKey(Schema.String),
   scope: Schema.Literals(["user", "project", "other"])
 })
+const TokenUsageSchema = Schema.Struct({ input: Schema.Number, output: Schema.Number, cacheRead: Schema.Number, cacheWrite: Schema.Number, total: Schema.Number })
+const ProjectMetricsSchema = Schema.Struct({
+  generatedAt: Schema.Number,
+  sessionCount: Schema.Number,
+  completedSessions: Schema.Number,
+  successfulSessions: Schema.Number,
+  failedSessions: Schema.Number,
+  incompleteSessions: Schema.Number,
+  successRate: Schema.Union([Schema.Number, Schema.Null]),
+  averageCompletionMs: Schema.Union([Schema.Number, Schema.Null]),
+  tokenUsage: TokenUsageSchema,
+  modelUsage: Schema.Array(Schema.Struct({
+    model: Schema.String,
+    sessions: Schema.Number,
+    input: Schema.Number,
+    output: Schema.Number,
+    cacheRead: Schema.Number,
+    cacheWrite: Schema.Number,
+    total: Schema.Number
+  })),
+  failureReasons: Schema.Array(Schema.Struct({ reason: Schema.String, count: Schema.Number }))
+})
 const FixtureSchema = Schema.Struct({
   generatedAt: Schema.Number,
   activeWorktreeId: Schema.String,
@@ -106,6 +128,7 @@ const FixtureSchema = Schema.Struct({
   details: Schema.Array(SessionDetailSchema),
   models: Schema.Array(ModelOptionSchema),
   commands: Schema.Array(PiCommandSchema),
+  metrics: ProjectMetricsSchema,
   interaction: Schema.optionalKey(Schema.Struct({
     sessionPath: Schema.String,
     request: AskUserInteractionRequestSchema
@@ -236,7 +259,8 @@ export const createE2eApi = (): PiDesktopApi => {
           ...(worktree.kind === "linked" ? { defaultBaseBranch: "origin/main" } : {}),
           setupEnvironment: { name: "E2E", configPath: `${worktree.path}/.codex/environments/environment.toml` }
         }
-      }
+      },
+      metrics: async () => (await loadFixture()).metrics
     },
     sessions: {
       list: async (context) => {

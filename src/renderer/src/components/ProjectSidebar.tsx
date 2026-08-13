@@ -1,4 +1,4 @@
-import { ChevronDown, CircleAlert, CircleDashed, CirclePause, FolderGit2, FolderPlus, GitBranch, GitFork, GitMerge, GitPullRequest, HardDrive, MessageCircleQuestionMark, MoreHorizontal, SquarePen } from "lucide-react"
+import { ChevronDown, CircleAlert, CircleDashed, CirclePause, FolderGit2, FolderPlus, GitBranch, GitFork, GitMerge, GitPullRequest, HardDrive, Home, MessageCircleQuestionMark, MoreHorizontal, SquarePen } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import type { GitHubBranchPullRequest, Project, ProjectWorktree, SessionRuntimeStatus, SessionSummary } from "../../../shared/contracts"
@@ -18,6 +18,7 @@ interface ProjectSidebarProps {
   readonly activeWorktree: ProjectWorktree | null
   readonly activeSessionPath: string | null
   readonly onSelectProject: (project: Project) => void
+  readonly onOpenHome: () => void
   readonly pullRequestsByWorktree: Readonly<Record<string, GitHubBranchPullRequest | null | undefined>>
   readonly onSelectSession: (project: Project, worktree: ProjectWorktree, session: SessionSummary) => void
   readonly onAddProject: () => void
@@ -51,6 +52,7 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
     activeWorktree,
     activeSessionPath,
     onSelectProject,
+    onOpenHome,
     pullRequestsByWorktree,
     onSelectSession,
     onAddProject,
@@ -98,6 +100,10 @@ export function ProjectSidebar(props: ProjectSidebarProps) {
 
   return (
     <aside className="project-sidebar" aria-label="Projects and sessions">
+      <button className={`home-row ${activeProject === null ? "active" : ""}`} type="button" onClick={onOpenHome} aria-current={activeProject === null ? "page" : undefined}>
+        <Home size={15} aria-hidden="true" />
+        <span>Home</span>
+      </button>
       <div className="section-label-row">
         <span className="section-label">Repositories</span>
         <button className="mini-button" type="button" onClick={onAddProject} aria-label="Add Git worktree">

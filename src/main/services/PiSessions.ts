@@ -12,7 +12,7 @@ import { normalizeImageReferences, parseImagePathReferences } from "../../shared
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, PiCommand, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, PiCommand, ProjectMetrics, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
@@ -21,6 +21,7 @@ import { GitContext } from "./GitContext"
 import { projectToolOutput } from "./PiEventProjection"
 import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
 import { ProviderAvailability } from "./ProviderAvailability"
+import { aggregateProjectMetrics, telemetryFromSession } from "./ProjectMetrics"
 import { interruptedTransportReason, lastUserPrompt, recoveryAfterReopen, recoveryPrompt } from "./SessionRecovery"
 import {
   type NativePromptQueue,
@@ -509,6 +510,7 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
 
 export class PiSessions extends Context.Service<PiSessions, {
   readonly list: (cwd: string) => Effect.Effect<ReadonlyArray<SessionSummary>, AppError>
+  readonly metrics: (cwd: string) => Effect.Effect<ProjectMetrics, AppError>
   readonly create: (cwd: string, baseBranch?: string) => Effect.Effect<SessionDetail, AppError>
   readonly fork: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
@@ -1023,6 +1025,22 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const parentByChild = inferSubagentParents(projectCwd, infos)
       return infos.map((info) => summaryFromInfo(info, parentByChild.get(info.path)))
     }),
+    metrics: Effect.fn("PiSessions.metrics")(function*(cwd: string) {
+      const projectCwd = canonicalPath(cwd)
+      const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("list Pi session metrics") })
+      const infos = listed.filter((info) => canonicalPath(info.cwd || projectCwd) === projectCwd)
+      const telemetry = yield* Effect.forEach(infos, (info) => Effect.try({
+        try: () => {
+          const active = activeSessions.get(canonicalPath(info.path))
+          const manager = active?.session.sessionManager ?? SessionManager.open(info.path, undefined, projectCwd)
+          const inProgress = active ? active.session.isStreaming || active.pendingPromptStarts > 0 : false
+          return telemetryFromSession(manager, inProgress)
+        },
+        catch: toAppError("read Pi session metrics")
+      }), { concurrency: 4 })
+      return aggregateProjectMetrics(telemetry)
+    }),
+
     create: Effect.fn("PiSessions.create")(function*(cwd: string, baseBranch?: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
         yield* lifecycleGate.ensureAvailable("create Pi session")
