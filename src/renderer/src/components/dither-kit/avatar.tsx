@@ -65,8 +65,8 @@ function avatarModel(
     mirrorProp === "auto" ? drawnVertical : mirrorProp === "vertical"
   const hue = hueProp ?? drawnHue
 
-  const on = new Array<boolean>(GRID * GRID)
-  const density = new Array<number>(GRID * GRID)
+  const on = Array.from<boolean>({ length: GRID * GRID })
+  const density = Array.from<number>({ length: GRID * GRID })
   for (let r = 0; r < GRID; r++) {
     for (let c = 0; c < GRID; c++) {
       // Fold across the chosen axis: left/right symmetric ("horizontal"

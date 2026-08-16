@@ -1,20 +1,35 @@
+import { Schema } from "effect"
 import type { SessionRecovery, SessionRecoveryAction } from "../../shared/contracts"
 
-interface RecoveryMessage {
-  readonly role?: unknown
-  readonly content?: unknown
-  readonly stopReason?: unknown
-  readonly errorMessage?: unknown
-}
+const RecoveryContentBlockSchema = Schema.Struct({
+  type: Schema.String,
+  text: Schema.optionalKey(Schema.String)
+})
 
-const messageText = (content: unknown): string | undefined => {
-  if (typeof content === "string") return content.trim() || undefined
-  if (!Array.isArray(content)) return undefined
-  const text = content.flatMap((block) => {
-    if (typeof block !== "object" || block === null || !("type" in block) || !("text" in block)) return []
-    return block.type === "text" && typeof block.text === "string" ? [block.text] : []
-  }).join("\n").trim()
-  return text || undefined
+const isString = Schema.is(Schema.String)
+
+const MessageContentSchema = Schema.Union([
+  Schema.String,
+  Schema.Array(RecoveryContentBlockSchema)
+])
+
+export const RecoveryMessageSchema = Schema.Struct({
+  role: Schema.optionalKey(Schema.String),
+  content: Schema.optionalKey(MessageContentSchema),
+  stopReason: Schema.optionalKey(Schema.String),
+  errorMessage: Schema.optionalKey(Schema.String)
+})
+
+export type RecoveryMessage = typeof RecoveryMessageSchema.Type
+
+const messageText = (content: typeof MessageContentSchema.Type | undefined): string | undefined => {
+  if (content === undefined) return undefined
+  if (Array.isArray(content)) {
+    const text = content.flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n").trim()
+    return text || undefined
+  }
+  if (isString(content)) return content.trim() || undefined
+  return undefined
 }
 
 export const lastUserPrompt = (messages: ReadonlyArray<RecoveryMessage>): string | undefined => {
@@ -42,7 +57,7 @@ export const interruptedTransportReason = (
     // so treating it as a dead transport would resurrect recovery UI after a
     // normal user abort or app restart.
     if (message.stopReason !== "error") return undefined
-    if (typeof message.errorMessage === "string" && message.errorMessage.trim()) return message.errorMessage.trim()
+    if (message.errorMessage && message.errorMessage.trim()) return message.errorMessage.trim()
     return "Pi's response transport ended with an error."
   }
   return undefined

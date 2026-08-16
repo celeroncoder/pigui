@@ -193,14 +193,15 @@ const describeSessionDraft = Effect.fn("ProjectStore.describeSessionDraft")(func
   const sourceWorktree = project.worktrees.find((candidate) => candidate.kind === "local") ?? project.worktrees[0]
   if (isLinked && sourceWorktree) yield* validateStoredWorktreePath(sourceWorktree.path)
   const environment = isLinked && sourceWorktree ? yield* readDefaultEnvironment(sourceWorktree.path) : undefined
+  const setupEnvironment = environment ? { name: environment.name, configPath: environment.configPath } : undefined
   return {
     path: worktree.path,
     folderName: worktree.name,
     worktreeKind: isLinked ? "linked" : "local",
     branch: worktree.branch,
     baseBranches,
-    ...(defaultBaseBranch ? { defaultBaseBranch } : {}),
-    ...(environment ? { setupEnvironment: { name: environment.name, configPath: environment.configPath } } : {})
+    defaultBaseBranch,
+    setupEnvironment
   } satisfies SessionDraftContext
 })
 

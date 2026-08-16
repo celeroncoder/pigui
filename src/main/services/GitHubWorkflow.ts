@@ -163,7 +163,11 @@ export const makeGitHubWorkflow = (executor: GitHubCommandExecutor) => Effect.ge
       if (status.trim()) {
         const message = commitMessage.trim()
         if (!message) return yield* Effect.fail(GitHubWorkflowError.make({ operation: "validate commit message", message: "Add a commit message before committing these changes" }))
-        if (message.length > 200 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(message)) {
+        const hasControlChars = Array.from(message).some((char) => {
+          const code = char.charCodeAt(0)
+          return (code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31) || code === 127
+        })
+        if (message.length > 200 || hasControlChars) {
           return yield* Effect.fail(GitHubWorkflowError.make({ operation: "validate commit message", message: "Use a commit message of at most 200 printable characters" }))
         }
         yield* ensureBranch(path, branch)
@@ -173,7 +177,7 @@ export const makeGitHubWorkflow = (executor: GitHubCommandExecutor) => Effect.ge
       }
       yield* ensureBranch(path, branch)
       yield* required(path, "git", ["push", "--set-upstream", "origin", "HEAD"], "push GitHub branch")
-      return { action: commit ? "committed-and-pushed" : "pushed", ...(commit ? { commit } : {}) } satisfies GitHubSyncResult
+      return { action: commit ? "committed-and-pushed" : "pushed", commit } satisfies GitHubSyncResult
     }))
   })
 

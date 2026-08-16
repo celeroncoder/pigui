@@ -89,7 +89,7 @@ const upsertToolResult = (
     output,
     isError,
     status,
-    ...(diff ? { diff } : {})
+    diff: diff || undefined
   }
   const resultIndex = assistant.blocks.findIndex((block) => block.type === "tool-result" && block.id === toolId)
   const blocks: ReadonlyArray<MessageBlock> = resultIndex < 0

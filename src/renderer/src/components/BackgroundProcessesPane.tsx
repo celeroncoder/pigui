@@ -3,21 +3,21 @@ import { useState } from "react"
 import type { BackgroundProcess } from "../../../shared/contracts"
 import styles from "./BackgroundProcessesPane.module.css"
 
-const statusLabel: Record<BackgroundProcess["status"], string> = {
+const statusLabel = {
   running: "Running",
   done: "Complete",
   failed: "Failed",
   killed: "Stopped",
   stopped: "Historical"
-}
+} satisfies Record<BackgroundProcess["status"], string>
 
-const statusClass: Record<BackgroundProcess["status"], string> = {
+const statusClass = {
   running: styles.running,
   done: styles.done,
   failed: styles.failed,
   killed: "",
   stopped: ""
-}
+} satisfies Record<BackgroundProcess["status"], string>
 
 const formatElapsed = (process: BackgroundProcess) => {
   const elapsed = Math.max(0, (process.status === "running" ? Date.now() : process.updatedAt) - process.startedAt)

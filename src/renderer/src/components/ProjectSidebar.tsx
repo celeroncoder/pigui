@@ -35,13 +35,13 @@ const pullRequestStateLabel = (pullRequest: GitHubBranchPullRequest) => pullRequ
       ? `PR #${pullRequest.number} is merged`
       : `PR #${pullRequest.number} has checks pending or failing`
 
-const sessionStatusPresentation: Record<SessionRuntimeStatus, { readonly label: string; readonly Icon?: typeof CircleAlert }> = {
+const sessionStatusPresentation = {
   running: { label: "Working", Icon: CircleDashed },
   "input-required": { label: "Needs input", Icon: MessageCircleQuestionMark },
   waiting: { label: "Waiting", Icon: CirclePause },
-  done: { label: "Done" },
+  done: { label: "Done", Icon: undefined },
   failed: { label: "Failed", Icon: CircleAlert }
-}
+} satisfies Record<SessionRuntimeStatus, { readonly label: string; readonly Icon?: typeof CircleAlert }>
 
 export function ProjectSidebar(props: ProjectSidebarProps) {
   const {

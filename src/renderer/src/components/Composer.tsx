@@ -7,7 +7,7 @@ import { ContextUsageDonut } from "./ContextUsageDonut"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
 
-const effortLabel: Record<ThinkingLevel, string> = {
+const effortLabel = {
   off: "Off",
   minimal: "Minimal",
   low: "Low",
@@ -15,7 +15,7 @@ const effortLabel: Record<ThinkingLevel, string> = {
   high: "High",
   xhigh: "XHigh",
   max: "Max"
-}
+} satisfies Record<ThinkingLevel, string>
 
 interface PromptQueueProps {
   readonly messages: ReadonlyArray<QueuedMessage>

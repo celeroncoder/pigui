@@ -19,7 +19,7 @@ const reconcileDelivery = (
     // the tail so duplicate prompts retain the identity of the still-pending
     // item rather than inheriting the attachment state of the delivered one.
     const reusable = [...previous]
-    const result = new Array<QueuedMessage>(texts.length)
+    const result = Array.from<QueuedMessage>({ length: texts.length })
     for (let index = texts.length - 1; index >= 0; index -= 1) {
       const text = texts[index]
       if (text === undefined) continue

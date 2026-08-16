@@ -1,4 +1,4 @@
-import { type DitherColor, PALETTE, type Rgb } from "./palette"
+import { type DitherColor, isDitherColor, PALETTE, type Rgb } from "./palette"
 
 // 4×4 ordered (Bayer) matrix, normalized to 0–1 thresholds — the same matrix
 // the charts dither with.
@@ -66,21 +66,21 @@ export function hueFill(hue: number): Rgb {
 
 /** Resolve a {@link PixelColor} to its rgb fill. */
 export function fillOf(color: PixelColor): Rgb {
-  return typeof color === "number" ? hueFill(color) : PALETTE[color].fill
+  return isDitherColor(color) ? PALETTE[color].fill : hueFill(color)
 }
 
 // Bloom — same recipe as the charts: a blurred copy of the crisp canvas,
 // composited additively so the glow stays in the dither's own colour.
 export type PixelBloom = "off" | "low" | "high" | "aura"
 
-const BLOOM_PRESET: Record<
-  Exclude<PixelBloom, "off">,
-  { blur: number; brightness: number; opacity: number; saturate: number }
-> = {
+const BLOOM_PRESET = {
   low: { blur: 3, brightness: 1.35, opacity: 0.7, saturate: 1.4 },
   high: { blur: 5, brightness: 1.5, opacity: 0.78, saturate: 1.5 },
   aura: { blur: 15, brightness: 2.9, opacity: 0.1, saturate: 3 },
-}
+} satisfies Record<
+  Exclude<PixelBloom, "off">,
+  { blur: number; brightness: number; opacity: number; saturate: number }
+>
 
 export type PixelBloomStyle = {
   filter: string

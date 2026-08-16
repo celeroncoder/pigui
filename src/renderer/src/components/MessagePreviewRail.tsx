@@ -12,12 +12,12 @@ type MessagePreviewRailProps = {
   readonly activeLandmarkId?: string | null
 }
 
-const kindLabel: Record<MessagePreviewLandmark["kind"], string> = {
+const kindLabel = {
   user: "Prompt",
   assistant: "Pi",
   activity: "Activity",
   compaction: "Context"
-}
+} satisfies Record<MessagePreviewLandmark["kind"], string>
 
 export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef, onNavigate, activeLandmarkId }: MessagePreviewRailProps) {
   const [activeId, setActiveId] = useState(landmarks[0]?.id ?? null)
@@ -72,8 +72,8 @@ export function MessagePreviewRail({ landmarks, totalCount, scrollRootRef, onNav
     if (!track || !list || !resolvedActiveId) return
 
     const activeItem = Array.from(list.children).find(
-      (item) => (item as HTMLElement).dataset.landmarkId === resolvedActiveId
-    ) as HTMLElement | undefined
+      (item): item is HTMLElement => item instanceof HTMLElement && item.dataset.landmarkId === resolvedActiveId
+    )
     if (!activeItem) return
 
     const itemTop = activeItem.offsetTop

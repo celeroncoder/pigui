@@ -1,6 +1,6 @@
 import { Schema } from "effect"
 import { AskUserInteractionRequestSchema } from "../../../shared/interaction"
-import type { AskUserInteractionAnswer, AskUserInteractionRequest, GitDiff, PiDesktopApi, SessionDetail, SessionEvent } from "../../../shared/contracts"
+import type { AskUserInteractionAnswer, GitDiff, PiDesktopApi, SessionDetail, SessionEvent, WorktreeContext } from "../../../shared/contracts"
 
 const GitStatusSchema = Schema.Struct({ branch: Schema.String, additions: Schema.Number, deletions: Schema.Number, changedFiles: Schema.Number })
 const ProjectWorktreeSchema = Schema.Struct({
@@ -185,7 +185,7 @@ export const createE2eApi = (): PiDesktopApi => {
     }, 250)
   }
 
-  const answerInteraction = async (_context: unknown, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer): Promise<void> => {
+  const answerInteraction = async (_context: WorktreeContext, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer): Promise<void> => {
     await seedInteraction()
     const current = interaction
     if (!current || current.sessionPath !== sessionPath || current.request.requestId !== requestId) {
@@ -219,6 +219,7 @@ export const createE2eApi = (): PiDesktopApi => {
         const worktree = data.projects.find((project) => project.id === context.projectId)?.worktrees.find((candidate) => candidate.id === context.worktreeId)
         if (!worktree) throw new Error("The generated worktree snapshot is unavailable")
         const changes = worktree.git ?? { branch: worktree.branch, additions: 0, deletions: 0, changedFiles: 0 }
+        const pullRequest = worktree.kind === "linked" ? { number: 37, title: "Add worktree-aware GitHub workflow", url: "https://github.com/celeroncoder/pigui/pull/37", branch: changes.branch, state: "mergeable" as const } : undefined
         return {
           repository: "celeroncoder/pigui",
           repositoryUrl: "https://github.com/celeroncoder/pigui",
@@ -228,7 +229,7 @@ export const createE2eApi = (): PiDesktopApi => {
           changes,
           hasUpstream: true,
           ahead: 1,
-          ...(worktree.kind === "linked" ? { pullRequest: { number: 37, title: "Add worktree-aware GitHub workflow", url: "https://github.com/celeroncoder/pigui/pull/37", branch: changes.branch, state: "mergeable" as const } } : {})
+          pullRequest
         }
       },
       commitOrPush: async () => Promise.reject(new Error("Git mutations are tested in Electron, not the browser review harness"))
@@ -250,13 +251,14 @@ export const createE2eApi = (): PiDesktopApi => {
         const data = await loadFixture()
         const worktree = data.projects.find((project) => project.id === context.projectId)?.worktrees.find((candidate) => candidate.id === context.worktreeId)
         if (!worktree) throw new Error("The generated worktree snapshot is unavailable")
+        const defaultBaseBranch = worktree.kind === "linked" ? "origin/main" : undefined
         return {
           path: worktree.path,
           folderName: worktree.name,
           worktreeKind: worktree.kind === "linked" ? "linked" : "local",
           branch: worktree.branch,
           baseBranches: worktree.kind === "linked" ? ["origin/main", "main"] : [],
-          ...(worktree.kind === "linked" ? { defaultBaseBranch: "origin/main" } : {}),
+          defaultBaseBranch,
           setupEnvironment: { name: "E2E", configPath: `${worktree.path}/.codex/environments/environment.toml` }
         }
       },

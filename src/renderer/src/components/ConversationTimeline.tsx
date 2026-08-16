@@ -118,7 +118,7 @@ export function ConversationTimeline({ items, landmarks, previewLandmarks, previ
       let changed = false
       let correction = 0
       for (const entry of entries) {
-        const id = (entry.target as HTMLElement).dataset.timelineId
+        const id = entry.target instanceof HTMLElement ? entry.target.dataset.timelineId : undefined
         if (!id) continue
         const nextSize = entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height
         const previousSize = measuredSizesRef.current.get(id)

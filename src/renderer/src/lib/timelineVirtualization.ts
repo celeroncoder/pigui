@@ -15,6 +15,11 @@ export type VirtualLayout = {
   readonly totalSize: number
 }
 
+export type VirtualRange = {
+  readonly start: number
+  readonly end: number
+}
+
 export const initialHistoryStart = (itemCount: number, limit = INITIAL_HISTORY_ITEM_LIMIT): number =>
   Math.max(0, itemCount - limit)
 
@@ -42,7 +47,7 @@ export const calculateVirtualRange = (
   scrollOffset: number,
   viewportSize: number,
   overscan = TIMELINE_OVERSCAN_PX
-): { readonly start: number; readonly end: number } => {
+): VirtualRange => {
   if (layout.items.length === 0) return { start: 0, end: 0 }
 
   const rangeStart = Math.max(0, scrollOffset - overscan)

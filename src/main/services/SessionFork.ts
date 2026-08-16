@@ -1,42 +1,41 @@
 import { existsSync, writeFileSync } from "node:fs"
 import { SessionManager } from "@earendil-works/pi-coding-agent"
+import { Schema } from "effect"
 import type { SessionForkMetadata } from "../../shared/contracts"
 
 export const sessionForkMetadataType = "pi-desktop-session-fork"
 
-const metadataFromUnknown = (value: unknown): SessionForkMetadata | undefined => {
-  if (typeof value !== "object" || value === null) return undefined
-  if (
-    !("sourceSessionId" in value) || typeof value.sourceSessionId !== "string"
-    || !("sourceSessionPath" in value) || typeof value.sourceSessionPath !== "string"
-    || !("sourceSessionName" in value) || typeof value.sourceSessionName !== "string"
-    || !("sourceMessageId" in value) || typeof value.sourceMessageId !== "string"
-    || !("sourceMessageIndex" in value) || typeof value.sourceMessageIndex !== "number"
-    || !Number.isSafeInteger(value.sourceMessageIndex) || value.sourceMessageIndex < 1
-  ) return undefined
-  return {
-    sourceSessionId: value.sourceSessionId,
-    sourceSessionPath: value.sourceSessionPath,
-    sourceSessionName: value.sourceSessionName,
-    sourceMessageId: value.sourceMessageId,
-    sourceMessageIndex: value.sourceMessageIndex
-  }
-}
+const SessionForkMetadataSchema = Schema.Struct({
+  sourceSessionId: Schema.String,
+  sourceSessionPath: Schema.String,
+  sourceSessionName: Schema.String,
+  sourceMessageId: Schema.String,
+  sourceMessageIndex: Schema.Number
+})
+
+const decodeForkMetadata = Schema.decodeUnknownOption(SessionForkMetadataSchema)
 
 export const sessionForkMetadata = (manager: SessionManager): SessionForkMetadata | undefined => {
   for (const entry of manager.getEntries().toReversed()) {
     if (entry.type === "custom" && entry.customType === sessionForkMetadataType) {
-      return metadataFromUnknown(entry.data)
+      const decoded = decodeForkMetadata(entry.data)
+      return decoded._tag === "Some" ? decoded.value : undefined
     }
   }
   return undefined
+}
+
+export type SessionForkResult = {
+  readonly manager: SessionManager
+  readonly sessionPath: string
+  readonly metadata: SessionForkMetadata
 }
 
 export const createSessionFork = (
   manager: SessionManager,
   sourceSessionName: string,
   sourceMessageId: string
-): { readonly manager: SessionManager; readonly sessionPath: string; readonly metadata: SessionForkMetadata } => {
+): SessionForkResult => {
   const branch = manager.getBranch()
   const forkableEntries = branch.filter((entry) =>
     entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant")

@@ -311,9 +311,7 @@ export class GitContext extends Context.Service<GitContext, {
   readonly diff: (cwd: string) => Effect.Effect<GitDiff | undefined, GitContextError>
 }>()("GitContext") {}
 
-export const GitContextLive = Layer.effect(GitContext)(Effect.gen(function*() {
-  return {
-    inspect: (cwd: string) => inspectGit(cwd),
-    diff: (cwd: string) => inspectGitDiff(cwd)
-  }
-}))
+export const GitContextLive = Layer.succeed(GitContext, {
+  inspect: (cwd: string) => inspectGit(cwd),
+  diff: (cwd: string) => inspectGitDiff(cwd)
+})
