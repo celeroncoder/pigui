@@ -12,7 +12,7 @@ export type DitherColor =
 export type Seed = { fill: Rgb; line: Rgb; star: Rgb }
 
 // Each seed: the area-fill hue, the bright series line, and the star sparkle.
-export const PALETTE: Record<DitherColor, Seed> = {
+export const PALETTE = {
   green: { fill: [40, 210, 110], line: [150, 255, 180], star: [200, 255, 220] },
   blue: { fill: [53, 143, 243], line: [150, 200, 255], star: [205, 228, 255] },
   purple: {
@@ -29,12 +29,12 @@ export const PALETTE: Record<DitherColor, Seed> = {
   red: { fill: [240, 70, 70], line: [255, 150, 140], star: [255, 195, 185] },
   // No-data: a muted grey so empty metrics read as "nothing here".
   grey: { fill: [92, 92, 100], line: [140, 140, 150], star: [165, 165, 175] },
-}
+} satisfies Record<DitherColor, Seed>
 
 export const rgb = ([r, g, b]: Rgb, k = 1, a = 1) =>
   `rgba(${Math.round(r * k)},${Math.round(g * k)},${Math.round(b * k)},${a})`
 
 export const seedOfColor = (color: DitherColor): Seed => PALETTE[color]
 
-export const isDitherColor = (value: unknown): value is DitherColor =>
-  typeof value === "string" && value in PALETTE
+export const isDitherColor = (value: string | number): value is DitherColor =>
+  Boolean(value && value in PALETTE)

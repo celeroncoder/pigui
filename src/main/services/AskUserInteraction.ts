@@ -35,18 +35,18 @@ type CustomFactory<T> = (
 ) => Component | Promise<Component>
 
 const hasDispose = (component: Component): component is Component & { readonly dispose: () => void } =>
-  "dispose" in component && typeof component.dispose === "function"
+  "dispose" in component && component.dispose instanceof Function
 
 const disposeComponent = (component: Component | undefined): void => {
   if (component && hasDispose(component)) component.dispose()
 }
 
-const isComponent = (value: unknown): value is Component =>
-  typeof value === "object" && value !== null && "render" in value && typeof value.render === "function" && "invalidate" in value && typeof value.invalidate === "function"
+const isComponent = (candidate: Partial<Component> | null | undefined): candidate is Component =>
+  candidate !== null && candidate !== undefined && "render" in candidate && candidate.render instanceof Function && "invalidate" in candidate && candidate.invalidate instanceof Function
 
-const componentFromUnknown = (value: unknown): Component => {
-  if (!isComponent(value)) throw new Error("The extension custom UI did not return a renderable component")
-  return value
+const componentFromCandidate = (candidate: Partial<Component> | null | undefined): Component => {
+  if (!isComponent(candidate)) throw new Error("The extension custom UI did not return a renderable component")
+  return candidate
 }
 
 interface CustomWaiter {
@@ -91,7 +91,8 @@ const headlessTerminal: Terminal = {
 }
 
 const headlessTui = new TUI(headlessTerminal, false)
-const headlessKeybindings = new TuiKeybindingsManager(TUI_KEYBINDINGS)
+// SAFETY: headlessKeybindings provides default TUI keybindings required by extension UI
+const headlessKeybindings = new TuiKeybindingsManager(TUI_KEYBINDINGS) as KeybindingsManager
 
 const headlessForeground = {
   accent: "#e9a868",
@@ -225,17 +226,16 @@ export class AskUserInteractionBridge {
     if (this.disposed) return
 
     const busy = this.offers.some((offer) => offer.visible && !offer.settled)
+    const rejection = busy
+      ? AskUserUiError.make({
+          reason: "busy",
+          message: "Pi Desktop already has an ask_user question open"
+        })
+      : undefined
     const offer: QuestionOffer = {
       request,
       visible: !busy,
-      ...(busy
-        ? {
-            rejection: AskUserUiError.make({
-              reason: "busy",
-              message: "Pi Desktop already has an ask_user question open"
-            })
-          }
-        : {}),
+      rejection,
       paired: false,
       settled: false,
       cancelRequested: false
@@ -315,7 +315,7 @@ export class AskUserInteractionBridge {
       })
     }
 
-    for (const offer of [...this.offers]) {
+    for (const offer of Array.from(this.offers)) {
       if (offer.settled) continue
       if (offer.component) {
         this.deliver(offer, { kind: "dismissed" })
@@ -356,7 +356,7 @@ export class AskUserInteractionBridge {
     }
   }
 
-  private startFactory<T>(offer: QuestionOffer, factory: CustomFactory<T>, resolve: (value: T) => void, reject: (reason?: unknown) => void): void {
+  private startFactory<T>(offer: QuestionOffer, factory: CustomFactory<T>, resolve: (value: T) => void, reject: (error: AskUserUiError) => void): void {
     const settleSuccess = (value: T): void => {
       if (offer.settled) return
       offer.settled = true
@@ -381,9 +381,9 @@ export class AskUserInteractionBridge {
     }
 
     void Promise.resolve()
-      .then(() => Reflect.apply(factory, undefined, [headlessTui, headlessTheme, headlessKeybindings, settleSuccess]))
+      .then(() => factory(headlessTui, headlessTheme, headlessKeybindings, settleSuccess))
       .then((value) => {
-        const component = componentFromUnknown(value)
+        const component = componentFromCandidate(value)
         if (offer.settled) {
           disposeComponent(component)
           return

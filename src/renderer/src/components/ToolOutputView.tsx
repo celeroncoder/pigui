@@ -1,19 +1,37 @@
 import type { FileContents, FileDiffOptions, FileOptions } from "@pierre/diffs"
 import { File, MultiFileDiff } from "@pierre/diffs/react"
+import { Schema } from "effect"
 import { Check, Copy } from "lucide-react"
 import { useMemo, useState } from "react"
 import type { ToolCallBlock, ToolResultBlock } from "../../../shared/contracts"
 
-const parseInput = (input: string): Record<string, unknown> => {
+const ToolInputSchema = Schema.Struct({
+  path: Schema.optionalKey(Schema.String),
+  content: Schema.optionalKey(Schema.String),
+  edits: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        oldText: Schema.String,
+        newText: Schema.String
+      })
+    )
+  ),
+  oldText: Schema.optionalKey(Schema.String),
+  newText: Schema.optionalKey(Schema.String)
+})
+type ToolInput = typeof ToolInputSchema.Type
+
+const parseInput = (input: string): ToolInput => {
   try {
-    const value: unknown = JSON.parse(input)
-    return typeof value === "object" && value !== null ? value as Record<string, unknown> : {}
+    const value = JSON.parse(input)
+    const decoded = Schema.decodeUnknownOption(ToolInputSchema)(value)
+    return decoded._tag === "Some" ? decoded.value : {}
   } catch {
     return {}
   }
 }
 
-const filePath = (input: Record<string, unknown>, fallback: string) => typeof input.path === "string" ? input.path : fallback
+const filePath = (input: ToolInput, fallback: string) => input.path ?? fallback
 
 type ChangedFiles =
   | { readonly oldFile: null; readonly newFile: FileContents }
@@ -23,15 +41,15 @@ const editFiles = (block: ToolCallBlock): ChangedFiles | null => {
   const input = parseInput(block.input)
   const name = filePath(input, "changes.txt")
 
-  if (block.name === "write" && typeof input.content === "string") {
+  if (block.name === "write" && input.content !== undefined) {
     return { oldFile: null, newFile: { name, contents: input.content } }
   }
 
-  const edits = Array.isArray(input.edits) ? input.edits : [input]
-  const replacements = edits.flatMap((edit) => {
-    if (typeof edit !== "object" || edit === null || !("oldText" in edit) || !("newText" in edit)) return []
-    return typeof edit.oldText === "string" && typeof edit.newText === "string" ? [{ oldText: edit.oldText, newText: edit.newText }] : []
-  })
+  const replacements = input.edits
+    ? input.edits
+    : input.oldText !== undefined && input.newText !== undefined
+      ? [{ oldText: input.oldText, newText: input.newText }]
+      : []
   if (replacements.length === 0) return null
 
   return {

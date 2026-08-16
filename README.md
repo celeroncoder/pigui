@@ -5,6 +5,7 @@ A focused Electron workspace for browsing projects and working with existing or 
 ## MVP features
 
 - Add local folders as persistent workspaces
+- Group linked Git worktrees under one logical repository, with branch-aware navigation and isolated Pi session trees per worktree
 - Discover the workspace’s existing Pi JSONL sessions through `SessionManager.list()`
 - Create and open persistent Pi sessions
 - Stream assistant text, ephemeral current-work status, tool calls, tool output, run state, and final snapshots live
@@ -17,6 +18,7 @@ A focused Electron workspace for browsing projects and working with existing or 
 - Inspect only currently running Pi-managed background terminals in a parallel read-only process pane
 - Send while Pi works, then edit, delete, or prioritize Pi-native queued follow-ups and steering prompts
 - Show each workspace’s current Git branch and working-tree `+/-` line totals in the header and sidebar
+- Open tracked and untracked working-tree changes in a read-only Git diff pane
 - Abort active prompts safely
 - Pick from the models currently authenticated and available in Pi, with provider marks loaded from Logo.dev
 - Choose the active model’s Pi-supported reasoning effort for the next prompt
@@ -60,7 +62,7 @@ PI_E2E_ASK_USER=1 npm run e2e:serve
 - `src/main/services/PiSessions.ts` — Pi SDK lifecycle, extension binding, image prompt preparation, queueing, and live event projection
 - `src/main/services/AskUserInteraction.ts` — TUI custom-component bridge for the installed `ask_user` extension
 - `src/main/services/AttachmentStore.ts` — Effect service for validated app-owned image persistence and previews
-- `src/main/services/ProjectStore.ts` — Effect service for persistent workspace metadata
+- `src/main/services/ProjectStore.ts` — Effect service for persistent repository/worktree discovery and metadata
 - `src/main/index.ts` — Electron lifecycle and Effect-powered IPC handlers
 - `src/preload/index.ts` — context-isolated renderer API
 - `src/renderer/src/` — React workbench UI

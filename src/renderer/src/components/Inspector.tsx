@@ -8,6 +8,7 @@ interface InspectorProps {
 }
 
 export function Inspector({ project, session, activities }: InspectorProps) {
+  const worktreePath = project?.worktrees[0]?.path
   return (
     <aside className="inspector" aria-label="Session inspector">
       <section className="inspector-section run-overview">
@@ -54,7 +55,7 @@ export function Inspector({ project, session, activities }: InspectorProps) {
 
       <section className="inspector-section workspace-info">
         <div className="inspector-heading"><span>Workspace</span></div>
-        <div className="path-box" title={project?.path}>{project?.path ?? "No project selected"}</div>
+        <div className="path-box" title={worktreePath}>{worktreePath ?? "No project selected"}</div>
         <div className="trust-note"><Check size={13} /><span>Uses your existing Pi config and sessions</span></div>
       </section>
     </aside>

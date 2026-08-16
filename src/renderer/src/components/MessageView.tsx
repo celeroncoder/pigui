@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleAlert, Copy } from "lucide-react"
+import { Brain, Check, ChevronDown, CircleAlert, CircleDashed, Copy, GitFork } from "lucide-react"
 import { lazy, Suspense, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -7,6 +7,7 @@ import { splitTextByImageReferences } from "../../../shared/attachments"
 import { ImageAttachmentCard } from "./ImageAttachmentCard"
 import { ProviderLogo } from "./ProviderLogo"
 import { ToolGlyph } from "./ToolGlyph"
+import styles from "./MessageView.module.css"
 
 const ToolOutputView = lazy(() => import("./ToolOutputView"))
 
@@ -36,8 +37,9 @@ const copyText = (blocks: ReadonlyArray<MessageBlock>) => {
 }
 
 function ToolBlock({ block, result }: { readonly block: ToolCallBlock; readonly result?: ToolResultBlock }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(result?.status === "running")
   const hasError = result?.isError ?? false
+  const isRunning = result?.status === "running"
 
   const compactInput = block.input.replace(/\s+/g, " ").trim()
 
@@ -47,7 +49,11 @@ function ToolBlock({ block, result }: { readonly block: ToolCallBlock; readonly 
         <ToolGlyph name={block.name} />
         <span className="tool-name">{block.name}</span>
         <code className="tool-description">{compactInput}</code>
-        {hasError ? <CircleAlert className="tool-state error" size={14} /> : <Check className="tool-state" size={14} />}
+        {isRunning
+          ? <CircleDashed className={`tool-state ${styles.running}`} size={14} />
+          : hasError
+            ? <CircleAlert className="tool-state error" size={14} />
+            : <Check className="tool-state" size={14} />}
         <ChevronDown className={`tool-chevron ${open ? "open" : ""}`} size={13} />
       </button>
       {open && (
@@ -101,7 +107,28 @@ function UserMessageContent({ text, onOpenImage }: { readonly text: string; read
   )
 }
 
-export function MessageView({ message, anchorId, onOpenImage }: { readonly message: ChatMessage; readonly anchorId?: string; readonly onOpenImage?: (preview: AttachmentPreview) => void }) {
+interface MessageViewProps {
+  readonly message: ChatMessage
+  readonly anchorId?: string
+  readonly onOpenImage?: (preview: AttachmentPreview) => void
+  readonly onFork?: (message: ChatMessage) => void
+  readonly isForking?: boolean
+}
+
+const ForkButton = ({ message, onFork, isForking }: Pick<MessageViewProps, "message" | "onFork" | "isForking">) => onFork && (message.role === "user" || message.role === "assistant") ? (
+  <button
+    type="button"
+    className="message-fork"
+    aria-label="Fork session from this message"
+    title="Fork session from this message"
+    disabled={isForking}
+    onClick={() => onFork(message)}
+  >
+    {isForking ? <CircleDashed className={styles.running} size={13} /> : <GitFork size={13} />}
+  </button>
+) : null
+
+export function MessageView({ message, anchorId, onOpenImage, onFork, isForking }: MessageViewProps) {
   const [copied, setCopied] = useState(false)
   const hasText = message.blocks.some((block) => block.type === "text" && block.text.trim().length > 0)
   const compaction = message.blocks.find((block) => block.type === "compaction")
@@ -118,7 +145,10 @@ export function MessageView({ message, anchorId, onOpenImage }: { readonly messa
     const text = message.blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n\n")
     return (
       <article className="message user-message" id={anchorId}>
-        <div className="user-bubble"><UserMessageContent text={text} onOpenImage={onOpenImage} /></div>
+        <div className="user-turn">
+          <div className="user-bubble"><UserMessageContent text={text} onOpenImage={onOpenImage} /></div>
+          <div className="user-message-actions"><ForkButton message={message} onFork={onFork} isForking={isForking} /></div>
+        </div>
       </article>
     )
   }
@@ -129,22 +159,25 @@ export function MessageView({ message, anchorId, onOpenImage }: { readonly messa
     <article className={`message assistant-message ${hasText ? "" : "compact-turn"}`} id={anchorId}>
       <div className="assistant-body">
         <AssistantContent message={message} />
-        {hasText && (
+        {(hasText || onFork) && (
           <div className="message-meta">
-            {message.provider && <ProviderLogo provider={message.provider} size={13} />}
-            <span>{message.model ?? "Pi"}</span>
-            <button
-              type="button"
-              aria-label="Copy response"
-              onClick={() => {
-                void copyText(message.blocks).then(() => {
-                  setCopied(true)
-                  window.setTimeout(() => setCopied(false), 1200)
-                })
-              }}
-            >
-              {copied ? <Check size={13} /> : <Copy size={13} />}
-            </button>
+            {hasText && <>
+              {message.provider && <ProviderLogo provider={message.provider} size={13} />}
+              <span>{message.model ?? "Pi"}</span>
+              <button
+                type="button"
+                aria-label="Copy response"
+                onClick={() => {
+                  void copyText(message.blocks).then(() => {
+                    setCopied(true)
+                    window.setTimeout(() => setCopied(false), 1200)
+                  })
+                }}
+              >
+                {copied ? <Check size={13} /> : <Copy size={13} />}
+              </button>
+            </>}
+            <ForkButton message={message} onFork={onFork} isForking={isForking} />
           </div>
         )}
       </div>

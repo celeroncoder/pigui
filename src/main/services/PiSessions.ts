@@ -7,15 +7,22 @@ import {
   SessionManager
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent"
-import { Context, Effect, Exit, Layer, Schema, Semaphore } from "effect"
+import { Context, Effect, Layer, Schema, Semaphore } from "effect"
 import { normalizeImageReferences, parseImagePathReferences } from "../../shared/attachments"
+import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, MessageBlock, ModelOption, QueueDelivery, QueuedMessage, SessionDetail, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, PiCommand, ProjectMetrics, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
 import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
+import { projectToolOutput, type ToolOutputPayload } from "./PiEventProjection"
+import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
+import { ProviderAvailability } from "./ProviderAvailability"
+import { aggregateProjectMetrics, telemetryFromSession } from "./ProjectMetrics"
+import { interruptedTransportReason, lastUserPrompt, recoveryAfterReopen, recoveryPrompt } from "./SessionRecovery"
 import {
   type NativePromptQueue,
   prioritizeQueuedMessageForSteering,
@@ -25,6 +32,7 @@ import {
   updateQueuedMessageText
 } from "./PromptQueue"
 import { WindowBus } from "./WindowBus"
+import { createSessionFork, sessionForkMetadata } from "./SessionFork"
 
 const canonicalPath = (value: string) => resolve(value)
 
@@ -34,20 +42,41 @@ interface ActiveSession {
   readonly session: AgentSession
   unsubscribe: () => void
   readonly interaction: AskUserInteractionBridge
+  readonly providerAvailability: ProviderAvailability
+  modelAvailability: ModelAvailability
   readonly backgroundProcesses: Map<string, BackgroundProcess>
   readonly pendingTools: Map<string, { readonly name: string; readonly args: unknown }>
   readonly queuedImages: Map<string, ReadonlyArray<PiImageAttachment>>
   queuedMessages: ReadonlyArray<QueuedMessage>
   queueUpdatesSuspended: number
+  pendingPromptStarts: number
+  abortRequested: boolean
+  pendingTransportFailure: string | undefined
+  recovery: SessionRecovery | undefined
   liveMessageId: string | null
+  liveMessageStarted: boolean
+  liveDetail: SessionDetail | undefined
   gitRefreshTimer: ReturnType<typeof setTimeout> | undefined
   gitRefreshGeneration: number
   disposed: boolean
+  liveAssistantMessageIndex: number
   liveUserMessageIndex: number
+  runtimeStatus: SessionRuntimeStatus
 }
 
-const stringify = (value: unknown): string => {
-  if (typeof value === "string") return value
+export type PiPayloadValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | ReadonlyArray<string | number | boolean | null | undefined>
+  | { readonly [key: string]: string | number | boolean | null | undefined }
+
+const isString = Schema.is(Schema.String)
+
+const stringify = (value: PiPayloadValue): string => {
+  if (isString(value)) return value
   try {
     return JSON.stringify(value, null, 2) ?? String(value)
   } catch {
@@ -55,21 +84,56 @@ const stringify = (value: unknown): string => {
   }
 }
 
-const diffFromResult = (value: unknown): string | undefined => {
-  if (typeof value !== "object" || value === null || !("details" in value)) return undefined
-  const details = value.details
-  if (typeof details !== "object" || details === null || !("diff" in details) || typeof details.diff !== "string") return undefined
-  return details.diff
+const ToolResultDetailsSchema = Schema.Struct({
+  diff: Schema.optionalKey(Schema.String)
+})
+const ToolResultEnvelopeSchema = Schema.Struct({
+  details: Schema.optionalKey(ToolResultDetailsSchema)
+})
+const decodeToolResultEnvelope = Schema.decodeUnknownOption(ToolResultEnvelopeSchema)
+
+const diffFromResult = (message: typeof ToolResultEnvelopeSchema.Type | undefined): string | undefined => {
+  if (!message) return undefined
+  const decoded = decodeToolResultEnvelope(message)
+  return decoded._tag === "Some" ? decoded.value.details?.diff : undefined
 }
 
-const textFromContent = (content: string | ReadonlyArray<{ readonly type: string; readonly text?: string }>) => {
-  if (typeof content === "string") return content
-  return content.flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n")
+export type MessageContentInput = string | ReadonlyArray<{ readonly type?: string; readonly text?: string }>
+
+const textFromContent = (content: MessageContentInput | undefined): string => {
+  if (Array.isArray(content)) {
+    return content.flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n")
+  }
+  return isString(content) ? content : ""
 }
 
 type PiMessage = AgentSession["messages"][number]
+type PiSkill = ReturnType<AgentSession["resourceLoader"]["getSkills"]>["skills"][number]
 
-const timestampValue = (value: string | number): number => typeof value === "number" ? value : new Date(value).getTime()
+const timestampValue = (value: string | number): number => Number.isFinite(value) ? Number(value) : new Date(value).getTime()
+
+const commandScope = (scope: string): PiCommand["scope"] =>
+  scope === "user" || scope === "project" ? scope : "other"
+
+const skillCommand = (skill: PiSkill): PiCommand => ({
+  kind: "skill",
+  name: skill.name,
+  description: skill.description,
+  scope: commandScope(skill.sourceInfo.scope)
+})
+
+const promptCommand = (template: AgentSession["promptTemplates"][number]): PiCommand => ({
+  kind: "prompt",
+  name: template.name,
+  description: template.description,
+  argumentHint: template.argumentHint || undefined,
+  scope: commandScope(template.sourceInfo.scope)
+})
+
+const commandsFromSession = (session: AgentSession): ReadonlyArray<PiCommand> => [
+  ...session.resourceLoader.getSkills().skills.map(skillCommand),
+  ...session.promptTemplates.map(promptCommand)
+]
 
 const appendMessageToChat = (output: ChatMessage[], message: PiMessage, id: string) => {
   if (message.role === "user") {
@@ -82,21 +146,24 @@ const appendMessageToChat = (output: ChatMessage[], message: PiMessage, id: stri
       if (block.type === "text") {
         blocks.push({ type: "text", text: block.text })
       } else if (block.type === "toolCall") {
-        blocks.push({ type: "tool-call", id: block.id, name: block.name, input: stringify(block.arguments) })
+        // SAFETY: toolCall arguments is an SDK JSON payload
+        const toolInput = stringify(block.arguments as PiPayloadValue)
+        blocks.push({ type: "tool-call", id: block.id, name: block.name, input: toolInput })
       }
     }
     output.push({ id, role: "assistant", blocks, timestamp: message.timestamp, model: message.model, provider: message.provider })
     return
   }
   if (message.role === "toolResult") {
-    const diff = diffFromResult(message)
+    // SAFETY: message may contain a details record with diff
+    const diff = diffFromResult(message as typeof ToolResultEnvelopeSchema.Type)
     const result: ToolResultBlock = {
       type: "tool-result",
       id: message.toolCallId,
       name: message.toolName,
       output: textFromContent(message.content),
       isError: message.isError,
-      ...(diff ? { diff } : {})
+      diff: diff || undefined
     }
     const assistantIndex = output.findLastIndex((candidate) => candidate.role === "assistant" && candidate.blocks.some((block) => block.type === "tool-call" && block.id === message.toolCallId))
     if (assistantIndex >= 0) {
@@ -146,25 +213,85 @@ const historyToChat = (manager: SessionManager): ReadonlyArray<ChatMessage> => {
   return output
 }
 
-const recordValue = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
-  typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : undefined
-const stringValue = (value: unknown): string | undefined => typeof value === "string" ? value : undefined
-const numberValue = (value: unknown): number | undefined => typeof value === "number" ? value : undefined
-const thinkingLevelValue = (value: unknown): ThinkingLevel =>
-  value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "off"
+const BackgroundTerminalItemSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  command: Schema.optionalKey(Schema.String),
+  cwd: Schema.optionalKey(Schema.String),
+  pid: Schema.optionalKey(Schema.Number),
+  status: Schema.optionalKey(Schema.Literals(["running", "done", "failed", "killed", "stopped"])),
+  output: Schema.optionalKey(Schema.String)
+})
 
-const resultText = (value: unknown): string | undefined => {
-  const record = recordValue(value)
-  if (!record || !Array.isArray(record.content)) return undefined
-  const lines = record.content.flatMap((item) => {
-    const block = recordValue(item)
-    return block?.type === "text" && typeof block.text === "string" ? [block.text] : []
-  })
-  return lines.length > 0 ? lines.join("\n") : undefined
+const BackgroundDetailsSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  cwd: Schema.optionalKey(Schema.String),
+  working_dir: Schema.optionalKey(Schema.String),
+  command: Schema.optionalKey(Schema.String),
+  pid: Schema.optionalKey(Schema.Number),
+  status: Schema.optionalKey(Schema.Literals(["running", "done", "failed", "killed", "stopped"])),
+  exitCode: Schema.optionalKey(Schema.Number),
+  signal: Schema.optionalKey(Schema.String),
+  terminals: Schema.optionalKey(Schema.Array(BackgroundTerminalItemSchema)),
+  results: Schema.optionalKey(Schema.Array(BackgroundTerminalItemSchema))
+})
+
+const BackgroundToolArgsSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  command: Schema.optionalKey(Schema.String),
+  working_dir: Schema.optionalKey(Schema.String)
+})
+
+const BackgroundToolResultSchema = Schema.Struct({
+  details: Schema.optionalKey(BackgroundDetailsSchema),
+  content: Schema.optionalKey(
+    Schema.Union([
+      Schema.String,
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.String,
+          text: Schema.optionalKey(Schema.String)
+        })
+      )
+    ])
+  )
+})
+
+const BackgroundResultMessageSchema = Schema.Struct({
+  role: Schema.Literal("custom"),
+  customType: Schema.Literal("background-terminal-result"),
+  details: Schema.optionalKey(BackgroundDetailsSchema),
+  content: Schema.optionalKey(Schema.String),
+  timestamp: Schema.optionalKey(Schema.Number)
+})
+
+const decodeBackgroundArgs = Schema.decodeUnknownOption(BackgroundToolArgsSchema)
+const decodeBackgroundResult = Schema.decodeUnknownOption(BackgroundToolResultSchema)
+const decodeBackgroundMessage = Schema.decodeUnknownOption(BackgroundResultMessageSchema)
+const decodeThinkingLevel = Schema.decodeUnknownOption(Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"]))
+
+const agentEndedWithError = (messages: ReadonlyArray<PiMessage>): boolean => {
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant")
+  return lastAssistant?.role === "assistant" && lastAssistant.stopReason === "error"
 }
 
-const processStatus = (value: unknown): BackgroundProcessStatus | undefined => {
-  if (value === "running" || value === "done" || value === "failed" || value === "killed" || value === "stopped") return value
+const thinkingLevelValue = (value: typeof Schema.Unknown.Type | undefined): ThinkingLevel => {
+  const decoded = decodeThinkingLevel(value)
+  return decoded._tag === "Some" ? decoded.value : "off"
+}
+
+const resultText = (result: typeof Schema.Unknown.Type | undefined): string | undefined => {
+  const decoded = decodeBackgroundResult(result)
+  if (decoded._tag === "None") return undefined
+  const content = decoded.value.content
+  if (content === undefined) return undefined
+  if (Array.isArray(content)) {
+    const text = content.flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n").trim()
+    return text || undefined
+  }
+  if (isString(content)) return content.trim() || undefined
   return undefined
 }
 
@@ -187,35 +314,36 @@ const updateProcess = (processes: Map<string, BackgroundProcess>, id: string, pa
     status,
     startedAt: patch.startedAt ?? current?.startedAt ?? at,
     updatedAt: at,
-    ...(patch.command ?? current?.command ? { command: patch.command ?? current?.command } : {}),
-    ...(patch.cwd ?? current?.cwd ? { cwd: patch.cwd ?? current?.cwd } : {}),
-    ...(patch.pid ?? current?.pid ? { pid: patch.pid ?? current?.pid } : {}),
-    ...(patch.output ?? current?.output ? { output: patch.output ?? current?.output } : {}),
-    ...(patch.exitCode ?? current?.exitCode !== undefined ? { exitCode: patch.exitCode ?? current?.exitCode } : {}),
-    ...(patch.signal ?? current?.signal ? { signal: patch.signal ?? current?.signal } : {})
+    command: patch.command ?? current?.command,
+    cwd: patch.cwd ?? current?.cwd,
+    pid: patch.pid ?? current?.pid,
+    output: patch.output ?? current?.output,
+    exitCode: patch.exitCode ?? current?.exitCode,
+    signal: patch.signal ?? current?.signal
   })
 }
 
 const applyBackgroundToolResult = (
   processes: Map<string, BackgroundProcess>,
   toolName: string,
-  args: unknown,
-  result: unknown,
+  rawArgs: typeof Schema.Unknown.Type | undefined,
+  rawResult: typeof Schema.Unknown.Type | undefined,
   at: number
 ) => {
-  const resultRecord = recordValue(result)
-  const details = recordValue(resultRecord?.details)
-  const argsRecord = recordValue(args)
-  const output = resultText(result)
+  const resultDecoded = decodeBackgroundResult(rawResult)
+  const details = resultDecoded._tag === "Some" ? resultDecoded.value.details : undefined
+  const argsDecoded = decodeBackgroundArgs(rawArgs)
+  const args = argsDecoded._tag === "Some" ? argsDecoded.value : undefined
+  const output = resultText(rawResult)
 
   if (toolName === "bg_start") {
-    const id = stringValue(details?.id)
+    const id = details?.id
     if (!id) return
     updateProcess(processes, id, {
-      title: stringValue(details?.title) ?? stringValue(argsRecord?.title) ?? `Terminal ${id}`,
-      command: stringValue(argsRecord?.command),
-      cwd: stringValue(details?.cwd) ?? stringValue(argsRecord?.working_dir),
-      pid: numberValue(details?.pid),
+      title: details.title ?? args?.title ?? `Terminal ${id}`,
+      command: args?.command,
+      cwd: details.cwd ?? args?.working_dir,
+      pid: details.pid,
       status: "running",
       output
     }, at)
@@ -223,29 +351,28 @@ const applyBackgroundToolResult = (
   }
 
   if (toolName === "bg_status") {
-    const id = stringValue(details?.id)
+    const id = details?.id
     if (!id) return
     updateProcess(processes, id, {
-      status: processStatus(details?.status),
-      pid: numberValue(details?.pid),
-      exitCode: numberValue(details?.exitCode),
-      signal: stringValue(details?.signal),
+      status: details.status,
+      pid: details.pid,
+      exitCode: details.exitCode,
+      signal: details.signal,
       output
     }, at)
     return
   }
 
-  if (toolName === "bg_list" && Array.isArray(details?.terminals)) {
+  if (toolName === "bg_list" && details?.terminals) {
     const listed = new Set<string>()
-    for (const item of details.terminals) {
-      const terminal = recordValue(item)
-      const id = stringValue(terminal?.id)
+    for (const terminal of details.terminals) {
+      const id = terminal.id
       if (!id) continue
       listed.add(id)
       updateProcess(processes, id, {
-        title: stringValue(terminal?.title),
-        status: processStatus(terminal?.status),
-        pid: numberValue(terminal?.pid)
+        title: terminal.title,
+        status: terminal.status,
+        pid: terminal.pid
       }, at)
     }
     // The extension never prunes a live child. If an id that we thought was
@@ -258,32 +385,31 @@ const applyBackgroundToolResult = (
     return
   }
 
-  if (toolName === "bg_kill" && Array.isArray(details?.results)) {
-    for (const item of details.results) {
-      const terminal = recordValue(item)
-      const id = stringValue(terminal?.id)
+  if (toolName === "bg_kill" && details?.results) {
+    for (const terminal of details.results) {
+      const id = terminal.id
       if (!id) continue
       updateProcess(processes, id, {
-        title: stringValue(terminal?.title),
-        status: processStatus(terminal?.status) ?? "killed",
+        title: terminal.title,
+        status: terminal.status ?? "killed",
         output
       }, at)
     }
   }
 }
 
-const applyBackgroundResultMessage = (processes: Map<string, BackgroundProcess>, message: unknown, at: number) => {
-  const record = recordValue(message)
-  if (record?.role !== "custom" || record.customType !== "background-terminal-result") return
-  const details = recordValue(record.details)
-  const id = stringValue(details?.id)
+const applyBackgroundResultMessage = (processes: Map<string, BackgroundProcess>, rawMessage: typeof Schema.Unknown.Type, at: number) => {
+  const decoded = decodeBackgroundMessage(rawMessage)
+  if (decoded._tag === "None") return
+  const msg = decoded.value
+  const id = msg.details?.id
   if (!id) return
   updateProcess(processes, id, {
-    title: stringValue(details?.title),
-    status: processStatus(details?.status),
-    exitCode: numberValue(details?.exitCode),
-    signal: stringValue(details?.signal),
-    output: typeof record.content === "string" ? record.content : undefined
+    title: msg.details?.title,
+    status: msg.details?.status,
+    exitCode: msg.details?.exitCode,
+    signal: msg.details?.signal,
+    output: msg.content
   }, at)
 }
 
@@ -312,6 +438,14 @@ const historicalBackgroundProcesses = (manager: SessionManager): Map<string, Bac
 
 type PiSessionInfo = Awaited<ReturnType<typeof SessionManager.list>>[number]
 
+const SubagentArgsSchema = Schema.Struct({
+  name: Schema.String,
+  prompt: Schema.String,
+  harness: Schema.optionalKey(Schema.String),
+  working_dir: Schema.optionalKey(Schema.String)
+})
+const decodeSubagentArgs = Schema.decodeUnknownOption(SubagentArgsSchema)
+
 const inferSubagentParents = (cwd: string, infos: ReadonlyArray<PiSessionInfo>) => {
   const matches = new Map<string, string>()
   const children = infos.filter((info) => info.name?.toLocaleLowerCase().startsWith("subagent:"))
@@ -323,15 +457,15 @@ const inferSubagentParents = (cwd: string, infos: ReadonlyArray<PiSessionInfo>) 
         if (entry.type !== "message" || entry.message.role !== "assistant") continue
         for (const block of entry.message.content) {
           if (block.type !== "toolCall" || block.name !== "subagent_spawn") continue
-          const args: unknown = block.arguments
-          if (typeof args !== "object" || args === null || !("name" in args) || !("prompt" in args)) continue
-          if (typeof args.name !== "string" || typeof args.prompt !== "string") continue
-          if ("harness" in args && args.harness !== undefined && args.harness !== "pi") continue
+          const decoded = decodeSubagentArgs(block.arguments)
+          if (decoded._tag === "None") continue
+          const args = decoded.value
+          if (args.harness !== undefined && args.harness !== "pi") continue
 
           const expectedName = `subagent: ${args.name.trim()}`.toLocaleLowerCase()
           const expectedPrompt = args.prompt.trim()
           const parentCwd = parent.cwd || cwd
-          const expectedCwd = "working_dir" in args && typeof args.working_dir === "string" ? resolve(parentCwd, args.working_dir) : parentCwd
+          const expectedCwd = args.working_dir ? resolve(parentCwd, args.working_dir) : parentCwd
           const spawnedAt = new Date(entry.timestamp).getTime()
           const candidates = children.filter((child) => {
             const distance = child.created.getTime() - spawnedAt
@@ -352,17 +486,42 @@ const inferSubagentParents = (cwd: string, infos: ReadonlyArray<PiSessionInfo>) 
   return matches
 }
 
-const summaryFromInfo = (info: PiSessionInfo, parentSessionPath?: string): SessionSummary => ({
-  id: info.id,
-  path: info.path,
-  name: info.name || info.firstMessage || "Untitled session",
-  firstMessage: info.firstMessage,
-  updatedAt: info.modified.getTime(),
-  messageCount: info.messageCount,
-  ...(parentSessionPath ? { parentSessionPath } : {})
-})
+const summaryFromInfo = (info: PiSessionInfo, parentSessionPath?: string): SessionSummary => {
+  let forkedFrom: SessionForkMetadata | undefined
+  if (info.parentSessionPath) {
+    try {
+      forkedFrom = sessionForkMetadata(SessionManager.open(info.path, undefined, info.cwd || undefined))
+    } catch {
+      // Listing remains resilient to malformed or concurrently-written metadata.
+    }
+  }
+  return {
+    id: info.id,
+    path: info.path,
+    name: info.name || info.firstMessage || "Untitled session",
+    firstMessage: info.firstMessage,
+    updatedAt: info.modified.getTime(),
+    messageCount: info.messageCount,
+    parentSessionPath: parentSessionPath || undefined,
+    forkedFrom
+  }
+}
 
-const detailFromManager = (manager: SessionManager, summary: SessionSummary): SessionDetail => {
+const summaryFromManager = (manager: SessionManager, messages: ReadonlyArray<ChatMessage>): SessionSummary => {
+  const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
+  const forkedFrom = sessionForkMetadata(manager)
+  return {
+    id: manager.getSessionId(),
+    path: manager.getSessionFile() ?? "",
+    name: manager.getSessionName() || firstUserText || "New session",
+    firstMessage: firstUserText ?? "",
+    updatedAt: Date.now(),
+    messageCount: messages.filter((message) => message.blocks.some((block) => block.type !== "compaction")).length,
+    forkedFrom
+  }
+}
+
+const detailFromManager = (manager: SessionManager, summary: SessionSummary, contextUsage?: ContextUsage): SessionDetail => {
   const context = manager.buildSessionContext()
   return {
     summary,
@@ -373,51 +532,88 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary): Se
     // Background terminals and prompt queues are runtime-scoped, never historical.
     backgroundProcesses: [],
     queuedMessages: [],
+    contextUsage: contextUsage || undefined,
+    runtimeStatus: "done",
     isStreaming: false,
     isCompacting: false
   }
 }
 
-const detailFromActive = (active: ActiveSession): SessionDetail => {
-  const messages = historyToChat(active.session.sessionManager)
-  const firstUserText = messages.find((message) => message.role === "user")?.blocks.find((block) => block.type === "text")?.text
-  const interactionRequest = active.interaction.pendingRequest()
+const historicalRecovery = (manager: SessionManager): SessionRecovery | undefined => {
+  const branch = manager.getBranch()
+  const messages = branch.flatMap((entry) => entry.type === "message" ? [entry.message] : [])
+  const reason = interruptedTransportReason(messages, false, false)
+  if (!reason) return undefined
+  const lastEntry = branch.findLast((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"))
+  const prompt = lastUserPrompt(messages)
   return {
-    summary: {
-      id: active.session.sessionId,
-      path: active.session.sessionFile ?? "",
-      name: active.session.sessionManager.getSessionName() || firstUserText || "New session",
-      firstMessage: firstUserText ?? "",
-      updatedAt: Date.now(),
-      messageCount: messages.filter((message) => message.blocks.some((block) => block.type !== "compaction")).length
-    },
+    reason,
+    interruptedAt: lastEntry ? timestampValue(lastEntry.timestamp) : Date.now(),
+    lastPrompt: prompt || undefined
+  }
+}
+
+const snapshotFromActive = (active: ActiveSession): SessionDetail => {
+  const messages = historyToChat(active.session.sessionManager)
+  const interactionRequest = active.interaction.pendingRequest()
+  const contextUsage = projectContextUsage(active.session)
+  return {
+    summary: summaryFromManager(active.session.sessionManager, messages),
     messages,
     model: active.session.model ? `${active.session.model.provider}/${active.session.model.id}` : "No model configured",
     thinkingLevel: active.session.thinkingLevel,
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
-    ...(interactionRequest ? { interactionRequest } : {}),
-    isStreaming: active.session.isStreaming,
+    recovery: active.recovery || undefined,
+    contextUsage: contextUsage || undefined,
+    interactionRequest: interactionRequest || undefined,
+    runtimeStatus: active.runtimeStatus,
+    isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
+    isCompacting: active.session.isCompacting
+  }
+}
+
+const detailFromActive = (active: ActiveSession): SessionDetail => {
+  const detail = active.liveDetail ?? snapshotFromActive(active)
+  const { contextUsage: _previousContextUsage, interactionRequest: _previousInteraction, recovery: _previousRecovery, ...base } = detail
+  const contextUsage = projectContextUsage(active.session)
+  const interactionRequest = active.interaction.pendingRequest()
+  return {
+    ...base,
+    model: active.session.model ? `${active.session.model.provider}/${active.session.model.id}` : "No model configured",
+    thinkingLevel: active.session.thinkingLevel,
+    availableThinkingLevels: active.session.getAvailableThinkingLevels(),
+    backgroundProcesses: runningProcesses(active.backgroundProcesses),
+    queuedMessages: active.queuedMessages,
+    recovery: active.recovery || undefined,
+    contextUsage: contextUsage || undefined,
+    interactionRequest: interactionRequest || undefined,
+    runtimeStatus: active.runtimeStatus,
+    isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
   }
 }
 
 export class PiSessions extends Context.Service<PiSessions, {
   readonly list: (cwd: string) => Effect.Effect<ReadonlyArray<SessionSummary>, AppError>
-  readonly create: (cwd: string) => Effect.Effect<SessionDetail, AppError>
+  readonly metrics: (cwd: string) => Effect.Effect<ProjectMetrics, AppError>
+  readonly create: (cwd: string, baseBranch?: string) => Effect.Effect<SessionDetail, AppError>
+  readonly fork: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<SessionDetail, AppError>
   readonly open: (cwd: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
   readonly inspect: (cwd: string, parentSessionPath: string, sessionPath: string) => Effect.Effect<SessionDetail, AppError>
-  readonly prompt: (sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
-  readonly editQueuedMessage: (sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
-  readonly removeQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
-  readonly steerQueuedMessage: (sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
-  readonly abort: (sessionPath: string) => Effect.Effect<void, AppError>
-  readonly models: (sessionPath: string) => Effect.Effect<ReadonlyArray<ModelOption>, AppError>
-  readonly setModel: (sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
-  readonly setThinkingLevel: (sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
-  readonly answerInteraction: (sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
-  readonly dispose: () => Effect.Effect<void>
+  readonly prompt: (cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) => Effect.Effect<void, AppError>
+  readonly recover: (cwd: string, sessionPath: string, action: SessionRecoveryAction) => Effect.Effect<SessionDetail, AppError>
+  readonly editQueuedMessage: (cwd: string, sessionPath: string, messageId: string, text: string) => Effect.Effect<void, AppError>
+  readonly removeQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
+  readonly steerQueuedMessage: (cwd: string, sessionPath: string, messageId: string) => Effect.Effect<void, AppError>
+  readonly abort: (cwd: string, sessionPath: string) => Effect.Effect<void, AppError>
+  readonly models: (cwd: string, sessionPath: string) => Effect.Effect<ModelAvailability, AppError>
+  readonly commands: (cwd: string, sessionPath: string) => Effect.Effect<ReadonlyArray<PiCommand>, AppError>
+  readonly setModel: (cwd: string, sessionPath: string, provider: string, modelId: string) => Effect.Effect<SessionDetail, AppError>
+  readonly setThinkingLevel: (cwd: string, sessionPath: string, level: ThinkingLevel) => Effect.Effect<SessionDetail, AppError>
+  readonly answerInteraction: (cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) => Effect.Effect<void, AppError>
+  readonly dispose: () => Effect.Effect<void, AppError>
 }>()("PiSessions") {}
 
 const createPiRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
@@ -436,14 +632,46 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
   const sessionLifecycleLock = yield* Semaphore.make(1)
   const queueMutationLock = yield* Semaphore.make(1)
   const activeSessions = new Map<string, ActiveSession>()
+  const lifecycleGate = new PiSessionLifecycleGate()
 
-  const emitSnapshot = (active: ActiveSession) => bus.emit({
+  const emitActiveEvent = (active: ActiveSession, event: SessionEvent) => {
+    // The renderer intentionally ignores offscreen session paths. Mirror the
+    // same projection here so reopening a running session restores its live UI.
+    const sessionPath = active.session.sessionFile ?? ""
+    const current = active.liveDetail ?? snapshotFromActive(active)
+    const next = reduceSessionEvent(current, sessionPath, event)
+    if (next) active.liveDetail = next
+    return bus.emit(event)
+  }
+
+  const emitSnapshot = (active: ActiveSession, overrides?: Pick<Partial<SessionDetail>, "isCompacting">) => emitActiveEvent(active, {
     type: "session-state",
     sessionPath: active.session.sessionFile ?? "",
-    detail: detailFromActive(active)
+    detail: { ...snapshotFromActive(active), ...overrides }
   })
 
-  const emitBackgroundProcesses = (active: ActiveSession) => bus.emit({
+  const emitContextUsage = (active: ActiveSession) => emitActiveEvent(active, {
+    type: "context-usage",
+    sessionPath: active.session.sessionFile ?? "",
+    contextUsage: projectContextUsage(active.session)
+  })
+
+  const emitRuntimeStatus = (active: ActiveSession, status: SessionRuntimeStatus) => {
+    active.runtimeStatus = status
+    return bus.emit({ type: "runtime-status", sessionPath: active.session.sessionFile ?? "", status })
+  }
+
+  const refreshRuntimeStatus = (active: ActiveSession) => {
+    if (active.runtimeStatus === "failed" || active.interaction.pendingRequest()) return Effect.void
+    const status: SessionRuntimeStatus = active.queuedMessages.length > 0
+      ? "waiting"
+      : active.session.isStreaming || active.session.isCompacting || active.pendingPromptStarts > 0
+        ? "running"
+        : "done"
+    return emitRuntimeStatus(active, status)
+  }
+
+  const emitBackgroundProcesses = (active: ActiveSession) => emitActiveEvent(active, {
     type: "background-processes",
     sessionPath: active.session.sessionFile ?? "",
     processes: runningProcesses(active.backgroundProcesses)
@@ -455,6 +683,37 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     if (active.gitRefreshTimer) clearTimeout(active.gitRefreshTimer)
     active.gitRefreshTimer = undefined
   }
+
+  const releaseActiveSession = async (active: ActiveSession) => {
+    active.disposed = true
+    cancelGitRefresh(active)
+    active.providerAvailability.dispose()
+    try {
+      await releaseSessionResources({
+        disposeInteraction: () => active.interaction.dispose(),
+        unsubscribe: () => active.unsubscribe(),
+        disposeRuntime: () => active.runtime.dispose(),
+        disposeSession: () => active.session.dispose()
+      })
+    } catch (cause) {
+      const sessionPath = active.session.sessionFile ?? "unknown session"
+      throw new Error(`Failed to release ${sessionPath}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+    }
+  }
+
+  const releaseInactiveSessionsExcept = (keepKey: string) => releaseInactiveEntriesExcept(
+    activeSessions,
+    keepKey,
+    // Runtime disposal aborts Pi's agent and tears down runtime-scoped work.
+    // Preserve established runs, background terminals, compaction/queue state,
+    // and the async preflight gap between IPC acceptance and agent_start.
+    (active) => active.session.isStreaming
+      || active.session.isCompacting
+      || active.pendingPromptStarts > 0
+      || active.queuedMessages.length > 0
+      || runningProcesses(active.backgroundProcesses).length > 0,
+    releaseActiveSession
+  )
 
   const scheduleGitRefresh = (active: ActiveSession, delay = 350) => {
     if (active.disposed || active.gitRefreshTimer) return
@@ -468,7 +727,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             || active.gitRefreshGeneration !== generation
             || activeSessions.get(sessionKey) !== active
             ? Effect.void
-            : bus.emit({ type: "project-git", projectPath: active.cwd, ...(status ? { git: status } : {}) })
+            : bus.emit({ type: "project-git", worktreePath: active.cwd, git: status || undefined })
         ),
         Effect.catchTag("GitContextError", () => Effect.void)
       )).finally(() => {
@@ -494,7 +753,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     return true
   }
 
-  const emitQueuedMessages = (active: ActiveSession) => bus.emit({
+  const emitQueuedMessages = (active: ActiveSession) => emitActiveEvent(active, {
     type: "queue-update",
     sessionPath: active.session.sessionFile ?? "",
     messages: active.queuedMessages
@@ -557,22 +816,11 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     })
   })
 
-  const decodeAskUserInput = (value: unknown) => {
-    const decoded = Schema.decodeUnknownExit(AskUserInputSchema)(value)
-    return Exit.isSuccess(decoded) ? decoded.value : undefined
-  }
+  const decodeAskUserInput = Schema.decodeUnknownOption(AskUserInputSchema)
 
   const attach = Effect.fn("PiSessions.attach")(function*(cwd: string, manager: SessionManager) {
     const attachedRuntime = yield* Effect.tryPromise({
       try: async () => {
-        for (const active of activeSessions.values()) {
-          cancelGitRefresh(active)
-          active.interaction.dispose()
-          active.unsubscribe()
-          await active.runtime.dispose()
-        }
-        activeSessions.clear()
-
         const next = await createAgentSessionRuntime(createPiRuntime, {
           cwd,
           agentDir: getAgentDir(),
@@ -590,7 +838,11 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             void Effect.runPromise(bus.emit({ type: "interaction-request", sessionPath, request })).catch(() => undefined)
           },
           onClear: (requestId) => {
-            void Effect.runPromise(bus.emit({ type: "interaction-cleared", sessionPath, requestId })).catch(() => undefined)
+            void Effect.runPromise(Effect.gen(function*() {
+              yield* bus.emit({ type: "interaction-cleared", sessionPath, requestId })
+              const active = activeSessions.get(canonicalPath(sessionPath))
+              if (active) yield* refreshRuntimeStatus(active)
+            })).catch(() => undefined)
           }
         })
 
@@ -622,34 +874,68 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       return yield* Effect.fail(AppError.make({ operation: "open Pi session", message: "Pi did not create a persistent session file" }))
     }
 
+    const providerAvailability = new ProviderAvailability(runtime.session.modelRuntime)
     const active: ActiveSession = {
       cwd,
       runtime,
       session: runtime.session,
       interaction,
+      providerAvailability,
+      modelAvailability: providerAvailability.current,
       backgroundProcesses: historicalBackgroundProcesses(manager),
       pendingTools: new Map(),
       queuedImages: new Map(),
       queuedMessages: reconcileQueuedMessages([], nativePromptQueue(runtime.session)),
       queueUpdatesSuspended: 0,
+      pendingPromptStarts: 0,
+      abortRequested: false,
+      pendingTransportFailure: undefined,
+      recovery: historicalRecovery(manager),
       liveMessageId: null,
+      liveMessageStarted: false,
+      liveDetail: undefined,
       gitRefreshTimer: undefined,
       gitRefreshGeneration: 0,
       disposed: false,
+      liveAssistantMessageIndex: 0,
       liveUserMessageIndex: 0,
+      runtimeStatus: runtime.session.isStreaming ? "running" : "done",
       unsubscribe: () => undefined
     }
+    providerAvailability.setOnUpdate((availability) => {
+      active.modelAvailability = availability
+      void Effect.runPromise(bus.emit({ type: "model-availability", sessionPath, availability })).catch(() => undefined)
+    })
+    void providerAvailability.refresh()
+    active.liveDetail = snapshotFromActive(active)
 
     active.unsubscribe = runtime.session.subscribe((event) => {
+      // Runtime disposal can synchronously emit abort/settled events. Ignore
+      // teardown events even if the SDK unsubscribe callback itself failed so
+      // normal quit, signals, and crash cleanup never become recovery state.
+      if (active.disposed) return
       if (event.type === "queue_update") {
         if (active.queueUpdatesSuspended === 0 && refreshQueuedMessages(active)) {
           void Effect.runPromise(emitQueuedMessages(active))
+          void Effect.runPromise(refreshRuntimeStatus(active))
         }
       } else if (event.type === "agent_start") {
-        void Effect.runPromise(bus.emit({ type: "agent-status", sessionPath, isStreaming: true }))
+        active.abortRequested = false
+        active.pendingTransportFailure = undefined
+        active.recovery = undefined
+        void Effect.runPromise(Effect.gen(function*() {
+          yield* emitRuntimeStatus(active, "running")
+          yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: true })
+          yield* emitContextUsage(active)
+        }))
+      } else if (event.type === "agent_end") {
+        active.pendingTransportFailure = interruptedTransportReason(event.messages, event.willRetry, active.abortRequested)
+        if (!event.willRetry && agentEndedWithError(event.messages)) {
+          void Effect.runPromise(emitRuntimeStatus(active, "failed"))
+        }
       } else if (event.type === "message_start" && event.message.role === "user") {
         active.liveUserMessageIndex += 1
-        void Effect.runPromise(bus.emit({
+        void Effect.runPromise(emitActiveEvent(active, {
           type: "user-message",
           sessionPath,
           message: {
@@ -660,19 +946,33 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           }
         }))
       } else if (event.type === "message_start" && event.message.role === "assistant") {
-        active.liveMessageId = `live-${event.message.timestamp}`
-        void Effect.runPromise(bus.emit({ type: "assistant-start", sessionPath, messageId: active.liveMessageId, timestamp: event.message.timestamp }))
+        if (!active.liveMessageId || active.liveMessageStarted) {
+          active.liveAssistantMessageIndex += 1
+          active.liveMessageId = `live-assistant-${event.message.timestamp}-${active.liveAssistantMessageIndex}`
+        }
+        active.liveMessageStarted = true
+        void Effect.runPromise(emitActiveEvent(active, { type: "assistant-start", sessionPath, messageId: active.liveMessageId, timestamp: event.message.timestamp }))
       } else if (event.type === "message_update") {
-        if (!active.liveMessageId) active.liveMessageId = `live-${Date.now()}`
+        if (!active.liveMessageId) {
+          active.liveAssistantMessageIndex += 1
+          active.liveMessageId = `live-assistant-${Date.now()}-${active.liveAssistantMessageIndex}`
+        }
+        active.liveMessageStarted = true
         if (event.assistantMessageEvent.type === "text_delta") {
-          void Effect.runPromise(bus.emit({ type: "text-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
+          void Effect.runPromise(emitActiveEvent(active, { type: "text-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
         } else if (event.assistantMessageEvent.type === "thinking_delta") {
-          void Effect.runPromise(bus.emit({ type: "thinking-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
+          void Effect.runPromise(emitActiveEvent(active, { type: "thinking-delta", sessionPath, messageId: active.liveMessageId, delta: event.assistantMessageEvent.delta }))
         }
       } else if (event.type === "tool_execution_start") {
+        if (!active.liveMessageId) {
+          active.liveMessageId = `live-tool-${event.toolCallId}`
+          active.liveMessageStarted = false
+        }
+        const messageId = active.liveMessageId
         active.pendingTools.set(event.toolCallId, { name: event.toolName, args: event.args })
         if (event.toolName === "ask_user") {
-          const input = decodeAskUserInput(event.args)
+          const inputOption = decodeAskUserInput(event.args)
+          const input = inputOption._tag === "Some" ? inputOption.value : undefined
           if (input) {
             const request: AskUserInteractionRequest = {
               requestId: event.toolCallId,
@@ -681,17 +981,22 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
               options: input.options
             }
             active.interaction.register(request)
+            void Effect.runPromise(emitRuntimeStatus(active, "input-required"))
           }
         }
-        void Effect.runPromise(bus.emit({
+        void Effect.runPromise(emitActiveEvent(active, {
           type: "tool-start",
           sessionPath,
-          tool: { id: event.toolCallId, name: event.toolName, input: stringify(event.args), status: "running", startedAt: Date.now() }
+          messageId,
+          // SAFETY: event.args is an SDK JSON payload
+          tool: { id: event.toolCallId, name: event.toolName, input: stringify(event.args as PiPayloadValue), status: "running", startedAt: Date.now() }
         }))
       } else if (event.type === "tool_execution_update") {
-        void Effect.runPromise(bus.emit({ type: "tool-update", sessionPath, toolId: event.toolCallId, output: stringify(event.partialResult) }))
+        // SAFETY: partialResult is an SDK tool output payload
+        void Effect.runPromise(emitActiveEvent(active, { type: "tool-update", sessionPath, toolId: event.toolCallId, output: projectToolOutput(event.partialResult as ToolOutputPayload) }))
       } else if (event.type === "tool_execution_end") {
-        const diff = diffFromResult(event.result)
+        // SAFETY: result may contain a details record with diff
+        const diff = diffFromResult(event.result as typeof ToolResultEnvelopeSchema.Type)
         const call = active.pendingTools.get(event.toolCallId)
         active.pendingTools.delete(event.toolCallId)
         if (event.toolName === "ask_user") active.interaction.finishTool(event.toolCallId)
@@ -699,35 +1004,73 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           applyBackgroundToolResult(active.backgroundProcesses, event.toolName, call?.args, event.result, Date.now())
           void Effect.runPromise(emitBackgroundProcesses(active))
         }
-        void Effect.runPromise(bus.emit({
+        void Effect.runPromise(emitActiveEvent(active, {
           type: "tool-end",
           sessionPath,
           toolId: event.toolCallId,
-          output: stringify(event.result),
+          // SAFETY: result is an SDK tool output payload
+          output: projectToolOutput(event.result as ToolOutputPayload),
           isError: event.isError,
-          ...(diff ? { diff } : {})
+          diff: diff || undefined
         }))
         scheduleGitRefresh(active)
-      } else if (event.type === "message_end" && event.message.role === "custom" && event.message.customType === "background-terminal-result") {
-        applyBackgroundResultMessage(active.backgroundProcesses, event.message, event.message.timestamp)
-        void Effect.runPromise(emitBackgroundProcesses(active))
-        scheduleGitRefresh(active)
+      } else if (event.type === "message_end") {
+        if (event.message.role === "assistant") void Effect.runPromise(emitContextUsage(active))
+        if (event.message.role === "custom" && event.message.customType === "background-terminal-result") {
+          applyBackgroundResultMessage(active.backgroundProcesses, event.message, event.message.timestamp)
+          void Effect.runPromise(emitBackgroundProcesses(active))
+          scheduleGitRefresh(active)
+        }
+      } else if (event.type === "entry_appended") {
+        void Effect.runPromise(emitContextUsage(active))
       } else if (event.type === "compaction_start") {
-        void Effect.runPromise(bus.emit({ type: "compaction-status", sessionPath, isCompacting: true }))
+        void Effect.runPromise(Effect.gen(function*() {
+          yield* emitRuntimeStatus(active, "running")
+          yield* emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: true })
+          yield* emitContextUsage(active)
+        }))
       } else if (event.type === "compaction_end") {
-        void Effect.runPromise(bus.emit({ type: "compaction-status", sessionPath, isCompacting: false }))
-        void Effect.runPromise(emitSnapshot(active))
+        void Effect.runPromise(Effect.gen(function*() {
+          yield* emitActiveEvent(active, { type: "compaction-status", sessionPath, isCompacting: false })
+          yield* emitContextUsage(active)
+          // Pi clears its compaction controller immediately after this event.
+          // The end event itself is authoritative, so keep the snapshot in sync.
+          yield* emitSnapshot(active, { isCompacting: false })
+        }))
       } else if (event.type === "thinking_level_changed") {
         void Effect.runPromise(emitSnapshot(active))
+      } else if (event.type === "auto_retry_start") {
+        void Effect.runPromise(emitRuntimeStatus(active, "waiting"))
+      } else if (event.type === "auto_retry_end" && !event.success) {
+        void Effect.runPromise(emitRuntimeStatus(active, "failed"))
       } else if (event.type === "agent_settled") {
         active.liveMessageId = null
-        void Effect.runPromise(bus.emit({ type: "agent-status", sessionPath, isStreaming: false }))
-        void Effect.runPromise(emitSnapshot(active))
+        active.liveMessageStarted = false
+        if (active.pendingTransportFailure) {
+          const prompt = lastUserPrompt(active.session.messages)
+          active.recovery = {
+            reason: active.pendingTransportFailure,
+            interruptedAt: Date.now(),
+            lastPrompt: prompt || undefined
+          }
+        }
+        active.pendingTransportFailure = undefined
+        active.abortRequested = false
+        void Effect.runPromise(Effect.gen(function*() {
+          if (active.runtimeStatus !== "failed") yield* refreshRuntimeStatus(active)
+          yield* emitActiveEvent(active, { type: "agent-status", sessionPath, isStreaming: false })
+          yield* emitSnapshot(active)
+        }))
         scheduleGitRefresh(active)
       }
     })
 
-    activeSessions.set(canonicalPath(sessionPath), active)
+    const sessionKey = canonicalPath(sessionPath)
+    activeSessions.set(sessionKey, active)
+    yield* Effect.tryPromise({
+      try: () => releaseInactiveSessionsExcept(sessionKey),
+      catch: toAppError("release inactive Pi sessions")
+    })
     return active
   })
 
@@ -735,7 +1078,13 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     const projectCwd = canonicalPath(cwd)
     const requestedSessionPath = canonicalPath(sessionPath)
     const existing = activeSessions.get(requestedSessionPath)
-    if (existing && canonicalPath(existing.cwd) === projectCwd) return existing
+    if (existing && canonicalPath(existing.cwd) === projectCwd) {
+      yield* Effect.tryPromise({
+        try: () => releaseInactiveSessionsExcept(requestedSessionPath),
+        catch: toAppError("release inactive Pi sessions")
+      })
+      return existing
+    }
 
     const knownSessions = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
     const known = knownSessions.find((info) => canonicalPath(info.path) === requestedSessionPath && canonicalPath(info.cwd || projectCwd) === projectCwd)
@@ -749,6 +1098,14 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     return yield* attach(projectCwd, manager)
   })
 
+  const activeForWorktree = Effect.fn("PiSessions.activeForWorktree")(function*(cwd: string, sessionPath: string, operation: string) {
+    const active = activeSessions.get(canonicalPath(sessionPath))
+    if (!active || canonicalPath(active.cwd) !== canonicalPath(cwd)) {
+      return yield* Effect.fail(AppError.make({ operation, message: "The session is not open in the selected worktree" }))
+    }
+    return active
+  })
+
   return {
     list: Effect.fn("PiSessions.list")(function*(cwd: string) {
       const projectCwd = canonicalPath(cwd)
@@ -757,83 +1114,213 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
       const parentByChild = inferSubagentParents(projectCwd, infos)
       return infos.map((info) => summaryFromInfo(info, parentByChild.get(info.path)))
     }),
-    create: Effect.fn("PiSessions.create")(function*(cwd: string) {
+    metrics: Effect.fn("PiSessions.metrics")(function*(cwd: string) {
+      const projectCwd = canonicalPath(cwd)
+      const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("list Pi session metrics") })
+      const infos = listed.filter((info) => canonicalPath(info.cwd || projectCwd) === projectCwd)
+      const telemetry = yield* Effect.forEach(infos, (info) => Effect.try({
+        try: () => {
+          const active = activeSessions.get(canonicalPath(info.path))
+          const manager = active?.session.sessionManager ?? SessionManager.open(info.path, undefined, projectCwd)
+          const inProgress = active ? active.session.isStreaming || active.pendingPromptStarts > 0 : false
+          return telemetryFromSession(manager, inProgress)
+        },
+        catch: toAppError("read Pi session metrics")
+      }), { concurrency: 4 })
+      return aggregateProjectMetrics(telemetry)
+    }),
+
+    create: Effect.fn("PiSessions.create")(function*(cwd: string, baseBranch?: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("create Pi session")
         const projectCwd = canonicalPath(cwd)
         const manager = yield* Effect.try({ try: () => SessionManager.create(projectCwd), catch: toAppError("create Pi session") })
+        if (baseBranch) {
+          yield* Effect.try({
+            try: () => manager.appendCustomEntry("pi-desktop-worktree-context", { baseBranch }),
+            catch: toAppError("persist worktree session context")
+          })
+        }
         const active = yield* attach(projectCwd, manager)
+        return detailFromActive(active)
+      })))
+    }),
+    fork: Effect.fn("PiSessions.fork")(function*(cwd: string, sessionPath: string, messageId: string) {
+      return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("fork Pi session")
+        const projectCwd = canonicalPath(cwd)
+        const requestedSessionPath = canonicalPath(sessionPath)
+        const activeSource = activeSessions.get(requestedSessionPath)
+        if (activeSource?.session.isStreaming || activeSource?.session.isCompacting || (activeSource?.pendingPromptStarts ?? 0) > 0) {
+          return yield* Effect.fail(AppError.make({ operation: "fork Pi session", message: "Wait for Pi to finish before forking this session" }))
+        }
+        const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session fork") })
+        const source = listed.find((info) => canonicalPath(info.path) === requestedSessionPath && canonicalPath(info.cwd || projectCwd) === projectCwd)
+        if (!source) {
+          return yield* Effect.fail(AppError.make({ operation: "fork Pi session", message: "Session does not belong to this project" }))
+        }
+        const manager = yield* Effect.try({
+          try: () => SessionManager.open(source.path, undefined, projectCwd),
+          catch: toAppError("read Pi session fork")
+        })
+        const forked = yield* Effect.try({
+          try: () => createSessionFork(manager, source.name || source.firstMessage || "Untitled session", messageId),
+          catch: toAppError("fork Pi session")
+        })
+        const active = yield* attach(projectCwd, forked.manager)
         return detailFromActive(active)
       })))
     }),
     open: Effect.fn("PiSessions.open")(function*(cwd: string, sessionPath: string) {
       return yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("open Pi session")
         const active = yield* getOrOpen(cwd, sessionPath)
         return detailFromActive(active)
       })))
     }),
     inspect: Effect.fn("PiSessions.inspect")(function*(cwd: string, parentSessionPath: string, sessionPath: string) {
-      const projectCwd = canonicalPath(cwd)
-      const requestedPath = canonicalPath(sessionPath)
-      const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
-      const infos = listed.filter((candidate) => canonicalPath(candidate.cwd || projectCwd) === projectCwd)
-      const info = infos.find((candidate) => canonicalPath(candidate.path) === requestedPath)
-      const parentByChild = inferSubagentParents(projectCwd, infos)
-      const inferredParentPath = info ? parentByChild.get(info.path) : undefined
-      if (!info || !inferredParentPath || canonicalPath(inferredParentPath) !== canonicalPath(parentSessionPath)) {
-        return yield* Effect.fail(AppError.make({ operation: "inspect Pi session", message: "Session is not linked to this parent" }))
-      }
-      const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
-      return detailFromManager(manager, summaryFromInfo(info))
+      return yield* sessionLifecycleLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("inspect Pi session")
+        const projectCwd = canonicalPath(cwd)
+        const requestedPath = canonicalPath(sessionPath)
+        const listed = yield* Effect.tryPromise({ try: () => SessionManager.list(projectCwd), catch: toAppError("verify Pi session") })
+        const infos = listed.filter((candidate) => canonicalPath(candidate.cwd || projectCwd) === projectCwd)
+        const info = infos.find((candidate) => canonicalPath(candidate.path) === requestedPath)
+        const parentByChild = inferSubagentParents(projectCwd, infos)
+        const inferredParentPath = info ? parentByChild.get(info.path) : undefined
+        if (!info || !inferredParentPath || canonicalPath(inferredParentPath) !== canonicalPath(parentSessionPath)) {
+          return yield* Effect.fail(AppError.make({ operation: "inspect Pi session", message: "Session is not linked to this parent" }))
+        }
+        const manager = yield* Effect.try({ try: () => SessionManager.open(info.path, undefined, projectCwd), catch: toAppError("inspect Pi session") })
+        const runtime = yield* Effect.tryPromise({
+          try: () => createAgentSessionRuntime(createPiRuntime, { cwd: projectCwd, agentDir: getAgentDir(), sessionManager: manager }),
+          catch: toAppError("inspect Pi context usage")
+        })
+        try {
+          return detailFromManager(manager, summaryFromInfo(info), projectContextUsage(runtime.session))
+        } finally {
+          yield* Effect.tryPromise({
+            try: () => runtime.dispose(),
+            catch: toAppError("dispose inspected Pi session")
+          })
+        }
+      }))
     }),
-    prompt: Effect.fn("PiSessions.prompt")(function*(sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
+    prompt: Effect.fn("PiSessions.prompt")(function*(cwd: string, sessionPath: string, text: string, delivery: QueueDelivery, attachmentPaths: ReadonlyArray<string>) {
       const requestedPath = canonicalPath(sessionPath)
-      const active = activeSessions.get(requestedPath)
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Open the session before sending a message" }))
+      const active = yield* activeForWorktree(cwd, sessionPath, "prompt Pi")
 
       const inferredPaths = parseImagePathReferences(text).map((reference) => reference.path)
       const paths = [...new Set([...inferredPaths, ...attachmentPaths])]
       const prompt = normalizeImageReferences(text, paths)
       if (prompt.trim().length === 0) return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "Add a message or image before sending" }))
-      const images = yield* Effect.all(paths.map((path) => attachments.readForPi(path))).pipe(
-        Effect.mapError((error) => AppError.make({ operation: "read image attachment", message: error.message }))
-      )
+      let promptStartPending = true
+      const finishPromptStart = () => {
+        if (!promptStartPending) return
+        promptStartPending = false
+        active.pendingPromptStarts -= 1
+      }
+      yield* Effect.sync(() => {
+        active.pendingPromptStarts += 1
+      })
+      yield* Effect.gen(function*() {
+        const images = yield* Effect.all(paths.map((path) => attachments.readForPi(path))).pipe(
+          Effect.mapError((error) => AppError.make({ operation: "read image attachment", message: error.message }))
+        )
 
-      const operation = yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
-        if (activeSessions.get(requestedPath) !== active) {
-          return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "The session changed before the message could be sent" }))
-        }
-        if (active.session.isStreaming) {
-          const error = queueabilityError(active.session, prompt)
-          if (error) return yield* Effect.fail(error)
-          yield* Effect.tryPromise({
-            try: () => delivery === "steer" ? active.session.steer(prompt, images) : active.session.followUp(prompt, images),
-            catch: toAppError(delivery === "steer" ? "steer Pi" : "queue follow-up Pi message")
-          })
-          if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
-          if (images.length > 0) {
-            const queuedMessage = [...active.queuedMessages].reverse().find((message) =>
-              message.delivery === delivery && message.text === prompt && !active.queuedImages.has(message.id)
-            )
-            if (queuedMessage) active.queuedImages.set(queuedMessage.id, images)
+        const operation = yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+          if (activeSessions.get(requestedPath) !== active) {
+            return yield* Effect.fail(AppError.make({ operation: "prompt Pi", message: "The session changed before the message could be sent" }))
           }
-          return { kind: "queued" } as const
+          if (active.session.isStreaming) {
+            const error = queueabilityError(active.session, prompt)
+            if (error) return yield* Effect.fail(error)
+            yield* Effect.tryPromise({
+              try: () => delivery === "steer" ? active.session.steer(prompt, images) : active.session.followUp(prompt, images),
+              catch: toAppError(delivery === "steer" ? "steer Pi" : "queue follow-up Pi message")
+            })
+            if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
+            if (images.length > 0) {
+              const queuedMessage = [...active.queuedMessages].reverse().find((message) =>
+                message.delivery === delivery && message.text === prompt && !active.queuedImages.has(message.id)
+              )
+              if (queuedMessage) active.queuedImages.set(queuedMessage.id, images)
+            }
+            return { kind: "queued" } as const
+          }
+
+          const run = yield* Effect.try({
+            try: () => {
+              active.recovery = undefined
+              return active.session.prompt(prompt, {
+                images: images.length > 0 ? images : undefined,
+                preflightResult: finishPromptStart
+              })
+            },
+            catch: toAppError("prompt Pi")
+          })
+          return { kind: "started", run } as const
+        })))
+
+        if (operation.kind === "queued") return
+        yield* Effect.tryPromise({ try: () => operation.run, catch: toAppError("prompt Pi") })
+      }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
+    }),
+    recover: Effect.fn("PiSessions.recover")(function*(cwd: string, sessionPath: string, action: SessionRecoveryAction) {
+      const requestedPath = canonicalPath(sessionPath)
+      const prepared = yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
+        yield* lifecycleGate.ensureAvailable("recover Pi session")
+        const current = yield* activeForWorktree(cwd, requestedPath, "recover Pi session")
+        const recovery = current.recovery
+        if (!recovery) return yield* Effect.fail(AppError.make({ operation: "recover Pi session", message: "This Pi session is no longer interrupted" }))
+        const prompt = recoveryPrompt(action, recovery)
+        if (action === "restart" && !prompt) {
+          return yield* Effect.fail(AppError.make({ operation: "recover Pi session", message: "The interrupted session has no preserved user prompt to restart" }))
         }
 
-        const run = yield* Effect.try({
-          try: () => active.session.prompt(prompt, images.length > 0 ? { images } : undefined),
-          catch: toAppError("prompt Pi")
+        const preservedQueue = current.queuedMessages
+        const preservedImages = new Map(current.queuedImages)
+        activeSessions.delete(requestedPath)
+        yield* Effect.promise(() => releaseActiveSession(current))
+        const manager = yield* Effect.try({
+          try: () => SessionManager.open(requestedPath, undefined, current.cwd),
+          catch: toAppError("reopen Pi session")
         })
-        return { kind: "started", run } as const
+        const next = yield* attach(current.cwd, manager)
+        // Continue/restart only clears recovery once Pi accepts the prompt. If
+        // preflight fails, the renderer can reopen this same active runtime and
+        // offer the preserved choices again instead of losing the recovery path.
+        next.recovery = recoveryAfterReopen(action, recovery)
+        for (const [id, images] of preservedImages) next.queuedImages.set(id, images)
+        if (preservedQueue.length > 0) yield* replaceNativeQueue(next, preservedQueue)
+        if (prompt) next.pendingPromptStarts += 1
+        yield* emitSnapshot(next)
+        return { active: next, prompt, recovery }
       })))
 
-      if (operation.kind === "queued") return
-      yield* Effect.tryPromise({ try: () => operation.run, catch: toAppError("prompt Pi") })
+      if (prepared.prompt) {
+        const prompt = prepared.prompt
+        let promptStartPending = true
+        const finishPromptStart = () => {
+          if (!promptStartPending) return
+          promptStartPending = false
+          prepared.active.pendingPromptStarts -= 1
+        }
+        yield* Effect.tryPromise({
+          try: () => prepared.active.session.prompt(prompt, { preflightResult: finishPromptStart }),
+          catch: toAppError("continue recovered Pi session")
+        }).pipe(Effect.ensuring(Effect.sync(finishPromptStart)))
+        if (prepared.active.recovery === prepared.recovery) {
+          prepared.active.recovery = undefined
+          yield* emitSnapshot(prepared.active)
+        }
+      }
+      return detailFromActive(prepared.active)
     }),
-    editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(sessionPath: string, messageId: string, text: string) {
+    editQueuedMessage: Effect.fn("PiSessions.editQueuedMessage")(function*(cwd: string, sessionPath: string, messageId: string, text: string) {
       const requestedPath = canonicalPath(sessionPath)
       yield* queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = activeSessions.get(requestedPath)
-        if (!active) return yield* Effect.fail(AppError.make({ operation: "edit queued Pi message", message: "Open the session before editing its queue" }))
+        const active = yield* activeForWorktree(cwd, requestedPath, "edit queued Pi message")
         if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
         if (!active.session.isStreaming) {
           return yield* Effect.fail(AppError.make({ operation: "edit queued Pi message", message: "Pi already settled before this queued message could be edited" }))
@@ -848,11 +1335,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* replaceNativeQueue(active, updateQueuedMessageText(active.queuedMessages, message.id, text))
       }))
     }),
-    removeQueuedMessage: Effect.fn("PiSessions.removeQueuedMessage")(function*(sessionPath: string, messageId: string) {
+    removeQueuedMessage: Effect.fn("PiSessions.removeQueuedMessage")(function*(cwd: string, sessionPath: string, messageId: string) {
       const requestedPath = canonicalPath(sessionPath)
       yield* queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = activeSessions.get(requestedPath)
-        if (!active) return yield* Effect.fail(AppError.make({ operation: "remove queued Pi message", message: "Open the session before changing its queue" }))
+        const active = yield* activeForWorktree(cwd, requestedPath, "remove queued Pi message")
         if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
         if (!active.session.isStreaming) {
           return yield* Effect.fail(AppError.make({ operation: "remove queued Pi message", message: "Pi already settled before this queued message could be removed" }))
@@ -862,11 +1348,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* replaceNativeQueue(active, removeQueuedMessage(active.queuedMessages, message.id))
       }))
     }),
-    steerQueuedMessage: Effect.fn("PiSessions.steerQueuedMessage")(function*(sessionPath: string, messageId: string) {
+    steerQueuedMessage: Effect.fn("PiSessions.steerQueuedMessage")(function*(cwd: string, sessionPath: string, messageId: string) {
       const requestedPath = canonicalPath(sessionPath)
       yield* queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = activeSessions.get(requestedPath)
-        if (!active) return yield* Effect.fail(AppError.make({ operation: "steer queued Pi message", message: "Open the session before changing its queue" }))
+        const active = yield* activeForWorktree(cwd, requestedPath, "steer queued Pi message")
         if (refreshQueuedMessages(active)) yield* emitQueuedMessages(active)
         if (!active.session.isStreaming) {
           return yield* Effect.fail(AppError.make({ operation: "steer queued Pi message", message: "Pi already settled before this message could be steered" }))
@@ -876,44 +1361,42 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         yield* replaceNativeQueue(active, prioritizeQueuedMessageForSteering(active.queuedMessages, message.id))
       }))
     }),
-    abort: Effect.fn("PiSessions.abort")(function*(sessionPath: string) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return
+    abort: Effect.fn("PiSessions.abort")(function*(cwd: string, sessionPath: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "abort Pi")
+      active.abortRequested = true
       active.interaction.cancelPending()
       yield* Effect.tryPromise({ try: () => active.session.abort(), catch: toAppError("abort Pi") })
     }),
-    models: Effect.fn("PiSessions.models")(function*(sessionPath: string) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "list models", message: "Open the session before choosing a model" }))
-      const models = yield* Effect.tryPromise({ try: () => active.session.modelRuntime.getAvailable(), catch: toAppError("list models") })
-      return models.map((model) => ({ provider: model.provider, id: model.id, name: model.name }))
+    models: Effect.fn("PiSessions.models")(function*(cwd: string, sessionPath: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "list models")
+      return active.modelAvailability
     }),
-    setModel: Effect.fn("PiSessions.setModel")(function*(sessionPath: string, provider: string, modelId: string) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "set model", message: "Open the session before choosing a model" }))
+    commands: Effect.fn("PiSessions.commands")(function*(cwd: string, sessionPath: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "list Pi commands")
+      return commandsFromSession(active.session)
+    }),
+
+    setModel: Effect.fn("PiSessions.setModel")(function*(cwd: string, sessionPath: string, provider: string, modelId: string) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "set model")
       const available = yield* Effect.tryPromise({ try: () => active.session.modelRuntime.getAvailable(), catch: toAppError("list models") })
       const model = available.find((candidate) => candidate.provider === provider && candidate.id === modelId)
       if (!model) return yield* Effect.fail(AppError.make({ operation: "set model", message: "The selected model is unavailable" }))
       yield* Effect.tryPromise({ try: () => active.session.setModel(model), catch: toAppError("set model") })
-      const detail = detailFromActive(active)
       yield* emitSnapshot(active)
-      return detail
+      return detailFromActive(active)
     }),
-    setThinkingLevel: Effect.fn("PiSessions.setThinkingLevel")(function*(sessionPath: string, level: ThinkingLevel) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "set effort", message: "Open the session before choosing an effort" }))
+    setThinkingLevel: Effect.fn("PiSessions.setThinkingLevel")(function*(cwd: string, sessionPath: string, level: ThinkingLevel) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "set effort")
       const supported: ReadonlyArray<string> = active.session.getAvailableThinkingLevels()
       if (!supported.includes(level)) {
         return yield* Effect.fail(AppError.make({ operation: "set effort", message: `Effort ${level} is unavailable for this model` }))
       }
       yield* Effect.sync(() => active.session.setThinkingLevel(level))
-      const detail = detailFromActive(active)
       yield* emitSnapshot(active)
-      return detail
+      return detailFromActive(active)
     }),
-    answerInteraction: Effect.fn("PiSessions.answerInteraction")(function*(sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) {
-      const active = activeSessions.get(canonicalPath(sessionPath))
-      if (!active) return yield* Effect.fail(AppError.make({ operation: "answer Pi interaction", message: "Open the session before answering" }))
+    answerInteraction: Effect.fn("PiSessions.answerInteraction")(function*(cwd: string, sessionPath: string, requestId: string, answer: AskUserInteractionAnswer) {
+      const active = yield* activeForWorktree(cwd, sessionPath, "answer Pi interaction")
       yield* Effect.try({
         try: () => active.interaction.answer(requestId, answer),
         catch: toAppError("answer Pi interaction")
@@ -921,15 +1404,12 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     }),
     dispose: Effect.fn("PiSessions.dispose")(function*() {
       yield* sessionLifecycleLock.withPermit(queueMutationLock.withPermit(Effect.gen(function*() {
-        const active = [...activeSessions.values()]
-        activeSessions.clear()
-        yield* Effect.promise(async () => {
-          for (const session of active) {
-            cancelGitRefresh(session)
-            session.interaction.dispose()
-            session.unsubscribe()
-            await session.runtime.dispose()
-          }
+        yield* Effect.sync(() => {
+          lifecycleGate.close()
+        })
+        yield* Effect.tryPromise({
+          try: () => releaseAllEntries(activeSessions, releaseActiveSession),
+          catch: toAppError("dispose Pi sessions")
         })
       })))
     })

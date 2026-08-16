@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process"
+import { createHash } from "node:crypto"
 import { copyFile, mkdir, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent"
+import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, SessionManager } from "@earendil-works/pi-coding-agent"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..")
 const cwd = root
@@ -26,11 +27,25 @@ const gitTotals = (await gitOutput(["diff", "--numstat", "--no-ext-diff", "--no-
     const [added, deleted] = line.split("\t")
     return { additions: totals.additions + numericStat(added), deletions: totals.deletions + numericStat(deleted) }
   }, { additions: 0, deletions: 0 })
+const gitTrackedFiles = (await gitOutput(["diff", "--name-only", "-z", "--no-ext-diff", "--no-renames", "HEAD", "--"])).split("\0").filter(Boolean)
+const gitUntrackedFiles = (await gitOutput(["ls-files", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean)
+const gitChangedFiles = gitTrackedFiles.length + gitUntrackedFiles.length
+const gitCommonDir = (await gitOutput(["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim()
+const linkedWorktreeOutput = await gitOutput(["worktree", "list", "--porcelain"])
+const linkedWorktrees = linkedWorktreeOutput.split("\n\n").flatMap((block) => {
+  const fields = Object.fromEntries(block.split("\n").flatMap((line) => {
+    const separator = line.indexOf(" ")
+    return separator > 0 ? [[line.slice(0, separator), line.slice(separator + 1)]] : []
+  }))
+  if (!fields.worktree) return []
+  const branch = fields.branch?.replace(/^refs\/heads\//, "") ?? (fields.HEAD ? `detached @ ${fields.HEAD.slice(0, 7)}` : "detached HEAD")
+  return [{ path: resolve(fields.worktree), branch }]
+})
 const infos = await SessionManager.list(cwd)
 const preferred = infos.find((info) => !info.name?.startsWith("subagent:")) ?? infos[0]
 const orderedInfos = preferred ? [preferred, ...infos.filter((info) => info.path !== preferred.path)] : infos
-const modelRuntime = await ModelRuntime.create()
-const availableModels = await modelRuntime.getAvailable()
+const services = await createAgentSessionServices({ cwd, agentDir: getAgentDir() })
+const availableModels = await services.modelRuntime.getAvailable()
 
 const stringify = (value) => {
   if (typeof value === "string") return value
@@ -55,12 +70,35 @@ const thinkingLevelsForModel = (model) => {
   })
 }
 
-const project = {
-  id: `e2e-${Buffer.from(cwd).toString("base64url").slice(0, 12)}`,
+const stableId = (value) => createHash("sha1").update(value).digest("hex").slice(0, 12)
+const worktreeId = (path) => `e2e-worktree-${stableId(path)}`
+const primaryWorktreePath = linkedWorktrees[0]?.path
+const worktrees = linkedWorktrees
+  .sort((left, right) => Number(right.path === cwd) - Number(left.path === cwd))
+  .map((entry) => ({
+    id: worktreeId(entry.path),
+    path: entry.path,
+    name: basename(entry.path),
+    branch: entry.branch,
+    addedAt: Date.now(),
+    kind: entry.path === primaryWorktreePath ? "local" : "linked",
+    ...(entry.path === cwd && gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
+  }))
+const worktree = worktrees.find((entry) => entry.path === cwd) ?? {
+  id: worktreeId(cwd),
   path: cwd,
   name: basename(cwd),
+  branch: gitBranch || "detached HEAD",
   addedAt: Date.now(),
-  ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals } } : {})
+  kind: linkedWorktrees.length === 0 ? "local" : "linked",
+  ...(gitBranch ? { git: { branch: gitBranch, ...gitTotals, changedFiles: gitChangedFiles } } : {})
+}
+if (!worktrees.some((entry) => entry.id === worktree.id)) worktrees.unshift(worktree)
+const project = {
+  id: `e2e-project-${stableId(gitCommonDir || cwd)}`,
+  name: basename(gitCommonDir ? dirname(gitCommonDir) : cwd),
+  addedAt: worktree.addedAt,
+  worktrees
 }
 
 const parentCandidates = new Map()
@@ -233,7 +271,93 @@ const projectBackgroundProcesses = (entries) => {
     .sort((left, right) => right.startedAt - left.startedAt)
 }
 
+const emptyTokens = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 })
+const addTokens = (target, usage) => ({
+  input: target.input + usage.input,
+  output: target.output + usage.output,
+  cacheRead: target.cacheRead + usage.cacheRead,
+  cacheWrite: target.cacheWrite + usage.cacheWrite,
+  total: target.total + usage.input + usage.output + usage.cacheRead + usage.cacheWrite
+})
+
+const metricTelemetry = orderedInfos.map((info) => {
+  const manager = SessionManager.open(info.path)
+  const branchMessages = manager.getBranch().filter((entry) => entry.type === "message")
+  const latestUserIndex = branchMessages.findLastIndex((entry) => entry.message.role === "user")
+  const latestUser = branchMessages[latestUserIndex]
+  const latestAssistant = latestUserIndex >= 0
+    ? branchMessages.slice(latestUserIndex + 1).filter((entry) => entry.message.role === "assistant")
+      .at(-1)
+    : undefined
+  const outcome = !latestUser || !latestAssistant || latestAssistant.message.stopReason === "pending" || latestAssistant.message.stopReason === "toolUse"
+    ? "incomplete"
+    : latestAssistant.message.stopReason === "error" || latestAssistant.message.stopReason === "aborted" ? "failure" : "success"
+  const usage = manager.getEntries().flatMap((entry) => {
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      return [{ model: `${entry.message.provider}/${entry.message.responseModel ?? entry.message.model}`, usage: entry.message.usage }]
+    }
+    if (entry.type === "message" && entry.message.role === "toolResult" && entry.message.usage) {
+      return [{ model: "Tools & summaries", usage: entry.message.usage }]
+    }
+    if ((entry.type === "compaction" || entry.type === "branch_summary") && entry.usage) {
+      return [{ model: "Tools & summaries", usage: entry.usage }]
+    }
+    return []
+  })
+  return {
+    id: info.id,
+    outcome,
+    ...(latestUser && outcome !== "incomplete" ? { completionMs: Math.max(0, new Date(latestAssistant.timestamp).getTime() - new Date(latestUser.timestamp).getTime()) } : {}),
+    ...(outcome === "failure" ? { failureReason: latestAssistant.message.errorMessage?.trim() || (latestAssistant.message.stopReason === "aborted" ? "Aborted" : "Provider error") } : {}),
+    usage
+  }
+})
+
+const metricModelTotals = new Map()
+const metricFailureReasons = new Map()
+let metricTokens = emptyTokens()
+let metricSuccessful = 0
+let metricFailed = 0
+let metricCompletionMs = 0
+for (const telemetry of metricTelemetry) {
+  if (telemetry.outcome === "success") metricSuccessful += 1
+  if (telemetry.outcome === "failure") {
+    metricFailed += 1
+    metricFailureReasons.set(telemetry.failureReason, (metricFailureReasons.get(telemetry.failureReason) ?? 0) + 1)
+  }
+  metricCompletionMs += telemetry.completionMs ?? 0
+  for (const item of telemetry.usage) {
+    metricTokens = addTokens(metricTokens, item.usage)
+    const current = metricModelTotals.get(item.model) ?? { tokens: emptyTokens(), sessions: new Set() }
+    current.tokens = addTokens(current.tokens, item.usage)
+    current.sessions.add(telemetry.id)
+    metricModelTotals.set(item.model, current)
+  }
+}
+const metricCompleted = metricSuccessful + metricFailed
+const metrics = {
+  generatedAt: Date.now(),
+  sessionCount: metricTelemetry.length,
+  completedSessions: metricCompleted,
+  successfulSessions: metricSuccessful,
+  failedSessions: metricFailed,
+  incompleteSessions: metricTelemetry.length - metricCompleted,
+  successRate: metricCompleted > 0 ? metricSuccessful / metricCompleted : null,
+  averageCompletionMs: metricCompleted > 0 ? metricCompletionMs / metricCompleted : null,
+  tokenUsage: metricTokens,
+  modelUsage: [...metricModelTotals.entries()].map(([model, value]) => ({ model, sessions: value.sessions.size, ...value.tokens }))
+    .sort((left, right) => right.total - left.total || left.model.localeCompare(right.model)),
+  failureReasons: [...metricFailureReasons.entries()].map(([reason, count]) => ({ reason, count }))
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason))
+}
+
 const details = []
+const recoveryPreview = process.env.PI_E2E_RECOVERY === "1"
+const recoveryPromptText = "Finish the transport recovery implementation"
+const withRecoveryPrompt = (messages, includeRecovery) => includeRecovery
+  ? [...messages, { id: "fixture-recovery-prompt", role: "user", blocks: [{ type: "text", text: recoveryPromptText }], timestamp: Date.now() - 1_000 }]
+  : messages
+let commands = []
 for (const [index, info] of orderedInfos.entries()) {
   const summary = summaries[index]
   if (!summary) continue
@@ -247,14 +371,116 @@ for (const [index, info] of orderedInfos.entries()) {
     : selectedModel
       ? `${selectedModel.provider}/${selectedModel.id}`
       : ""
+  // The browser fixture uses the same AgentSession source as the desktop app.
+  // Do not estimate historical usage from session entries here.
+  const contextSession = await createAgentSessionFromServices({ services, sessionManager: manager })
+  let contextUsage
+  try {
+    contextUsage = contextSession.session.getContextUsage()
+    if (index === 0) {
+      commands = [
+        ...contextSession.session.resourceLoader.getSkills().skills.map((skill) => ({
+          kind: "skill",
+          name: skill.name,
+          description: skill.description,
+          scope: skill.sourceInfo.scope === "user" || skill.sourceInfo.scope === "project" ? skill.sourceInfo.scope : "other"
+        })),
+        ...contextSession.session.promptTemplates.map((template) => ({
+          kind: "prompt",
+          name: template.name,
+          description: template.description,
+          ...(template.argumentHint ? { argumentHint: template.argumentHint } : {}),
+          scope: template.sourceInfo.scope === "user" || template.sourceInfo.scope === "project" ? template.sourceInfo.scope : "other"
+        }))
+      ]
+    }
+  } finally {
+    // AgentSession owns listeners/resources; always dispose even if usage lookup throws.
+    contextSession.session.dispose()
+  }
   details.push({
     summary,
-    messages: projectEntries(manager.getBranch()),
+    messages: withRecoveryPrompt(projectEntries(manager.getBranch()), recoveryPreview && info.path === preferred?.path),
     model,
     thinkingLevel: context.thinkingLevel,
     availableThinkingLevels: thinkingLevelsForModel(selectedModel),
     backgroundProcesses: projectBackgroundProcesses(manager.getBranch()),
-    queuedMessages: [],
+    queuedMessages: recoveryPreview && info.path === preferred?.path
+      ? [
+          { id: "fixture-recovery-steer", delivery: "steer", text: "Check the transport state before continuing" },
+          { id: "fixture-recovery-follow-up", delivery: "follow-up", text: "Run the focused regression tests" }
+        ]
+      : [],
+    ...(recoveryPreview && info.path === preferred?.path ? {
+      recovery: {
+        reason: "The Pi response pipe closed before the turn completed.",
+        interruptedAt: Date.now(),
+        lastPrompt: recoveryPromptText
+      }
+    } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
+    runtimeStatus: "done",
+    isStreaming: false,
+    isCompacting: false
+  })
+}
+
+if (details.length === 0) {
+  const manager = SessionManager.inMemory(cwd)
+  const selectedModel = availableModels[0]
+  const summary = {
+    id: manager.getSessionId(),
+    path: `pi-e2e-memory://${manager.getSessionId()}`,
+    name: "Pi session review",
+    firstMessage: "",
+    updatedAt: Date.now(),
+    messageCount: 0
+  }
+  summaries.push(summary)
+  const contextSession = await createAgentSessionFromServices({ services, sessionManager: manager })
+  let contextUsage
+  try {
+    contextUsage = contextSession.session.getContextUsage()
+    commands = [
+      ...contextSession.session.resourceLoader.getSkills().skills.map((skill) => ({
+        kind: "skill",
+        name: skill.name,
+        description: skill.description,
+        scope: skill.sourceInfo.scope === "user" || skill.sourceInfo.scope === "project" ? skill.sourceInfo.scope : "other"
+      })),
+      ...contextSession.session.promptTemplates.map((template) => ({
+        kind: "prompt",
+        name: template.name,
+        description: template.description,
+        ...(template.argumentHint ? { argumentHint: template.argumentHint } : {}),
+        scope: template.sourceInfo.scope === "user" || template.sourceInfo.scope === "project" ? template.sourceInfo.scope : "other"
+      }))
+    ]
+  } finally {
+    contextSession.session.dispose()
+  }
+  details.push({
+    summary,
+    messages: withRecoveryPrompt([], recoveryPreview),
+    model: selectedModel ? `${selectedModel.provider}/${selectedModel.id}` : "",
+    thinkingLevel: "off",
+    availableThinkingLevels: thinkingLevelsForModel(selectedModel),
+    backgroundProcesses: [],
+    queuedMessages: recoveryPreview
+      ? [
+          { id: "fixture-recovery-steer", delivery: "steer", text: "Check the transport state before continuing" },
+          { id: "fixture-recovery-follow-up", delivery: "follow-up", text: "Run the focused regression tests" }
+        ]
+      : [],
+    ...(recoveryPreview ? {
+      recovery: {
+        reason: "The Pi response pipe closed before the turn completed.",
+        interruptedAt: Date.now(),
+        lastPrompt: recoveryPromptText
+      }
+    } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
+    runtimeStatus: interaction?.sessionPath === summary.path ? "input-required" : "done",
     isStreaming: false,
     isCompacting: false
   })
@@ -262,10 +488,13 @@ for (const [index, info] of orderedInfos.entries()) {
 
 const fixture = {
   generatedAt: Date.now(),
+  activeWorktreeId: worktree.id,
   projects: [project],
   sessions: summaries,
   details,
   models: availableModels.map((model) => ({ provider: model.provider, id: model.id, name: model.name })),
+  commands,
+  metrics,
   ...(interaction ? { interaction } : {})
 }
 
@@ -273,4 +502,4 @@ const outputPath = join(root, ".e2e-public/pi-e2e.json")
 await mkdir(dirname(outputPath), { recursive: true })
 await writeFile(outputPath, `${JSON.stringify(fixture)}\n`, "utf8")
 await copyFile(join(root, "src/renderer/public/favicon.svg"), join(root, ".e2e-public/favicon.svg"))
-console.log(`Generated Pi-backed E2E fixture: ${summaries.length} sessions, ${fixture.models.length} models${interaction ? ", ask_user preview included" : ""}`)
+console.log(`Generated Pi-backed E2E fixture: ${summaries.length} sessions, ${fixture.models.length} models${interaction ? ", ask_user preview included" : ""}${recoveryPreview ? ", recovery preview included" : ""}`)
