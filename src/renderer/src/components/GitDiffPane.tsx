@@ -6,12 +6,12 @@ import type { ReactNode } from "react"
 import type { GitDiff, GitDiffFile } from "../../../shared/contracts"
 import styles from "./GitDiffPane.module.css"
 
-const statusLabel: Record<GitDiffFile["status"], string> = {
+const statusLabel = {
   added: "Added",
   untracked: "Untracked",
   modified: "Modified",
   deleted: "Deleted"
-}
+} satisfies Record<GitDiffFile["status"], string>
 
 type GitFileTreeNode =
   | { readonly kind: "folder"; readonly name: string; readonly path: string; readonly children: GitFileTreeNode[] }
@@ -54,12 +54,12 @@ const buildFileTree = (files: ReadonlyArray<GitDiffFile>) => {
 
 const folderPaths = (nodes: ReadonlyArray<GitFileTreeNode>): ReadonlyArray<string> => nodes.flatMap((node) => node.kind === "folder" ? [node.path, ...folderPaths(node.children)] : [])
 
-const statusMark: Record<GitDiffFile["status"], string> = {
+const statusMark = {
   added: "A",
   untracked: "U",
   modified: "M",
   deleted: "D"
-}
+} satisfies Record<GitDiffFile["status"], string>
 
 export function GitDiffPane({ diff, loading, onClose, onRefresh }: {
   readonly diff: GitDiff | null

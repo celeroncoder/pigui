@@ -419,6 +419,7 @@ for (const [index, info] of orderedInfos.entries()) {
       }
     } : {}),
     ...(contextUsage ? { contextUsage } : {}),
+    runtimeStatus: "done",
     isStreaming: false,
     isCompacting: false
   })

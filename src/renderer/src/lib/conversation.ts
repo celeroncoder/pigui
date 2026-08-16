@@ -91,7 +91,7 @@ export const buildConversationPreviewLandmarks = (items: ReadonlyArray<Conversat
   const text = item.message.blocks
     .flatMap((block) => block.type === "text" ? [block.text] : [])
     .join(" ")
-    .replace(/[#*_`~>\[\]]/g, "")
+    .replace(/[#*_`~>[\]]/g, "")
     .replace(/\s+/g, " ")
     .trim()
   return {

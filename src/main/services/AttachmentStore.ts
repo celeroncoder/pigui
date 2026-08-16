@@ -128,9 +128,9 @@ export const makeAttachmentStore = (root: string) => ({
   })
 })
 
-type AttachmentStoreShape = ReturnType<typeof makeAttachmentStore>
+type AttachmentStoreService = ReturnType<typeof makeAttachmentStore>
 
-export class AttachmentStore extends Context.Service<AttachmentStore, AttachmentStoreShape>()("AttachmentStore") {}
+export class AttachmentStore extends Context.Service<AttachmentStore, AttachmentStoreService>()("AttachmentStore") {}
 
 export const AttachmentStoreLive = Layer.effect(AttachmentStore)(Effect.gen(function*() {
   const root = yield* Effect.try({

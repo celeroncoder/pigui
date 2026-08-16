@@ -11,12 +11,12 @@ interface DitherProgressBarProps {
 
 const HEIGHT = 10
 
-const fillByTone: Record<ContextUsageTone, Rgb> = {
+const fillByTone = {
   default: [123, 141, 128],
   warning: [211, 154, 103],
   critical: [223, 137, 128],
   unknown: [119, 119, 115]
-}
+} satisfies Record<ContextUsageTone, Rgb>
 
 /** A compact ordered-dither fill using the repository's dither-kit canvas primitive. */
 export function DitherProgressBar({ value, tone }: DitherProgressBarProps) {

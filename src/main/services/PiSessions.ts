@@ -7,18 +7,18 @@ import {
   SessionManager
 } from "@earendil-works/pi-coding-agent"
 import type { AgentSession, AgentSessionRuntime, CreateAgentSessionRuntimeFactory } from "@earendil-works/pi-coding-agent"
-import { Context, Effect, Exit, Layer, Schema, Semaphore } from "effect"
+import { Context, Effect, Layer, Schema, Semaphore } from "effect"
 import { normalizeImageReferences, parseImagePathReferences } from "../../shared/attachments"
 import { projectContextUsage } from "../../shared/contextUsage"
 import type { AskUserInteractionAnswer, AskUserInteractionRequest } from "../../shared/interaction"
 import { AskUserInputSchema } from "../../shared/interaction"
-import type { BackgroundProcess, BackgroundProcessStatus, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, PiCommand, ProjectMetrics, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
+import type { BackgroundProcess, ChatMessage, ContextUsage, MessageBlock, ModelAvailability, PiCommand, ProjectMetrics, QueueDelivery, QueuedMessage, SessionDetail, SessionEvent, SessionForkMetadata, SessionRecovery, SessionRecoveryAction, SessionRuntimeStatus, SessionSummary, ThinkingLevel, ToolResultBlock } from "../../shared/contracts"
 import { reduceSessionEvent } from "../../shared/sessionEvents"
 import { AppError, toAppError } from "./AppError"
 import { AskUserInteractionBridge } from "./AskUserInteraction"
 import { AttachmentStore, type PiImageAttachment } from "./AttachmentStore"
 import { GitContext } from "./GitContext"
-import { projectToolOutput } from "./PiEventProjection"
+import { projectToolOutput, type ToolOutputPayload } from "./PiEventProjection"
 import { PiSessionLifecycleGate, releaseAllEntries, releaseInactiveEntriesExcept, releaseSessionResources } from "./PiSessionLifecycle"
 import { ProviderAvailability } from "./ProviderAvailability"
 import { aggregateProjectMetrics, telemetryFromSession } from "./ProjectMetrics"
@@ -64,8 +64,19 @@ interface ActiveSession {
   runtimeStatus: SessionRuntimeStatus
 }
 
-const stringify = (value: unknown): string => {
-  if (typeof value === "string") return value
+export type PiPayloadValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | ReadonlyArray<string | number | boolean | null | undefined>
+  | { readonly [key: string]: string | number | boolean | null | undefined }
+
+const isString = Schema.is(Schema.String)
+
+const stringify = (value: PiPayloadValue): string => {
+  if (isString(value)) return value
   try {
     return JSON.stringify(value, null, 2) ?? String(value)
   } catch {
@@ -73,22 +84,33 @@ const stringify = (value: unknown): string => {
   }
 }
 
-const diffFromResult = (value: unknown): string | undefined => {
-  if (typeof value !== "object" || value === null || !("details" in value)) return undefined
-  const details = value.details
-  if (typeof details !== "object" || details === null || !("diff" in details) || typeof details.diff !== "string") return undefined
-  return details.diff
+const ToolResultDetailsSchema = Schema.Struct({
+  diff: Schema.optionalKey(Schema.String)
+})
+const ToolResultEnvelopeSchema = Schema.Struct({
+  details: Schema.optionalKey(ToolResultDetailsSchema)
+})
+const decodeToolResultEnvelope = Schema.decodeUnknownOption(ToolResultEnvelopeSchema)
+
+const diffFromResult = (message: typeof ToolResultEnvelopeSchema.Type | undefined): string | undefined => {
+  if (!message) return undefined
+  const decoded = decodeToolResultEnvelope(message)
+  return decoded._tag === "Some" ? decoded.value.details?.diff : undefined
 }
 
-const textFromContent = (content: string | ReadonlyArray<{ readonly type: string; readonly text?: string }>) => {
-  if (typeof content === "string") return content
-  return content.flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n")
+export type MessageContentInput = string | ReadonlyArray<{ readonly type?: string; readonly text?: string }>
+
+const textFromContent = (content: MessageContentInput | undefined): string => {
+  if (Array.isArray(content)) {
+    return content.flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n")
+  }
+  return isString(content) ? content : ""
 }
 
 type PiMessage = AgentSession["messages"][number]
 type PiSkill = ReturnType<AgentSession["resourceLoader"]["getSkills"]>["skills"][number]
 
-const timestampValue = (value: string | number): number => typeof value === "number" ? value : new Date(value).getTime()
+const timestampValue = (value: string | number): number => Number.isFinite(value) ? Number(value) : new Date(value).getTime()
 
 const commandScope = (scope: string): PiCommand["scope"] =>
   scope === "user" || scope === "project" ? scope : "other"
@@ -104,7 +126,7 @@ const promptCommand = (template: AgentSession["promptTemplates"][number]): PiCom
   kind: "prompt",
   name: template.name,
   description: template.description,
-  ...(template.argumentHint ? { argumentHint: template.argumentHint } : {}),
+  argumentHint: template.argumentHint || undefined,
   scope: commandScope(template.sourceInfo.scope)
 })
 
@@ -124,21 +146,24 @@ const appendMessageToChat = (output: ChatMessage[], message: PiMessage, id: stri
       if (block.type === "text") {
         blocks.push({ type: "text", text: block.text })
       } else if (block.type === "toolCall") {
-        blocks.push({ type: "tool-call", id: block.id, name: block.name, input: stringify(block.arguments) })
+        // SAFETY: toolCall arguments is an SDK JSON payload
+        const toolInput = stringify(block.arguments as PiPayloadValue)
+        blocks.push({ type: "tool-call", id: block.id, name: block.name, input: toolInput })
       }
     }
     output.push({ id, role: "assistant", blocks, timestamp: message.timestamp, model: message.model, provider: message.provider })
     return
   }
   if (message.role === "toolResult") {
-    const diff = diffFromResult(message)
+    // SAFETY: message may contain a details record with diff
+    const diff = diffFromResult(message as typeof ToolResultEnvelopeSchema.Type)
     const result: ToolResultBlock = {
       type: "tool-result",
       id: message.toolCallId,
       name: message.toolName,
       output: textFromContent(message.content),
       isError: message.isError,
-      ...(diff ? { diff } : {})
+      diff: diff || undefined
     }
     const assistantIndex = output.findLastIndex((candidate) => candidate.role === "assistant" && candidate.blocks.some((block) => block.type === "tool-call" && block.id === message.toolCallId))
     if (assistantIndex >= 0) {
@@ -188,30 +213,85 @@ const historyToChat = (manager: SessionManager): ReadonlyArray<ChatMessage> => {
   return output
 }
 
-const recordValue = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
-  typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : undefined
+const BackgroundTerminalItemSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  command: Schema.optionalKey(Schema.String),
+  cwd: Schema.optionalKey(Schema.String),
+  pid: Schema.optionalKey(Schema.Number),
+  status: Schema.optionalKey(Schema.Literals(["running", "done", "failed", "killed", "stopped"])),
+  output: Schema.optionalKey(Schema.String)
+})
 
-const agentEndedWithError = (messages: ReadonlyArray<unknown>): boolean => {
-  const lastAssistant = [...messages].reverse().find((message) => recordValue(message)?.role === "assistant")
-  return recordValue(lastAssistant)?.stopReason === "error"
+const BackgroundDetailsSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  cwd: Schema.optionalKey(Schema.String),
+  working_dir: Schema.optionalKey(Schema.String),
+  command: Schema.optionalKey(Schema.String),
+  pid: Schema.optionalKey(Schema.Number),
+  status: Schema.optionalKey(Schema.Literals(["running", "done", "failed", "killed", "stopped"])),
+  exitCode: Schema.optionalKey(Schema.Number),
+  signal: Schema.optionalKey(Schema.String),
+  terminals: Schema.optionalKey(Schema.Array(BackgroundTerminalItemSchema)),
+  results: Schema.optionalKey(Schema.Array(BackgroundTerminalItemSchema))
+})
+
+const BackgroundToolArgsSchema = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  command: Schema.optionalKey(Schema.String),
+  working_dir: Schema.optionalKey(Schema.String)
+})
+
+const BackgroundToolResultSchema = Schema.Struct({
+  details: Schema.optionalKey(BackgroundDetailsSchema),
+  content: Schema.optionalKey(
+    Schema.Union([
+      Schema.String,
+      Schema.Array(
+        Schema.Struct({
+          type: Schema.String,
+          text: Schema.optionalKey(Schema.String)
+        })
+      )
+    ])
+  )
+})
+
+const BackgroundResultMessageSchema = Schema.Struct({
+  role: Schema.Literal("custom"),
+  customType: Schema.Literal("background-terminal-result"),
+  details: Schema.optionalKey(BackgroundDetailsSchema),
+  content: Schema.optionalKey(Schema.String),
+  timestamp: Schema.optionalKey(Schema.Number)
+})
+
+const decodeBackgroundArgs = Schema.decodeUnknownOption(BackgroundToolArgsSchema)
+const decodeBackgroundResult = Schema.decodeUnknownOption(BackgroundToolResultSchema)
+const decodeBackgroundMessage = Schema.decodeUnknownOption(BackgroundResultMessageSchema)
+const decodeThinkingLevel = Schema.decodeUnknownOption(Schema.Literals(["off", "minimal", "low", "medium", "high", "xhigh", "max"]))
+
+const agentEndedWithError = (messages: ReadonlyArray<PiMessage>): boolean => {
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant")
+  return lastAssistant?.role === "assistant" && lastAssistant.stopReason === "error"
 }
-const stringValue = (value: unknown): string | undefined => typeof value === "string" ? value : undefined
-const numberValue = (value: unknown): number | undefined => typeof value === "number" ? value : undefined
-const thinkingLevelValue = (value: unknown): ThinkingLevel =>
-  value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max" ? value : "off"
 
-const resultText = (value: unknown): string | undefined => {
-  const record = recordValue(value)
-  if (!record || !Array.isArray(record.content)) return undefined
-  const lines = record.content.flatMap((item) => {
-    const block = recordValue(item)
-    return block?.type === "text" && typeof block.text === "string" ? [block.text] : []
-  })
-  return lines.length > 0 ? lines.join("\n") : undefined
+const thinkingLevelValue = (value: typeof Schema.Unknown.Type | undefined): ThinkingLevel => {
+  const decoded = decodeThinkingLevel(value)
+  return decoded._tag === "Some" ? decoded.value : "off"
 }
 
-const processStatus = (value: unknown): BackgroundProcessStatus | undefined => {
-  if (value === "running" || value === "done" || value === "failed" || value === "killed" || value === "stopped") return value
+const resultText = (result: typeof Schema.Unknown.Type | undefined): string | undefined => {
+  const decoded = decodeBackgroundResult(result)
+  if (decoded._tag === "None") return undefined
+  const content = decoded.value.content
+  if (content === undefined) return undefined
+  if (Array.isArray(content)) {
+    const text = content.flatMap((block) => block.type === "text" && block.text ? [block.text] : []).join("\n").trim()
+    return text || undefined
+  }
+  if (isString(content)) return content.trim() || undefined
   return undefined
 }
 
@@ -234,35 +314,36 @@ const updateProcess = (processes: Map<string, BackgroundProcess>, id: string, pa
     status,
     startedAt: patch.startedAt ?? current?.startedAt ?? at,
     updatedAt: at,
-    ...(patch.command ?? current?.command ? { command: patch.command ?? current?.command } : {}),
-    ...(patch.cwd ?? current?.cwd ? { cwd: patch.cwd ?? current?.cwd } : {}),
-    ...(patch.pid ?? current?.pid ? { pid: patch.pid ?? current?.pid } : {}),
-    ...(patch.output ?? current?.output ? { output: patch.output ?? current?.output } : {}),
-    ...(patch.exitCode ?? current?.exitCode !== undefined ? { exitCode: patch.exitCode ?? current?.exitCode } : {}),
-    ...(patch.signal ?? current?.signal ? { signal: patch.signal ?? current?.signal } : {})
+    command: patch.command ?? current?.command,
+    cwd: patch.cwd ?? current?.cwd,
+    pid: patch.pid ?? current?.pid,
+    output: patch.output ?? current?.output,
+    exitCode: patch.exitCode ?? current?.exitCode,
+    signal: patch.signal ?? current?.signal
   })
 }
 
 const applyBackgroundToolResult = (
   processes: Map<string, BackgroundProcess>,
   toolName: string,
-  args: unknown,
-  result: unknown,
+  rawArgs: typeof Schema.Unknown.Type | undefined,
+  rawResult: typeof Schema.Unknown.Type | undefined,
   at: number
 ) => {
-  const resultRecord = recordValue(result)
-  const details = recordValue(resultRecord?.details)
-  const argsRecord = recordValue(args)
-  const output = resultText(result)
+  const resultDecoded = decodeBackgroundResult(rawResult)
+  const details = resultDecoded._tag === "Some" ? resultDecoded.value.details : undefined
+  const argsDecoded = decodeBackgroundArgs(rawArgs)
+  const args = argsDecoded._tag === "Some" ? argsDecoded.value : undefined
+  const output = resultText(rawResult)
 
   if (toolName === "bg_start") {
-    const id = stringValue(details?.id)
+    const id = details?.id
     if (!id) return
     updateProcess(processes, id, {
-      title: stringValue(details?.title) ?? stringValue(argsRecord?.title) ?? `Terminal ${id}`,
-      command: stringValue(argsRecord?.command),
-      cwd: stringValue(details?.cwd) ?? stringValue(argsRecord?.working_dir),
-      pid: numberValue(details?.pid),
+      title: details.title ?? args?.title ?? `Terminal ${id}`,
+      command: args?.command,
+      cwd: details.cwd ?? args?.working_dir,
+      pid: details.pid,
       status: "running",
       output
     }, at)
@@ -270,29 +351,28 @@ const applyBackgroundToolResult = (
   }
 
   if (toolName === "bg_status") {
-    const id = stringValue(details?.id)
+    const id = details?.id
     if (!id) return
     updateProcess(processes, id, {
-      status: processStatus(details?.status),
-      pid: numberValue(details?.pid),
-      exitCode: numberValue(details?.exitCode),
-      signal: stringValue(details?.signal),
+      status: details.status,
+      pid: details.pid,
+      exitCode: details.exitCode,
+      signal: details.signal,
       output
     }, at)
     return
   }
 
-  if (toolName === "bg_list" && Array.isArray(details?.terminals)) {
+  if (toolName === "bg_list" && details?.terminals) {
     const listed = new Set<string>()
-    for (const item of details.terminals) {
-      const terminal = recordValue(item)
-      const id = stringValue(terminal?.id)
+    for (const terminal of details.terminals) {
+      const id = terminal.id
       if (!id) continue
       listed.add(id)
       updateProcess(processes, id, {
-        title: stringValue(terminal?.title),
-        status: processStatus(terminal?.status),
-        pid: numberValue(terminal?.pid)
+        title: terminal.title,
+        status: terminal.status,
+        pid: terminal.pid
       }, at)
     }
     // The extension never prunes a live child. If an id that we thought was
@@ -305,32 +385,31 @@ const applyBackgroundToolResult = (
     return
   }
 
-  if (toolName === "bg_kill" && Array.isArray(details?.results)) {
-    for (const item of details.results) {
-      const terminal = recordValue(item)
-      const id = stringValue(terminal?.id)
+  if (toolName === "bg_kill" && details?.results) {
+    for (const terminal of details.results) {
+      const id = terminal.id
       if (!id) continue
       updateProcess(processes, id, {
-        title: stringValue(terminal?.title),
-        status: processStatus(terminal?.status) ?? "killed",
+        title: terminal.title,
+        status: terminal.status ?? "killed",
         output
       }, at)
     }
   }
 }
 
-const applyBackgroundResultMessage = (processes: Map<string, BackgroundProcess>, message: unknown, at: number) => {
-  const record = recordValue(message)
-  if (record?.role !== "custom" || record.customType !== "background-terminal-result") return
-  const details = recordValue(record.details)
-  const id = stringValue(details?.id)
+const applyBackgroundResultMessage = (processes: Map<string, BackgroundProcess>, rawMessage: typeof Schema.Unknown.Type, at: number) => {
+  const decoded = decodeBackgroundMessage(rawMessage)
+  if (decoded._tag === "None") return
+  const msg = decoded.value
+  const id = msg.details?.id
   if (!id) return
   updateProcess(processes, id, {
-    title: stringValue(details?.title),
-    status: processStatus(details?.status),
-    exitCode: numberValue(details?.exitCode),
-    signal: stringValue(details?.signal),
-    output: typeof record.content === "string" ? record.content : undefined
+    title: msg.details?.title,
+    status: msg.details?.status,
+    exitCode: msg.details?.exitCode,
+    signal: msg.details?.signal,
+    output: msg.content
   }, at)
 }
 
@@ -359,6 +438,14 @@ const historicalBackgroundProcesses = (manager: SessionManager): Map<string, Bac
 
 type PiSessionInfo = Awaited<ReturnType<typeof SessionManager.list>>[number]
 
+const SubagentArgsSchema = Schema.Struct({
+  name: Schema.String,
+  prompt: Schema.String,
+  harness: Schema.optionalKey(Schema.String),
+  working_dir: Schema.optionalKey(Schema.String)
+})
+const decodeSubagentArgs = Schema.decodeUnknownOption(SubagentArgsSchema)
+
 const inferSubagentParents = (cwd: string, infos: ReadonlyArray<PiSessionInfo>) => {
   const matches = new Map<string, string>()
   const children = infos.filter((info) => info.name?.toLocaleLowerCase().startsWith("subagent:"))
@@ -370,15 +457,15 @@ const inferSubagentParents = (cwd: string, infos: ReadonlyArray<PiSessionInfo>) 
         if (entry.type !== "message" || entry.message.role !== "assistant") continue
         for (const block of entry.message.content) {
           if (block.type !== "toolCall" || block.name !== "subagent_spawn") continue
-          const args: unknown = block.arguments
-          if (typeof args !== "object" || args === null || !("name" in args) || !("prompt" in args)) continue
-          if (typeof args.name !== "string" || typeof args.prompt !== "string") continue
-          if ("harness" in args && args.harness !== undefined && args.harness !== "pi") continue
+          const decoded = decodeSubagentArgs(block.arguments)
+          if (decoded._tag === "None") continue
+          const args = decoded.value
+          if (args.harness !== undefined && args.harness !== "pi") continue
 
           const expectedName = `subagent: ${args.name.trim()}`.toLocaleLowerCase()
           const expectedPrompt = args.prompt.trim()
           const parentCwd = parent.cwd || cwd
-          const expectedCwd = "working_dir" in args && typeof args.working_dir === "string" ? resolve(parentCwd, args.working_dir) : parentCwd
+          const expectedCwd = args.working_dir ? resolve(parentCwd, args.working_dir) : parentCwd
           const spawnedAt = new Date(entry.timestamp).getTime()
           const candidates = children.filter((child) => {
             const distance = child.created.getTime() - spawnedAt
@@ -415,8 +502,8 @@ const summaryFromInfo = (info: PiSessionInfo, parentSessionPath?: string): Sessi
     firstMessage: info.firstMessage,
     updatedAt: info.modified.getTime(),
     messageCount: info.messageCount,
-    ...(parentSessionPath ? { parentSessionPath } : {}),
-    ...(forkedFrom ? { forkedFrom } : {})
+    parentSessionPath: parentSessionPath || undefined,
+    forkedFrom
   }
 }
 
@@ -430,7 +517,7 @@ const summaryFromManager = (manager: SessionManager, messages: ReadonlyArray<Cha
     firstMessage: firstUserText ?? "",
     updatedAt: Date.now(),
     messageCount: messages.filter((message) => message.blocks.some((block) => block.type !== "compaction")).length,
-    ...(forkedFrom ? { forkedFrom } : {})
+    forkedFrom
   }
 }
 
@@ -445,7 +532,7 @@ const detailFromManager = (manager: SessionManager, summary: SessionSummary, con
     // Background terminals and prompt queues are runtime-scoped, never historical.
     backgroundProcesses: [],
     queuedMessages: [],
-    ...(contextUsage ? { contextUsage } : {}),
+    contextUsage: contextUsage || undefined,
     runtimeStatus: "done",
     isStreaming: false,
     isCompacting: false
@@ -462,7 +549,7 @@ const historicalRecovery = (manager: SessionManager): SessionRecovery | undefine
   return {
     reason,
     interruptedAt: lastEntry ? timestampValue(lastEntry.timestamp) : Date.now(),
-    ...(prompt ? { lastPrompt: prompt } : {})
+    lastPrompt: prompt || undefined
   }
 }
 
@@ -478,9 +565,9 @@ const snapshotFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
-    ...(active.recovery ? { recovery: active.recovery } : {}),
-    ...(contextUsage ? { contextUsage } : {}),
-    ...(interactionRequest ? { interactionRequest } : {}),
+    recovery: active.recovery || undefined,
+    contextUsage: contextUsage || undefined,
+    interactionRequest: interactionRequest || undefined,
     runtimeStatus: active.runtimeStatus,
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
@@ -499,9 +586,9 @@ const detailFromActive = (active: ActiveSession): SessionDetail => {
     availableThinkingLevels: active.session.getAvailableThinkingLevels(),
     backgroundProcesses: runningProcesses(active.backgroundProcesses),
     queuedMessages: active.queuedMessages,
-    ...(active.recovery ? { recovery: active.recovery } : {}),
-    ...(contextUsage ? { contextUsage } : {}),
-    ...(interactionRequest ? { interactionRequest } : {}),
+    recovery: active.recovery || undefined,
+    contextUsage: contextUsage || undefined,
+    interactionRequest: interactionRequest || undefined,
     runtimeStatus: active.runtimeStatus,
     isStreaming: active.session.isStreaming || active.pendingPromptStarts > 0,
     isCompacting: active.session.isCompacting
@@ -640,7 +727,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             || active.gitRefreshGeneration !== generation
             || activeSessions.get(sessionKey) !== active
             ? Effect.void
-            : bus.emit({ type: "project-git", worktreePath: active.cwd, ...(status ? { git: status } : {}) })
+            : bus.emit({ type: "project-git", worktreePath: active.cwd, git: status || undefined })
         ),
         Effect.catchTag("GitContextError", () => Effect.void)
       )).finally(() => {
@@ -729,10 +816,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
     })
   })
 
-  const decodeAskUserInput = (value: unknown) => {
-    const decoded = Schema.decodeUnknownExit(AskUserInputSchema)(value)
-    return Exit.isSuccess(decoded) ? decoded.value : undefined
-  }
+  const decodeAskUserInput = Schema.decodeUnknownOption(AskUserInputSchema)
 
   const attach = Effect.fn("PiSessions.attach")(function*(cwd: string, manager: SessionManager) {
     const attachedRuntime = yield* Effect.tryPromise({
@@ -887,7 +971,8 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
         const messageId = active.liveMessageId
         active.pendingTools.set(event.toolCallId, { name: event.toolName, args: event.args })
         if (event.toolName === "ask_user") {
-          const input = decodeAskUserInput(event.args)
+          const inputOption = decodeAskUserInput(event.args)
+          const input = inputOption._tag === "Some" ? inputOption.value : undefined
           if (input) {
             const request: AskUserInteractionRequest = {
               requestId: event.toolCallId,
@@ -903,12 +988,15 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           type: "tool-start",
           sessionPath,
           messageId,
-          tool: { id: event.toolCallId, name: event.toolName, input: stringify(event.args), status: "running", startedAt: Date.now() }
+          // SAFETY: event.args is an SDK JSON payload
+          tool: { id: event.toolCallId, name: event.toolName, input: stringify(event.args as PiPayloadValue), status: "running", startedAt: Date.now() }
         }))
       } else if (event.type === "tool_execution_update") {
-        void Effect.runPromise(emitActiveEvent(active, { type: "tool-update", sessionPath, toolId: event.toolCallId, output: projectToolOutput(event.partialResult) }))
+        // SAFETY: partialResult is an SDK tool output payload
+        void Effect.runPromise(emitActiveEvent(active, { type: "tool-update", sessionPath, toolId: event.toolCallId, output: projectToolOutput(event.partialResult as ToolOutputPayload) }))
       } else if (event.type === "tool_execution_end") {
-        const diff = diffFromResult(event.result)
+        // SAFETY: result may contain a details record with diff
+        const diff = diffFromResult(event.result as typeof ToolResultEnvelopeSchema.Type)
         const call = active.pendingTools.get(event.toolCallId)
         active.pendingTools.delete(event.toolCallId)
         if (event.toolName === "ask_user") active.interaction.finishTool(event.toolCallId)
@@ -920,9 +1008,10 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           type: "tool-end",
           sessionPath,
           toolId: event.toolCallId,
-          output: projectToolOutput(event.result),
+          // SAFETY: result is an SDK tool output payload
+          output: projectToolOutput(event.result as ToolOutputPayload),
           isError: event.isError,
-          ...(diff ? { diff } : {})
+          diff: diff || undefined
         }))
         scheduleGitRefresh(active)
       } else if (event.type === "message_end") {
@@ -962,7 +1051,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
           active.recovery = {
             reason: active.pendingTransportFailure,
             interruptedAt: Date.now(),
-            ...(prompt ? { lastPrompt: prompt } : {})
+            lastPrompt: prompt || undefined
           }
         }
         active.pendingTransportFailure = undefined
@@ -1164,7 +1253,7 @@ export const PiSessionsLive = Layer.effect(PiSessions)(Effect.gen(function*() {
             try: () => {
               active.recovery = undefined
               return active.session.prompt(prompt, {
-                ...(images.length > 0 ? { images } : {}),
+                images: images.length > 0 ? images : undefined,
                 preflightResult: finishPromptStart
               })
             },
