@@ -8,7 +8,7 @@ const statusLabel = {
   done: "Complete",
   failed: "Failed",
   killed: "Stopped",
-  stopped: "Historical"
+  stopped: "Previous"
 } satisfies Record<BackgroundProcess["status"], string>
 
 const statusClass = {

@@ -1,4 +1,4 @@
-import { ArrowUp, Check, ChevronDown, Folder, GitBranch, GitFork, HardDrive, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
+import { ArrowUp, Check, ChevronDown, CornerDownLeft, Folder, GitBranch, GitFork, HardDrive, Pencil, Send, ShieldCheck, Square, Trash2, X } from "lucide-react"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { parseImagePathReferences } from "../../../shared/attachments"
 import type { AttachmentPreview, ContextUsage, ImageAttachment, ModelAvailability, ModelOption, PiCommand, QueueDelivery, QueuedMessage, SessionDraftContext, ThinkingLevel } from "../../../shared/contracts"
@@ -13,7 +13,7 @@ const effortLabel = {
   low: "Low",
   medium: "Medium",
   high: "High",
-  xhigh: "XHigh",
+  xhigh: "Very high",
   max: "Max"
 } satisfies Record<ThinkingLevel, string>
 
@@ -62,10 +62,6 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
 
   return (
     <section className="prompt-queue" aria-label="Queued Pi messages">
-      <header className="prompt-queue-header">
-        <span><Send size={11} /> Queue <small>{messages.length}</small></span>
-        <em>Pi-managed</em>
-      </header>
       <ol className="prompt-queue-list">
         {messages.map((message) => {
           const editing = editingId === message.id
@@ -74,7 +70,7 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
           const controlsDisabled = disabled || pendingId !== null
           return (
             <li className={`prompt-queue-item ${message.delivery === "steer" ? "steering" : "follow-up"}`} key={message.id}>
-              <span className="prompt-queue-delivery">{message.delivery === "steer" ? "Steering" : "Follow-up"}</span>
+              <CornerDownLeft className="prompt-queue-delivery" size={18} aria-hidden="true" />
               {editing ? (
                 <div className="prompt-queue-edit">
                   <textarea
@@ -113,6 +109,19 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
                   <div className="prompt-queue-actions">
                     <button
                       type="button"
+                      className="queue-action steer"
+                      aria-label={message.delivery === "steer" ? "Send this steering message first" : "Steer this message after Pi's current tool turn"}
+                      title={message.delivery === "steer" ? "Send first" : "Steer after the current tool turn"}
+                      disabled={controlsDisabled}
+                      onClick={() => void runAction(message.id, () => onSteer(message))}
+                    >
+                      <CornerDownLeft size={15} /> <span>{pending ? "Sending" : "Steer"}</span>
+                    </button>
+                    <button type="button" className="queue-action remove" aria-label="Remove queued message" title="Remove" disabled={controlsDisabled} onClick={() => void runAction(message.id, () => onRemove(message))}>
+                      <Trash2 size={15} />
+                    </button>
+                    <button
+                      type="button"
                       className="queue-action"
                       aria-label={hasImages ? "Image attachments cannot be edited in the queue" : "Edit queued message"}
                       title={hasImages ? "Remove and resend to change an attached image" : "Edit"}
@@ -122,20 +131,7 @@ function PromptQueue({ messages, disabled, onEdit, onRemove, onSteer }: PromptQu
                         setEditingText(message.text)
                       }}
                     >
-                      <Pencil size={12} />
-                    </button>
-                    <button type="button" className="queue-action remove" aria-label="Remove queued message" title="Remove" disabled={controlsDisabled} onClick={() => void runAction(message.id, () => onRemove(message))}>
-                      <Trash2 size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      className="queue-action steer"
-                      aria-label={message.delivery === "steer" ? "Send this steering message first" : "Steer this message after Pi's current tool turn"}
-                      title={message.delivery === "steer" ? "Send first" : "Steer after the current tool turn"}
-                      disabled={controlsDisabled}
-                      onClick={() => void runAction(message.id, () => onSteer(message))}
-                    >
-                      <Send size={11} /> {pending ? "Sending" : message.delivery === "steer" ? "Send first" : "Steer now"}
+                      <Pencil size={15} />
                     </button>
                   </div>
                 </>
@@ -272,42 +268,6 @@ export function Composer({
 
   return (
     <div className="composer-shell">
-      {displayedContext && (
-        <section className="composer-worktree-context" aria-label={draftContext ? "New session worktree context" : "Selected worktree context"}>
-          <span className="composer-context-folder" title={displayedContext.path}>
-            <Folder size={13} aria-hidden="true" />
-            <strong>{displayedContext.folderName}</strong>
-            <small>{displayedContext.path}</small>
-          </span>
-          <span className="composer-context-kind" title={`${displayedContext.worktreeKind === "linked" ? "Linked worktree" : "Local checkout"}: ${displayedContext.path}`}>
-            {displayedContext.worktreeKind === "linked" ? <GitFork size={13} aria-hidden="true" /> : <HardDrive size={13} aria-hidden="true" />}
-            {displayedContext.worktreeKind === "linked" ? "Linked worktree" : "Local checkout"}
-          </span>
-          <span className="composer-context-branch" title={`Current branch: ${displayedContext.branch}`}>
-            <GitBranch size={13} aria-hidden="true" />
-            <span>{displayedContext.branch}</span>
-          </span>
-          {draftContext?.worktreeKind === "linked" && (
-            <label className="composer-base-branch">
-              <span>Base branch</span>
-              <select
-                aria-label="Base branch for new worktree session"
-                value={draftBaseBranch ?? ""}
-                disabled={disabled || draftContextLoading || draftContext.baseBranches.length === 0}
-                onChange={(event) => onDraftBaseBranchChange(event.target.value)}
-              >
-                {draftContext.baseBranches.length === 0 && <option value="">{draftContextLoading ? "Loading branches…" : "No base branches found"}</option>}
-                {draftContext.baseBranches.map((branch) => <option value={branch} key={branch}>{branch}</option>)}
-              </select>
-            </label>
-          )}
-          {draftContext?.setupEnvironment && (
-            <span className="composer-setup-environment" title={`Runs ${draftContext.setupEnvironment.configPath} before the first Pi session is created`}>
-              Setup: {draftContext.setupEnvironment.name}
-            </span>
-          )}
-        </section>
-      )}
       <PromptQueue
         messages={queuedMessages}
         disabled={disabled}
@@ -500,7 +460,43 @@ export function Composer({
             )}
           </div>
         </div>
-      </div>
+        </div>
+      {displayedContext && (
+        <section className="composer-worktree-context" aria-label={draftContext ? "New session worktree context" : "Selected worktree context"}>
+          <span className="composer-context-folder" title={displayedContext.path}>
+            <Folder size={13} aria-hidden="true" />
+            <strong>{displayedContext.folderName}</strong>
+            <small>{displayedContext.path}</small>
+          </span>
+          <span className="composer-context-kind" title={`${displayedContext.worktreeKind === "linked" ? "Linked worktree" : "Local checkout"}: ${displayedContext.path}`}>
+            {displayedContext.worktreeKind === "linked" ? <GitFork size={13} aria-hidden="true" /> : <HardDrive size={13} aria-hidden="true" />}
+            {displayedContext.worktreeKind === "linked" ? "Linked worktree" : "Local checkout"}
+          </span>
+          <span className="composer-context-branch" title={`Current branch: ${displayedContext.branch}`}>
+            <GitBranch size={13} aria-hidden="true" />
+            <span>{displayedContext.branch}</span>
+          </span>
+          {draftContext?.worktreeKind === "linked" && (
+            <label className="composer-base-branch">
+              <span>Base branch</span>
+              <select
+                aria-label="Base branch for new worktree session"
+                value={draftBaseBranch ?? ""}
+                disabled={disabled || draftContextLoading || draftContext.baseBranches.length === 0}
+                onChange={(event) => onDraftBaseBranchChange(event.target.value)}
+              >
+                {draftContext.baseBranches.length === 0 && <option value="">{draftContextLoading ? "Loading branches…" : "No base branches found"}</option>}
+                {draftContext.baseBranches.map((branch) => <option value={branch} key={branch}>{branch}</option>)}
+              </select>
+            </label>
+          )}
+          {draftContext?.setupEnvironment && (
+            <span className="composer-setup-environment" title={`Runs ${draftContext.setupEnvironment.configPath} before the first Pi session is created`}>
+              Setup: {draftContext.setupEnvironment.name}
+            </span>
+          )}
+        </section>
+      )}
       <div className="composer-caption">
         <span>{isStreaming ? "Enter to queue follow-up · Alt+Enter to steer · Shift+Enter for new line" : "Enter to send · Shift+Enter for new line"}</span>
         <span>Pi can make mistakes. Review changes.</span>
