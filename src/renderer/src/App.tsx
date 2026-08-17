@@ -993,7 +993,7 @@ export default function App() {
           onNewSession={(project, worktree) => void newSession(project, worktree)}
         />
 
-        {activeProject ? <main className={`conversation ${interactionRequest ? "has-interaction" : ""}`} id="main-content">
+        {activeProject ? <main className="conversation" id="main-content">
           <div className="conversation-header">
             <div className="conversation-title">
               <span className="eyebrow">{activeProject && activeWorktree ? `${activeProject.name} / ${activeWorktree.name}` : "Workspace"}</span>
@@ -1098,12 +1098,6 @@ export default function App() {
             </div>
           </div>
 
-          {interactionRequest && (
-            <div className={styles.sessionNotices}>
-              <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
-            </div>
-          )}
-
           {displayMessages.length ? (
             <ConversationTimeline
               key={`timeline-${session?.summary.path}`}
@@ -1151,6 +1145,10 @@ export default function App() {
           )}
 
           {error && <div className="error-toast" role="alert">{error}<button type="button" onClick={() => setError(null)}>Dismiss</button></div>}
+          <div className="composer-region">
+          {interactionRequest && (
+            <AskUserPanel request={interactionRequest} submitting={interactionSubmitting} onAnswer={answerInteraction} />
+          )}
           <Composer
             key={session?.summary.path ?? (sessionDraft ? `draft:${activeWorktree?.id ?? "worktree"}` : "no-session")}
             value={draft}
@@ -1232,6 +1230,7 @@ export default function App() {
             onSteerQueuedMessage={steerQueuedMessage}
             onAbort={abort}
           />
+          </div>
         </main> : (
           <HomeDashboard
             data={Object.values(homeData)}

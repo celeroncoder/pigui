@@ -65,8 +65,11 @@ export function AskUserPanel({ request, submitting, onAnswer }: AskUserPanelProp
     >
       <div className="ask-user-panel-heading">
         <div>
-          <span className="ask-user-eyebrow">Pi needs your input</span>
-          <h2 id={`ask-user-title-${request.requestId}`}>Choose a direction</h2>
+          <div className="ask-user-progress" aria-label="Question 1 of 1">
+            <span>Question 1 of 1</span>
+            <span className="ask-user-progress-track" aria-hidden="true"><span /></span>
+          </div>
+          <h2 id={`ask-user-title-${request.requestId}`}>Pi needs your input</h2>
         </div>
         <button
           type="button"
@@ -81,6 +84,7 @@ export function AskUserPanel({ request, submitting, onAnswer }: AskUserPanelProp
       </div>
 
       <p className="ask-user-question" id={`ask-user-question-${request.requestId}`}>{request.question}</p>
+      <p className="ask-user-description">Choose a direction or describe another task.</p>
 
       {!customMode ? (
         <div className="ask-user-options" aria-label="Answer options">
